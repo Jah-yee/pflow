@@ -13,7 +13,7 @@ enters only as `${x|json}`.
 **Read with this plan:** `diagnostics-checkpoint.md` in the same folder. It lists every new or
 changed message, with the BEFORE executed and the AFTER drafted (revised after the plan battery),
 and poses rulings R1–R6 and R8. **It is an embedded user checkpoint: the build does not start until
-it is ruled** (CP-1, §7).
+it is ruled** (CP-1, §7). **RULED 2026-10-07: all as recommended (user: *"181: all yes"*); see the checkpoint header and the progress log.**
 
 **Shape.**
 - **One PR.**

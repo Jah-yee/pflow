@@ -60,6 +60,10 @@ next
 
 ## Resolved at planning
 
+> **CP-1 RULED 2026-10-07** (user: *"181: all yes"*): the diagnostics checkpoint's R1–R6 and R8 stand as recommended;
+> `implementation/diagnostics-checkpoint.md` is the ruled text. Nouns "Embedded code" / "JSON insert" enter
+> `context/CONTEXT.md` at merge (main orchestrator).
+
 The open questions below are answered in `implementation/implementation-plan.md` §3 (D1–D12);
 every new or changed message, with BEFORE executed and AFTER drafted, is in
 `implementation/diagnostics-checkpoint.md`. The user rules R1–R6 and R8 there before the build starts. In one line each:

@@ -38,3 +38,13 @@
 - **Next:** the user rules on CP-1 (R1–R6, R8). The build waits for Task 118 Part 2 to merge (plan
   §0). The task orchestrator's first act is to find the ruling entry below; if it is absent, do not
   build.
+
+## [2026-10-07] main orchestrator — CP-1 RULED (the ruling entry the task orchestrator looks for)
+- Did: relayed `diagnostics-checkpoint.md` to the user in plain language (what the task does, the seven rulings, the two
+  silent behaviour changes, the eval/#722 dependency); user: *"181: all yes"*.
+- Changed: checkpoint header, plan §CP-1 line, spec "Resolved at planning" note, this entry.
+- Verified: R1 four params · R2 error elsewhere · R3 error-instead-of / warning · R4 7a+7b · R5 spaces · R6 json.dumps
+  default separators ensure_ascii=False · R8 nouns. | Assumed: nothing.
+- Deviations/surprises: none. Note for the build: #722 (MCP `registry_run` rejects `eval(`) is open — the §4c/R7 eval form
+  is refused over MCP until it lands; the guide text should not promise it works over MCP before then.
+- Next: build after Task 118 Part 2 merges; the task orchestrator re-verifies 118's shipped `param_mode` shapes (P0).

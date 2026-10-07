@@ -1,5 +1,10 @@
 # Task 181 — diagnostics checkpoint (show before code)
 
+> **RULED 2026-10-07** — user: *"181: all yes"* on the main orchestrator's plain-language relay. R1 (four params), R2,
+> R3 ("instead of"), R4 (7a + 7b), R5, R6 (`json.dumps`, default separators, `ensure_ascii=False`), R8 (nouns
+> "Embedded code" / "JSON insert" — CONTEXT.md written by the main orchestrator at merge) — ALL as recommended.
+> This file is the ruled text.
+
 Every message this task adds or changes, the rule that decides when each fires, and the run-time
 text the MCP tool receives. **BEFORE** blocks are verbatim output of today's code (`ebf7cab2`,
 macOS, `uv run pflow --validate-only <probe>`; run-time text comes from
