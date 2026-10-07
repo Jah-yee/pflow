@@ -70,3 +70,10 @@ Append-only. Entry format: ORCHESTRATION.md → "Progress-log entry format".
   P4 layout, which the embedded checkpoint covers.
 - Next: commit plan + spec + log on the feature branch; hand back (R1, R2, Fable word for P4, ADR one-liners,
   Task 180 spec line).
+
+## [2026-10-07] main orchestrator — R1 / R2 / P4 tier RULED
+- Did: relayed the checkpoint to the user in plain language; user: *"yes go ahead with this but use opus instead of fable"*.
+- Changed: plan header (rulings), checkpoint header, this log.
+- Verified: R1 = yes, R2 = (a), P4 = Opus (per-launch word). | Assumed: nothing.
+- Deviations/surprises: the "of M" → "of up to M" wording change was shown to the user and accepted without comment.
+- Next: build launches after Task 118 Part 2 merges (engine seam; trace-version order with Task 180 decided at merge).

@@ -6,7 +6,9 @@ Planner: Opus (user capacity ruling for this launch; protocol unchanged). Base: 
 Show-before-code artifact: `pause-surfaces-before-after.md` (this folder; BEFORE executed). Self-review: plan-mode
 `deep-review`, 7 lenses, dispositions in the progress log.
 
-**Open user rulings this plan carries (hand-back; defaults below hold until ruled):**
+**User rulings — RULED 2026-10-07** (user: *"yes go ahead with this but use opus instead of fable"*): **R1 = yes** (build the
+bulk hint line) · **R2 = (a)** · **P4 tier = Opus** (user's per-launch word; still the specialist `task-phase-implementer`
+hand-off with the plan's look/feel bounds and `screenshot-pflow-web-ui` verification). Original text kept below for provenance:
 - **R1 — CLI/MCP bulk hint** (agent-ux S1): add one line to the pause output of a LOOP APPROVAL gate naming
   `--approve yes --auto-approve <step>`? Not in the spec. Planner recommends **yes** (see §6). Default: not built.
 - **R2 — "Approve all remaining" when the cap is unknown** (`max_iterations: null` on a loop gate — uncapped, or

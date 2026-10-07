@@ -59,6 +59,14 @@ next
 - **The written design is the starting point, not a contract**: Task 179's
   `implementation/implementation-plan.md` §4 P4b (line ~650). Re-verify it against the merged code.
 
+### Ruled 2026-10-07 (user: *"yes go ahead with this but use opus instead of fable"*)
+
+- **CLI/MCP bulk hint line is IN scope**: a loop APPROVAL pause (CLI, MCP, answer-required error) adds one line naming
+  `pflow resume <token> --approve yes --auto-approve <step>` with the "only with your human's OK" clause (plan R1 = yes).
+- **Unknown cap**: "Approve all remaining" is shown with a tooltip naming the bound (plan R2 = (a)).
+- **Web phase tier**: Opus by the user's per-launch word; design bounds and screenshot verification unchanged.
+- The ruled text is `implementation/pause-surfaces-before-after.md`.
+
 ## Constraints
 
 - **Engine contact — and the cap is not available where the gate is built today.** The gate

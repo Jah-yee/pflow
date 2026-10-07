@@ -1,5 +1,8 @@
 # Task 183 — pause surfaces, BEFORE / AFTER (show-before-code)
 
+> **RULED 2026-10-07** — user: *"yes go ahead with this but use opus instead of fable"*. Every AFTER block stands;
+> the PROPOSED R1 hint line in §1 is **ruled in** (build it); R2 = (a); the P4 web phase runs on Opus.
+
 BEFORE blocks were **executed on `706b292c`** (re-check: the #719 fast-forward to `2464e43c` touched no pause
 renderer) by `scratchpads/task-183/capture.sh before2`
 (gitignored; isolated `HOME`; fixtures `scratchpads/task-183/wf/{capped,uncapped,templated,plain}.pflow.md`,
