@@ -21,6 +21,10 @@ from .env_binding import bind_env, displayable_env, merge_env, oversized_error
 
 logger = logging.getLogger(__name__)
 
+# How long a timed-out shell step gets to exit after the polite stop
+# (SIGTERM) before it is killed. Fixed, so ``timeout`` + this bounds a step.
+TIMEOUT_GRACE_SECONDS = 5
+
 # Default Git for Windows install locations, probed last by
 # _resolve_windows_bash(). Module-level so tests can point the probes at
 # temp paths without patching Path.is_file globally.
@@ -137,23 +141,35 @@ def _communicate_with_cleanup(
     *,
     stdin_bytes: bytes | None,
     timeout: int | float,
-    terminate: Callable[[subprocess.Popen[bytes]], None],
+    stop: Callable[[subprocess.Popen[bytes]], None],
+    kill: Callable[[subprocess.Popen[bytes]], None],
 ) -> tuple[bytes, bytes]:
-    """Run communicate(), cleaning up shell descendants on timeout/interruption."""
+    """Run communicate(), cleaning up shell descendants on timeout/interruption.
+
+    A timeout stops the step politely (``stop``), gives it
+    ``TIMEOUT_GRACE_SECONDS`` to exit, then ``kill``s whatever is left. An
+    interruption (Ctrl-C/SystemExit) kills at once: pflow itself is exiting.
+    """
     try:
         return proc.communicate(input=stdin_bytes, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        terminate(proc)
+        stop(proc)
         try:
-            stdout, stderr = proc.communicate(timeout=1)
+            stdout, stderr = proc.communicate(timeout=TIMEOUT_GRACE_SECONDS)
         except (OSError, subprocess.TimeoutExpired):
-            stdout = exc.output or b""
-            stderr = exc.stderr or b""
+            kill(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=1)
+            except (OSError, subprocess.TimeoutExpired):
+                stdout = exc.output or b""
+                stderr = exc.stderr or b""
+        else:
+            kill(proc)  # whatever outlived the shell in its group
         raise subprocess.TimeoutExpired(
             command, timeout, output=stdout or exc.output, stderr=stderr or exc.stderr
         ) from exc
     except (KeyboardInterrupt, SystemExit):
-        terminate(proc)
+        kill(proc)
         with suppress(OSError, subprocess.TimeoutExpired):
             proc.communicate(timeout=1)
         raise
@@ -197,9 +213,21 @@ def _run_windows_bash_command(
         argv,
         stdin_bytes=stdin_bytes,
         timeout=timeout,
-        terminate=terminate_process_tree,
+        stop=terminate_process_tree,
+        kill=terminate_process_tree,
     )
     return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+
+
+def _signal_process_group(proc: subprocess.Popen[bytes], *, force: bool) -> None:
+    """Send SIGTERM (or SIGKILL when ``force``) to the shell's whole process group.
+
+    ``start_new_session`` made the shell its group's leader, so the group id is
+    its pid — still the right target after the shell itself has exited.
+    """
+    if sys.platform != "win32":
+        with suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL if force else signal.SIGTERM)
 
 
 def _run_posix_shell_command(
@@ -210,19 +238,7 @@ def _run_posix_shell_command(
     env: dict[str, str] | None,
     timeout: int | float,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run a POSIX shell command with timeout semantics that kill child processes."""
-
-    def terminate_process_group(proc: "subprocess.Popen[bytes]") -> None:
-        killpg = getattr(os, "killpg", None)
-        getpgid = getattr(os, "getpgid", None)
-        if killpg is not None and getpgid is not None:
-            with suppress(OSError):
-                # Shell-node timeout is already expired, so cleanup is forceful
-                # to prevent pipe-inheriting grandchildren from blocking drain.
-                killpg(getpgid(proc.pid), getattr(signal, "SIGKILL", signal.SIGTERM))
-        with suppress(OSError):
-            proc.kill()
-
+    """Run a POSIX shell command; a timeout stops its whole process group."""
     proc = subprocess.Popen(
         command,
         shell=True,
@@ -232,7 +248,7 @@ def _run_posix_shell_command(
         cwd=cwd,
         env=env,
         # Give the shell its own process group so timeout and Ctrl-C/SystemExit
-        # cleanup can kill grandchildren that inherited stdout/stderr pipes.
+        # cleanup reach grandchildren that inherited stdout/stderr pipes.
         start_new_session=True,
     )
     stdout, stderr = _communicate_with_cleanup(
@@ -240,7 +256,8 @@ def _run_posix_shell_command(
         command,
         stdin_bytes=stdin_bytes,
         timeout=timeout,
-        terminate=terminate_process_group,
+        stop=lambda proc: _signal_process_group(proc, force=False),
+        kill=lambda proc: _signal_process_group(proc, force=True),
     )
     return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
 
@@ -404,12 +421,13 @@ class ShellNode(Node):
     - Writes: shared["stdout_is_binary"]: bool  # True if stdout is binary data
     - Writes: shared["stderr"]: str  # Command error output (text or base64-encoded binary)
     - Writes: shared["stderr_is_binary"]: bool  # True if stderr is binary data
-    - Writes: shared["exit_code"]: int  # Process exit code
+    - Writes: shared["exit_code"]: int  # Process exit code (-1 on timeout)
+    - Writes: shared["timeout"]: bool  # True if the command was stopped for exceeding its timeout
     - Params: command: str  # Shell command to execute; plain sh that reads env: values as "$NAME" (required)
     - Params: cwd: str  # Working directory (optional, defaults to current)
     - Params: env: dict  # Values bound as environment variables for the command (each binds as text; optional)
-    - Params: timeout: int  # Max execution time in seconds (optional, default 30)
-    - Params: ignore_errors: bool  # Continue on non-zero exit (optional, default false)
+    - Params: timeout: int  # Max execution time in seconds; then SIGTERM, 5 s grace, SIGKILL (optional, default 30)
+    - Params: ignore_errors: bool  # Continue on non-zero exit or timeout (optional, default false)
     - Params: strip_newline: bool  # Strip trailing newlines from stdout only (optional, default true). stderr is never stripped.
     - Actions: default (exit code 0 or ignore_errors=true or auto-handled), error (non-zero exit or timeout)
 
@@ -970,21 +988,27 @@ class ShellNode(Node):
 
         # Store exit code
         shared["exit_code"] = exec_res["exit_code"]
+        timed_out = exec_res.get("timeout", False)
+        shared["timeout"] = timed_out
 
         # Store command for error reporting
         shared["command"] = prep_res["command"]
 
+        ignore_errors = prep_res["ignore_errors"]
+        exit_code = exec_res["exit_code"]
+
+        if timed_out:
+            # Never normalized or pattern-matched: exit_code stays -1. Continuing
+            # writes no ``error``, exactly like an ignored non-zero exit.
+            if ignore_errors:
+                logger.info("Command timed out but continuing (ignore_errors=true)", extra={"phase": "post"})
+                return "default"
+            shared["error"] = exec_res["error"]
+            return "error"
+
         # Store error message if present
         if "error" in exec_res:
             shared["error"] = exec_res["error"]
-
-        # Determine action based on exit code and configuration
-        ignore_errors = prep_res["ignore_errors"]
-        exit_code = exec_res["exit_code"]
-        timeout = exec_res.get("timeout", False)
-
-        if timeout:
-            return "error"
 
         if exit_code == 0:
             logger.info("Command succeeded", extra={"phase": "post"})
