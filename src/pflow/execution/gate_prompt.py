@@ -44,10 +44,6 @@ from pflow.core.output_controller import OutputController
 
 GateResolver = Callable[..., GateResolution]
 
-# Display-only truncation for preview values; the trace event carries the full
-# payload (interning handles size — trace_io.intern_event_leaves).
-_PREVIEW_VALUE_CHARS = 200
-
 
 def can_prompt(output_controller: OutputController | None) -> bool:
     """True when a gate prompt can render (stderr) and be answered (stdin).
@@ -152,7 +148,7 @@ def _prompt_approval(request: GateRequest) -> GateResolution:
     click.echo(
         f"\n⏸  Approval required: {request.node_id} ({request.node_type}){_iteration_suffix(request)}\n", err=True
     )
-    for line in _format_preview(request.preview):
+    for line in _format_preview(request.preview, request.node_type):
         click.echo(f"   {line}", err=True)
     if request.preview:
         click.echo("", err=True)
@@ -257,7 +253,7 @@ def format_gate_lines(gate_request: dict[str, Any]) -> list[str]:
     position = loop_position(gate_request.get("iteration"), gate_request.get("max_iterations"))
     lines: list[str] = [f"Loop {position}"] if position else []
     if gate_request.get("kind") == GATE_KIND_APPROVAL:
-        return [*lines, *_format_preview(gate_request.get("preview") or {})]
+        return [*lines, *_format_preview(gate_request.get("preview") or {}, gate_request.get("node_type"))]
     question = gate_request.get("question")
     if question:
         lines.append(str(question))
@@ -267,24 +263,20 @@ def format_gate_lines(gate_request: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _format_preview(preview: dict[str, Any]) -> list[str]:
-    """Aligned ``key: value`` lines, secret-masked and display-truncated.
+def _format_preview(preview: dict[str, Any], node_type: str | None) -> list[str]:
+    """Aligned ``key: value`` lines, secret-masked and never truncated.
 
     Values are flattened to one line each (newlines escaped) so the block stays
-    scannable; the full unmasked payload lives in the gate trace event. Masking
-    is the shared ``masked_preview`` (recursive, mask-only); truncation happens
-    ONLY here, at the 200-char display budget — never inside the masking step,
-    so a long non-secret nested value stays reviewable.
+    scannable. Values come from the shared display policy ``masked_preview``
+    (secrets masked, a shell step's ``env:`` as bound text, nothing truncated).
     """
     if not preview:
         return ["(no parameters)"]
     width = max(len(key) for key in preview)
     lines = []
-    for key, value in masked_preview(preview).items():
+    for key, value in masked_preview(preview, node_type).items():
         text = value if isinstance(value, str) else _compact_json(value)
         text = text.replace("\n", "\\n")
-        if len(text) > _PREVIEW_VALUE_CHARS:
-            text = f"{text[:_PREVIEW_VALUE_CHARS]}… ({len(text)} chars)"
         lines.append(f"{key}:{' ' * (width - len(key) + 2)}{text}")
     return lines
 

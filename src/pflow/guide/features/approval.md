@@ -26,7 +26,7 @@ Post the release summary to Slack.
 - approval: required
 ```
 
-At a terminal the run pauses before the step and shows the resolved values (the actual message text, not `${...}`), then asks `Run this step? [y/N]`. Deny → the run stops **cleanly before the step runs**: exit code **3** (not 1 — nothing failed), trace trailer `final_status: "denied"`.
+At a terminal the run pauses before the step and shows the resolved values (the actual message text, not `${...}`) in full — a shell step's `env:` values as the text the command receives (`true` as `True`, null as empty) — then asks `Run this step? [y/N]`. Deny → the run stops **cleanly before the step runs**: exit code **3** (not 1 — nothing failed), trace trailer `final_status: "denied"`.
 
 Rules:
 

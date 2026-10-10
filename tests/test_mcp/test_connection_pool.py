@@ -82,8 +82,8 @@ class TestPoolLifecycle:
         assert pool._sessions == {}
         assert pool._stacks == {}
 
-    @patch("pflow.mcp.pool.stdio_client")
-    @patch("pflow.mcp.pool.ClientSession")
+    @patch("mcp.client.stdio.stdio_client")
+    @patch("mcp.ClientSession")
     def test_pool_shutdown_closes_all_sessions(self, mock_session_cls, mock_stdio):
         """shutdown() closes all exit stacks and stops the background thread.
 
@@ -140,8 +140,8 @@ class TestPoolLifecycle:
 class TestPoolSessionManagement:
     """Test session creation, reuse, and eviction."""
 
-    @patch("pflow.mcp.pool.stdio_client")
-    @patch("pflow.mcp.pool.ClientSession")
+    @patch("mcp.client.stdio.stdio_client")
+    @patch("mcp.ClientSession")
     def test_pool_session_reuse_same_server(self, mock_session_cls, mock_stdio):
         """Two calls to the same server should reuse the same session.
 
@@ -166,8 +166,8 @@ class TestPoolSessionManagement:
         finally:
             pool.shutdown()
 
-    @patch("pflow.mcp.pool.stdio_client")
-    @patch("pflow.mcp.pool.ClientSession")
+    @patch("mcp.client.stdio.stdio_client")
+    @patch("mcp.ClientSession")
     def test_pool_separate_sessions_different_servers(self, mock_session_cls, mock_stdio):
         """Two different servers should get separate sessions.
 
@@ -201,8 +201,8 @@ class TestPoolSessionManagement:
 class TestPoolErrorHandling:
     """Test error handling, crash recovery, and timeout behavior."""
 
-    @patch("pflow.mcp.pool.stdio_client")
-    @patch("pflow.mcp.pool.ClientSession")
+    @patch("mcp.client.stdio.stdio_client")
+    @patch("mcp.ClientSession")
     def test_pool_shutdown_on_failure(self, mock_session_cls, mock_stdio):
         """Cleanup must happen even after a tool error.
 
@@ -226,8 +226,8 @@ class TestPoolErrorHandling:
         assert pool._loop is None
         assert pool._sessions == {}
 
-    @patch("pflow.mcp.pool.stdio_client")
-    @patch("pflow.mcp.pool.ClientSession")
+    @patch("mcp.client.stdio.stdio_client")
+    @patch("mcp.ClientSession")
     def test_pool_crash_recovery_reconnects_on_transport_error(self, mock_session_cls, mock_stdio):
         """Transport error (BrokenPipeError) should evict the dead session and retry.
 
@@ -261,8 +261,8 @@ class TestPoolErrorHandling:
         finally:
             pool.shutdown()
 
-    @patch("pflow.mcp.pool.stdio_client")
-    @patch("pflow.mcp.pool.ClientSession")
+    @patch("mcp.client.stdio.stdio_client")
+    @patch("mcp.ClientSession")
     def test_pool_timeout_does_not_kill_session(self, mock_session_cls, mock_stdio):
         """A timeout must NOT evict the session — the server is alive, just slow.
 
@@ -302,8 +302,8 @@ class TestPoolErrorHandling:
         finally:
             pool.shutdown()
 
-    @patch("pflow.mcp.pool.stdio_client")
-    @patch("pflow.mcp.pool.ClientSession")
+    @patch("mcp.client.stdio.stdio_client")
+    @patch("mcp.ClientSession")
     def test_pool_no_retry_on_non_transport_error(self, mock_session_cls, mock_stdio):
         """Non-transport errors (e.g., ValueError) should propagate without retry.
 
@@ -330,7 +330,7 @@ class TestPoolErrorHandling:
 class TestPoolHTTPTransport:
     """Test HTTP transport path."""
 
-    @patch("pflow.mcp.pool.ClientSession")
+    @patch("mcp.ClientSession")
     def test_pool_http_transport_uses_streamablehttp_client(self, mock_session_cls):
         """HTTP config should route to streamablehttp_client, not stdio_client.
 

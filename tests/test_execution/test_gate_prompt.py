@@ -16,7 +16,7 @@ import click
 import pytest
 
 from pflow.core.exceptions import GateNotInteractiveError
-from pflow.core.gate import GateRequest, GateResolution
+from pflow.core.gate import GateRequest, GateResolution, build_approval_request
 from pflow.execution.gate_prompt import build_gate_resolver, can_prompt
 
 
@@ -220,16 +220,48 @@ class TestPreviewRendering:
         build_gate_resolver(frozenset(), _FakeOC())(request)
         return capsys.readouterr().err
 
-    def test_secret_values_masked_long_values_truncated_newlines_escaped(self, monkeypatch, capsys):
+    def test_secret_values_masked_long_values_shown_in_full_newlines_escaped(self, monkeypatch, capsys):
+        # #746: the approver consents to the whole value — a long one is never cut.
+        long_note = "x" * 490 + "END_MARKER"
         rendered = self._rendered(
-            _approval(api_key="sk-super-secret", body="line1\nline2", note="x" * 500),
+            _approval(api_key="sk-super-secret", body="line1\nline2", note=long_note),
             monkeypatch,
             capsys,
         )
         assert "sk-super-secret" not in rendered
         assert "line1\\nline2" in rendered
-        assert "… (500 chars)" in rendered
+        assert long_note in rendered
+        assert "chars)" not in rendered
         assert "Approval required: notify (ShellNode)" in rendered
+
+    def test_shell_env_shows_the_bound_text_in_full(self, monkeypatch, capsys):
+        # #746: `env:` values render as the text the command receives (`true` binds as `True`,
+        # null as empty), and a long value never hides the variables after it.
+        long_value = "a" * 290 + "END_MARKER"
+        request = build_approval_request(
+            "deploy",
+            "ShellNode",
+            {
+                "command": "deploy.sh",
+                "env": {
+                    "FLAG": True,
+                    "NOTHING": None,
+                    "LONG": long_value,
+                    "AFTER": "tail",
+                    "CONFIG": {"api_key": "sk-nested-secret", "region": "eu"},
+                },
+            },
+        )
+        rendered = self._rendered(request, monkeypatch, capsys)
+        # An object value is masked before it becomes text — its nested secret never shows.
+        assert "sk-nested-secret" not in rendered
+        assert '\\"api_key\\": \\"<REDACTED>\\", \\"region\\": \\"eu\\"' in rendered
+        assert '"FLAG": "True"' in rendered
+        assert '"FLAG": true' not in rendered
+        assert '"NOTHING": ""' in rendered
+        assert "null" not in rendered
+        assert f'"LONG": "{long_value}"' in rendered
+        assert '"AFTER": "tail"' in rendered
 
     def test_non_string_values_render_as_compact_json(self, monkeypatch, capsys):
         rendered = self._rendered(_approval(payload={"a": 1, "b": [True, None]}), monkeypatch, capsys)
@@ -248,18 +280,17 @@ class TestPreviewRendering:
         assert "<REDACTED>" in rendered
         assert "application/json" in rendered  # non-secret nested value survives
 
-    def test_long_nonsecret_nested_value_survives_to_display_budget(self, monkeypatch, capsys):
+    def test_long_nonsecret_nested_value_survives_masking(self, monkeypatch, capsys):
         # PR #554 review warning: routing preview values through
         # sanitize_parameters cut long NON-secret nested strings to ~20 chars —
-        # blinding the approver. Masking must not truncate; only the renderer's
-        # 200-char display budget applies.
-        body = "b" * 150
+        # blinding the approver. Masking must not truncate.
+        body = "b" * 400
         rendered = self._rendered(
             _approval(json={"body": body, "token": "sk-super-secret"}),
             monkeypatch,
             capsys,
         )
-        assert body in rendered  # full 150-char value visible (under the 200 budget)
+        assert body in rendered  # the full nested value is visible
         assert "<truncated>" not in rendered
         assert "sk-super-secret" not in rendered  # nested secret still redacted
 
