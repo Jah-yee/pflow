@@ -654,7 +654,7 @@ def _display_paused_result(result: Any, output_format: str) -> None:
     pause carries no error, but what happened on the way to it still matters.
     """
     from pflow.execution.formatters.success_formatter import partition_surfaced_diagnostics
-    from pflow.execution.gate_prompt import format_gate_lines, format_resume_answer_command
+    from pflow.execution.gate_prompt import format_bulk_approve_hint, format_gate_lines, format_resume_answer_command
 
     surfaced = [d for d in result.diagnostics if d.severity in {Severity.WARNING, Severity.INFO}]
 
@@ -704,6 +704,9 @@ def _display_paused_result(result: Any, output_format: str) -> None:
                 click.echo(format_diagnostic(diagnostic), err=True)
             click.echo("", err=True)
     click.echo(f"To answer: {resume_command}", err=True)
+    bulk_hint = format_bulk_approve_hint(execution_id, gate_request)
+    if bulk_hint:
+        click.echo(bulk_hint, err=True)
 
 
 def _echo_diagnostic_group(diagnostics: list[Any], *, blank_line: bool) -> None:

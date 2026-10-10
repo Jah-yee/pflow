@@ -38,6 +38,8 @@ from pflow.core.gate import (
     build_escalation_request,
 )
 
+from .loop_control import declared_loop_cap
+
 logger = logging.getLogger(__name__)
 
 GATE_RESOLVER_KEY = "__gate_resolver__"
@@ -86,7 +88,11 @@ def run_approval_gate(config: Any, params: Any, shared: dict[str, Any], trace: A
     denied node never appears in the trace and no progress line is open.
     """
     request = build_approval_request(
-        config.node_id, config.node_type_name, params, iteration=shared.get("__iteration__")
+        config.node_id,
+        config.node_type_name,
+        params,
+        iteration=shared.get("__iteration__"),
+        max_iterations=declared_loop_cap(config, shared),
     )
     _record_gate(trace, request, phase="pause")
     try:
@@ -160,7 +166,11 @@ def run_escalation_gate(config: Any, marker: dict[str, Any] | str, shared: dict[
     the re-forked agent. There is no deny: the resolver returns a choice.
     """
     request = build_escalation_request(
-        config.node_id, config.node_type_name, marker, iteration=shared.get("__iteration__")
+        config.node_id,
+        config.node_type_name,
+        marker,
+        iteration=shared.get("__iteration__"),
+        max_iterations=declared_loop_cap(config, shared),
     )
     _record_gate(trace, request, phase="pause")
     try:
