@@ -197,7 +197,9 @@ summarizing the session's events, which this must not do.
   is yours, not a threshold's. Name the file that grew most since the last close. A total that
   climbs two closes running is a finding for step 4, not a shrug. The same command lints the
   newest session log for bare SHAs, and THAT can fail.
-- Session close does not authorize a commit. Report the exact uncommitted files; any commit or
-  push follows DECISIONS #5. The ritual itself may run unattended at the end of a granted run;
-  only the commit waits for the user's word (#5).
+- **Commit and push the orchestration state set** — the ritual's own authority (DECISIONS #5,
+  exception 2): `git fetch && git merge --ff-only origin/main`, then `git commit` with the pathspec
+  `.taskmaster/orchestration/` (never `-A`; read `git diff --cached --name-only` first), then push.
+  Every OTHER uncommitted path is reported exactly in the closing message; its commit follows #5.
+  The ritual, this commit included, may run unattended at the end of a granted run.
 - Tell the user the session is closed and what the successor will pick up first.

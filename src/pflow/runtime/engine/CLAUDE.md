@@ -48,9 +48,10 @@ Cache hits return before approval. On a cache miss, approval precedes the start
 callback and `node.start` trace marker, so denied nodes never appear as started.
 
 Gate exceptions bypass ordinary failure archival. A sub-workflow host must still
-close the correlation frame reserved at descent — only for a gate from its child
-(`not originating`): a gate at the host's own level fired before this visit
-reserved a frame, or after step 16 consumed it (#659). Resolver bugs are errors,
+close the frame it began with (its `node.start` and reserved seq) — batched hosts
+included, whose completed items' batch trace is drained there — but only for a gate
+from its child (`not originating`): a gate at the host's own level fired before this
+visit reserved a frame, or after step 16 consumed it (#659). Resolver bugs are errors,
 not pauses. The escalation gate runs after trace/completion and before loop re-entry.
 
 Pause eligibility is deliberately narrow; `_execute_node` and `_gate_pausable`
@@ -76,6 +77,10 @@ into context before other params; static inputs also enter context. Shared
 storage is the runtime source of values. Batch nodes skip top-level template
 resolution so `${item}` resolves only in each item's context. Preserve source-line
 metadata through `split_params`; only cache hashing filters those keys.
+A dict/list param's string leaves are JSON-parsed unless `parses_leaves` says no
+(`shell.env` binds as text), keyed on `TemplateConfig.node_type`. A code body
+(`param_mode` → `"body"`) is static whatever it holds: `split_params` decides it
+before `has_templates`, so callers must pass `node_type`.
 
 Whether a param resolved is read from its `Resolution` channels, never by comparing
 resolved text with the template. `inputs` resolves per key, so Optional-input `None`
@@ -98,7 +103,7 @@ under `--only` runs one iteration.
 
 `execute_batch` aggregates partial output **before** fail-fast raises. It leaves
 item traces in `shared["_batch_trace"][node_id]`; the engine drains them on the
-winning success or exception path. Draining inside the batch function loses
+winning success, exception, or child-gate path. Draining inside the batch function loses
 completed items when a later operation raises.
 
 Direct batch hosts have no per-item escalation gate. Keep

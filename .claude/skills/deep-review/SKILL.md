@@ -47,6 +47,7 @@ a missed one costs a lane. Gauge the scope with the chosen scope's `--stat` diff
 | changes a **shared helper, pattern, or contract with more than one consumer** (a formatter, a reserved key, a store key, a diagnostic field, a settings reader) | `impact-completeness` |
 | **deletes or consolidates** (a ratchet, a migration, folding N sites into one) | `simplicity` (any size, lanes included — emergent duplication hides in ratchets) + `spec-conformance` when a task's spec and plan exist to compare against; both code mode only |
 | touches an **error or exception path**, a guard, a fallback, an empty-result branch | `silent-failures` |
+| is a **task completion gate** (a multi-phase implementation with a spec and plan to compare against) | `simplicity` + `spec-conformance` — both code mode only; emergent duplication across separately-built phases and spec drift are invisible until every phase exists, and final-code simplicity is the governing lens, so neither waits for a consolidation trigger |
 | touches **subprocess, threads, executors, asyncio, copy semantics, shared mutable state** | `concurrency-safety` |
 | is a **bug fix** of any size | `test-fidelity` (a regression test on the exact buggy path — this floor is never waived, a one-line fix included) + `falsifier` (code mode only) |
 | crosses **batch, nested workflows, branching, caching, MCP, approval gates, or output routing** | `feature-interactions` |
@@ -81,8 +82,9 @@ The main orchestrator commissions it as part of spec freshness (ORCHESTRATION "R
 `<path>` against today's code — classify every claim STILL TRUE / STALE / UNVERIFIABLE, and judge
 whether a planner building from it would build the wrong thing."* Lenses: `review-architecture-fit`
 always (and `review-plan` when the spec already carries phase structure), plus `feature-interactions`, `silent-failures`, `impact-completeness`, and `agent-ux` when
-the spec changes a user-facing surface; direct launches (plan/spec lenses never go through the
-fan-out). Findings land in ONE ledger file (`scratchpads/<session>/<task>-spec-battery.md`) with a
+the spec changes a user-facing surface; dispatch through the fan-out on codex like every other
+reading battery (cross-model is the point for a spec too) — `agent-ux` launches directly only when
+it must EXECUTE the BEFORE on the real surface. Findings land in ONE ledger file (`scratchpads/<session>/<task>-spec-battery.md`) with a
 disposition per finding — **A** fold the accuracy correction into the spec now · **B** record a
 design gap as a "RESOLVE AT START" constraint (constraint stated, mechanism left to the planner) ·
 **C** a genuine decision goes to the user · **D** disputed, with the counter-citation — then one
@@ -149,8 +151,10 @@ start, and why, (b) which lenses ran, and (c) that they share the builder's mode
 coverage is the FLOOR, not diversity; the main orchestrator commissions one cross-model lens for a
 sensitive-path diff (the sensitive-path trigger above). Never fall back to reviewing your own diff. A Codex seat
 whose sandbox cannot start pflow runs the native `.codex/agents/review-*.toml` lenses under the
-same disclosure. **Plan-mode reviews always launch directly too** — the fan-out's
-contract is code review; the fan-out default applies to code mode only.
+same disclosure. **Plan mode dispatches through the fan-out too** — the lenses are reading lenses whatever the target, so
+`review_target` names the plan file, the spec and the phases under review ("PLAN-MODE review, not a code
+diff: …"); cross-model diversity matters as much for a plan as for a diff. Direct launch is the same fallback
+it is in code mode, under the same disclosure.
 
 **`review-falsifier` always launches directly** (Agent tool), never through the fan-out — it
 EXECUTES the change (real workflow runs, targeted pytest) and needs the access the read-only

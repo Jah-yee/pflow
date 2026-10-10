@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from pflow.core.ir_schema import start_node_id
 from pflow.core.workflow.graph.model import (
     AncestorStep,
     BatchSpec,
@@ -24,6 +25,7 @@ from pflow.core.workflow.graph.model import (
 )
 from pflow.core.workflow.graph.scope import refs_in, refs_with_path_in
 from pflow.core.workflow.sub_workflow_resolver import SubWorkflowResult
+from pflow.core.workflow.template_surfaces import template_params
 from pflow.core.workflow_id import synthesize_inline_workflow_id
 
 logger = logging.getLogger(__name__)
@@ -583,7 +585,7 @@ class _GraphBuilder:
             return
         target_inputs = level.incoming.get(node_id, {})
         alias = _batch_alias(raw_node) if isinstance(raw_node.get("batch"), dict) else "item"
-        for param_name, ref_value, shallow in _params_strings(raw_node.get("params", {})):
+        for param_name, ref_value, shallow in _params_strings(template_params(raw_node)):
             # Only a binding-level (shallow) name may target a child-input port —
             # a depth-2 dict ref must never claim a child input that happens to
             # share its key's name; `{}` forces the host-level fallback.
@@ -921,8 +923,5 @@ def _warnings_annotation(child_result: SubWorkflowResult) -> dict[str, Any]:
 
 
 def _start_node_annotation(ir: dict[str, Any]) -> dict[str, Any]:
-    start_node = ir.get("start_node")
-    if not isinstance(start_node, str):
-        nodes = ir.get("nodes", [])
-        start_node = str(nodes[0]["id"]) if nodes else None
+    start_node = start_node_id(ir)
     return {"start_node": start_node} if start_node else {}

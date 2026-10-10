@@ -321,8 +321,8 @@ there, in one home. Nothing closes hot. Mid-session discipline per ORCHESTRATION
 gets one-line entries at real transitions as they land; `CURRENT-STATE.md` is rewritten at
 close/park, never patched incrementally; STANDING-KNOWLEDGE and RECURRENCE are touched only at
 close — the close audits, it doesn't backfill. **An unattended run ends by closing**: when the
-granted work is done and the user is away, run the ritual — everything but the commit, which
-still waits for the user's word (DECISIONS #5) — rather than stopping at a summary; a message
+granted work is done and the user is away, run the ritual — its state commit included; producer-
+facing edits still wait for the user's word (DECISIONS #5) — rather than stopping at a summary; a message
 whose only content is "now close" re-sends this whole context uncached.
 
 ## Posture

@@ -170,6 +170,16 @@ refuses naming the place — and a gate whose resume would seed one stays `faile
 - ADR-0002 (`--only` reuses the trace, not the memo cache; the reserved dedicated-store escape hatch
   this ADR declines). ADR-0009 (approval surfaces / the `pflow resume` verb). ADR-0001 (loop engine
   re-entry — the walk-loop re-entry precedent).
+**Amended 2026-10-08 (Task 180): resume checks each restored step, not the whole workflow.** The trace's
+`meta` line carries `step_identity` (format 2.9.0, `core/workflow_id.step_identity`): per top-level step, a hash of
+its definition minus prose (plus the `## Cache` chunks it renders) and its recorded outgoing edges, plus the start
+step. Resume refuses only when a step it would restore changed, vanished or now routes elsewhere, the start step
+changed, or a paused-approval step was edited after the human approved it; everything at or after the re-entry
+point may change. The engine's per-visit memo `config_hash` was NOT reused — it varies per loop iteration and
+omits `loop`, `retry`, `approval` and edges; per-EVENT hashes were rejected because the identity question is about
+the workflow's static shape, not a visit. Traces without `step_identity` keep the whole-workflow compare. `--force`
+stays the single waiver for both the stale refusal and the side-effect confirmation (user ruling 2026-10-07).
+
 - Tasks: 164 (this — the checkpoint→restore→continue substrate), 125 (gate primitive built on the
   same conceptual substrate), 171 (durable pause/token — second consumer of resume, `paused` as the
   second terminal status alongside `failed`).
