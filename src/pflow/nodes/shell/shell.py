@@ -141,30 +141,31 @@ def _communicate_with_cleanup(
     *,
     stdin_bytes: bytes | None,
     timeout: int | float,
-    stop: Callable[[subprocess.Popen[bytes]], None],
+    stop: Callable[[subprocess.Popen[bytes]], None] | None,
     kill: Callable[[subprocess.Popen[bytes]], None],
 ) -> tuple[bytes, bytes]:
     """Run communicate(), cleaning up shell descendants on timeout/interruption.
 
     A timeout stops the step politely (``stop``), gives it
-    ``TIMEOUT_GRACE_SECONDS`` to exit, then ``kill``s whatever is left. An
-    interruption (Ctrl-C/SystemExit) kills at once: pflow itself is exiting.
+    ``TIMEOUT_GRACE_SECONDS`` to exit, then ``kill``s whatever is left; with no
+    ``stop`` (Windows) it kills at once. An interruption (Ctrl-C/SystemExit)
+    always kills at once: pflow itself is exiting.
     """
     try:
         return proc.communicate(input=stdin_bytes, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        stop(proc)
-        try:
-            stdout, stderr = proc.communicate(timeout=TIMEOUT_GRACE_SECONDS)
-        except (OSError, subprocess.TimeoutExpired):
-            kill(proc)
+        output: tuple[bytes, bytes] | None = None
+        if stop is not None:
+            stop(proc)
+            with suppress(OSError, subprocess.TimeoutExpired):
+                output = proc.communicate(timeout=TIMEOUT_GRACE_SECONDS)
+        kill(proc)  # after a clean stop, sweeps whatever outlived the shell
+        if output is None:
             try:
-                stdout, stderr = proc.communicate(timeout=1)
+                output = proc.communicate(timeout=1)
             except (OSError, subprocess.TimeoutExpired):
-                stdout = exc.output or b""
-                stderr = exc.stderr or b""
-        else:
-            kill(proc)  # whatever outlived the shell in its group
+                output = (exc.output or b"", exc.stderr or b"")
+        stdout, stderr = output
         raise subprocess.TimeoutExpired(
             command, timeout, output=stdout or exc.output, stderr=stderr or exc.stderr
         ) from exc
@@ -188,8 +189,9 @@ def _run_windows_bash_command(
 
     On Windows, ``subprocess.run(timeout=...)`` kills only the bash process.
     Children such as ``sleep`` can keep inherited pipe handles open, causing
-    communicate() to wait until the child exits. Killing the process tree keeps
-    shell-node timeout behavior consistent with POSIX.
+    communicate() to wait until the child exits, so a timeout kills the whole
+    tree — at once: Windows has no polite stop that reaches Git Bash's process
+    group (ADR-0013 scopes the stop signal as platform-native).
     """
     argv = [bash_path, "-c", _translate_windows_paths_for_bash(command)]
     creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -213,7 +215,7 @@ def _run_windows_bash_command(
         argv,
         stdin_bytes=stdin_bytes,
         timeout=timeout,
-        stop=terminate_process_tree,
+        stop=None,
         kill=terminate_process_tree,
     )
     return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
@@ -426,7 +428,7 @@ class ShellNode(Node):
     - Params: command: str  # Shell command to execute; plain sh that reads env: values as "$NAME" (required)
     - Params: cwd: str  # Working directory (optional, defaults to current)
     - Params: env: dict  # Values bound as environment variables for the command (each binds as text; optional)
-    - Params: timeout: int  # Max execution time in seconds; then SIGTERM, 5 s grace, SIGKILL (optional, default 30)
+    - Params: timeout: int  # Max execution time in seconds; then SIGTERM, SIGKILL 5 s later (Windows: killed at once) (optional, default 30)
     - Params: ignore_errors: bool  # Continue on non-zero exit or timeout (optional, default false)
     - Params: strip_newline: bool  # Strip trailing newlines from stdout only (optional, default true). stderr is never stripped.
     - Actions: default (exit code 0 or ignore_errors=true or auto-handled), error (non-zero exit or timeout)

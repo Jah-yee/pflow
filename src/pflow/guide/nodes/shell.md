@@ -57,6 +57,8 @@ A `${…}` in the command that names a pflow value this step could read — a wo
 
 **`inputs:` on a shell step** is the namespace `env:`, `stdin` and `cwd` read from, and where a loop `carry:` lands — the command never sees it. Bind each key you need in `env:` (`env: {STATE: ${state}}`, then `"$STATE"`); an `inputs:` key no other param reads gets a warning.
 
+**A step past its `timeout`** gets `SIGTERM`, then `SIGKILL` 5 seconds later; a `trap '…' TERM` in the command runs, and what it prints stays in `stdout` — print a partial result there. Keep the long-running command off the command's last line (macOS's `/bin/sh` replaces itself with a final single command, dropping the trap). On Windows the step is killed at once. The step exits with `exit_code` -1 and `timeout` true and routes to `error`; with `ignore_errors: true` it continues instead, its partial output flowing on.
+
 **The dangerous-command check** reads the command text only. It cannot see what a variable will hold — guard destructive commands yourself (`[ -n "$DIR" ] || exit 1`).
 
 ### Testing Shell Pipelines
