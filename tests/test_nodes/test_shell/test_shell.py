@@ -229,6 +229,7 @@ class TestShellNodeErrorHandling:
 
         assert elapsed < 0.3  # Should timeout quickly
         assert shared["exit_code"] == -1  # Timeout convention
+        assert shared["timeout"] is True
         assert action == "error"
         assert "timed out" in shared.get("error", "").lower()
 
@@ -237,6 +238,31 @@ class TestShellNodeErrorHandling:
         action = run_shell_node(shared, command="echo quick", timeout=1)
         assert action == "default"
         assert shared["exit_code"] == 0
+        assert shared["timeout"] is False
+
+    def test_ignore_errors_continues_past_a_timeout(self):
+        """A timeout is ignored like a non-zero exit: partial output flows on."""
+        shared = {}
+
+        action = run_shell_node(shared, command="echo early; sleep 10", timeout=0.3, ignore_errors=True)
+
+        assert action == "default"
+        assert shared["stdout"] == "early"
+        assert shared["exit_code"] == -1
+        assert shared["timeout"] is True
+        # Like an ignored non-zero exit, a continued step carries no error message.
+        assert "error" not in shared
+
+    def test_timeout_exit_code_is_never_normalized(self):
+        """The ignore_errors exit-code normalization (here: `command -v`) never rewrites -1."""
+        shared = {}
+
+        action = run_shell_node(
+            shared, command="sleep 10; command -v pflow_no_such_tool", timeout=0.3, ignore_errors=True
+        )
+
+        assert action == "default"
+        assert shared["exit_code"] == -1
 
     def test_ignore_errors_allows_continuation_on_failure(self):
         """Test that ignore_errors parameter allows continuing on failures."""
