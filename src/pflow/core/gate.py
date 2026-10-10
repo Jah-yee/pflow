@@ -20,7 +20,9 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+from pflow.core.node_type_display import node_type_tag
 from pflow.core.security_utils import is_sensitive_parameter
+from pflow.core.templates import to_string
 
 GATE_KIND_APPROVAL: Literal["action_approval"] = "action_approval"
 GATE_KIND_ESCALATION: Literal["decision_escalation"] = "decision_escalation"
@@ -164,16 +166,21 @@ def loop_position(iteration: object, max_iterations: object) -> str | None:
     return f"iteration {iteration}"
 
 
-def masked_preview(preview: dict[str, Any]) -> dict[str, Any]:
-    """Preview with secret-NAMED values redacted (recursively) — never truncated.
+def masked_preview(preview: dict[str, Any], node_type: str | None) -> dict[str, Any]:
+    """The preview as every gate render surface shows it: what the step will receive.
 
-    THE masking policy for every gate render surface (TTY prompt, error
-    diagnostics); the trace's gate event stays unmasked, consistent with the
-    trace's ``template_resolutions``. Masking only — length truncation belongs
-    to each renderer (the TTY prompt's 200-char step): routing values through
-    ``sanitize_parameters`` here cut long non-secret nested values (an http
-    ``json:`` body, a sub-workflow ``inputs:`` field) to ~20 chars, blinding
-    the approver to what they were approving (PR #554 review warning).
+    THE display policy (TTY prompt, pause output, error diagnostics, web panel);
+    the trace's gate event keeps the raw resolved params, consistent with the
+    trace's ``template_resolutions``.
+
+    - Secret-NAMED values are redacted, recursively.
+    - A shell step's ``env:`` values show as the text the command receives
+      (``to_string``, ADR-0016 — ``true`` as ``True``, null as empty). Masked
+      first, so a secret nested in an object value stays redacted in its text.
+    - Nothing is truncated on any surface: the approver consents to the whole
+      value (#746). Routing values through ``sanitize_parameters`` here once cut
+      long non-secret nested values (an http ``json:`` body, a sub-workflow
+      ``inputs:`` field) to ~20 chars, blinding the approver (PR #554).
     """
 
     def mask(key: str | None, value: Any) -> Any:
@@ -185,18 +192,20 @@ def masked_preview(preview: dict[str, Any]) -> dict[str, Any]:
             return [mask(None, item) for item in value]
         return value
 
-    return {key: mask(key, value) for key, value in preview.items()}
+    masked = {key: mask(key, value) for key, value in preview.items()}
+    env = masked.get("env")
+    if node_type_tag(node_type or "") == "shell" and isinstance(env, dict):
+        masked["env"] = {name: to_string(value) for name, value in env.items()}
+    return masked
 
 
 def masked_gate_dict(payload: dict[str, Any]) -> dict[str, Any]:
-    """A gate-payload DICT with its ``preview`` secret-masked — THE policy for
-    every surface that holds a plain ``GateRequest.to_dict()`` / trailer gate
-    dict rather than a live ``GateRequest``.
+    """A gate-payload DICT with its ``preview`` in display form (``masked_preview``) —
+    THE policy for every surface that holds a plain ``GateRequest.to_dict()`` /
+    trailer gate dict rather than a live ``GateRequest``.
 
-    Mask-only (recursive, never truncated), delegating to ``masked_preview``;
-    the trace's gate event stays unmasked, consistent with
-    ``template_resolutions``. ``exceptions._masked_gate_payload`` is the
-    object-form twin (``request.to_dict()`` → this). One rule, one home, N
-    consumers (the denied/paused JSON docs, ``ResumeAnswerRequiredError``).
+    ``exceptions._masked_gate_payload`` is the object-form twin
+    (``request.to_dict()`` → this). One rule, one home, N consumers (the
+    denied/paused JSON docs, ``ResumeAnswerRequiredError``, the web panel).
     """
-    return {**payload, "preview": masked_preview(payload.get("preview") or {})}
+    return {**payload, "preview": masked_preview(payload.get("preview") or {}, payload.get("node_type"))}
