@@ -148,32 +148,53 @@ def _communicate_with_cleanup(
 
     A timeout stops the step politely (``stop``), gives it
     ``TIMEOUT_GRACE_SECONDS`` to exit, then ``kill``s whatever is left; with no
-    ``stop`` (Windows) it kills at once. An interruption (Ctrl-C/SystemExit)
-    always kills at once: pflow itself is exiting.
+    ``stop`` (Windows) it kills at once. An interruption (Ctrl-C/SystemExit) —
+    also one arriving during the grace — always kills at once: pflow is exiting.
     """
     try:
-        return proc.communicate(input=stdin_bytes, timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        output: tuple[bytes, bytes] | None = None
-        if stop is not None:
-            stop(proc)
-            with suppress(OSError, subprocess.TimeoutExpired):
-                output = proc.communicate(timeout=TIMEOUT_GRACE_SECONDS)
-        kill(proc)  # after a clean stop, sweeps whatever outlived the shell
-        if output is None:
-            try:
-                output = proc.communicate(timeout=1)
-            except (OSError, subprocess.TimeoutExpired):
-                output = (exc.output or b"", exc.stderr or b"")
-        stdout, stderr = output
-        raise subprocess.TimeoutExpired(
-            command, timeout, output=stdout or exc.output, stderr=stderr or exc.stderr
-        ) from exc
+        try:
+            return proc.communicate(input=stdin_bytes, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            stdout, stderr = _stop_after_timeout(proc, exc, stop=stop, kill=kill)
+            raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from exc
     except (KeyboardInterrupt, SystemExit):
         kill(proc)
         with suppress(OSError, subprocess.TimeoutExpired):
             proc.communicate(timeout=1)
         raise
+
+
+def _stop_after_timeout(
+    proc: subprocess.Popen[bytes],
+    exc: subprocess.TimeoutExpired,
+    *,
+    stop: Callable[[subprocess.Popen[bytes]], None] | None,
+    kill: Callable[[subprocess.Popen[bytes]], None],
+) -> tuple[bytes, bytes]:
+    """End a timed-out step and return everything it wrote, the grace included."""
+    partial = exc  # each later TimeoutExpired carries everything read so far
+    output: tuple[bytes, bytes] | None = None
+    if stop is not None:
+        stop(proc)
+        try:
+            output = proc.communicate(timeout=TIMEOUT_GRACE_SECONDS)
+        except subprocess.TimeoutExpired as grace_exc:
+            partial = grace_exc
+        except OSError:
+            pass
+    kill(proc)  # after a clean stop, sweeps whatever outlived the shell
+    if output is None:
+        try:
+            output = proc.communicate(timeout=1)
+        except subprocess.TimeoutExpired as drain_exc:
+            partial = drain_exc
+        except OSError:
+            pass
+    stdout, stderr = output or (b"", b"")
+    return (
+        stdout or partial.output or exc.output or b"",
+        stderr or partial.stderr or exc.stderr or b"",
+    )
 
 
 def _run_windows_bash_command(

@@ -27,13 +27,13 @@ class FakeProc:
     pid = 4321
 
     def __init__(self, after_stop="exit"):
-        self.after_stop = after_stop  # "exit" | "ignore_term" | "hang"
+        self.after_stop = after_stop  # "exit" | "ignore_term"
         self.communicate_timeouts = []
 
     def communicate(self, input=None, timeout=None, **kwargs):  # noqa: A002 - mirrors subprocess API.
         self.communicate_timeouts.append(timeout)
         call = len(self.communicate_timeouts)
-        if call == 1 or self.after_stop == "hang" or (self.after_stop == "ignore_term" and call == 2):
+        if call == 1 or (self.after_stop == "ignore_term" and call == 2):
             raise subprocess.TimeoutExpired("sleep 10", timeout or 0, output=b"partial", stderr=b"err")
         return b"captured", b"stderr"
 
@@ -91,13 +91,27 @@ def test_timeout_kills_a_step_that_outlives_the_grace(monkeypatch, killpg_calls)
     assert exc_info.value.output == b"captured"
 
 
-def test_timeout_uses_partial_output_when_drain_still_times_out(monkeypatch, killpg_calls):
-    """A missed pipe holder must not make timeout recovery block indefinitely."""
-    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
-        _run_fake(monkeypatch, FakeProc(after_stop="hang"))
+def test_timeout_keeps_output_written_during_the_grace_when_the_drain_hangs(monkeypatch, killpg_calls):
+    """A pipe holder outside the group (setsid) blocks every drain: what the trap printed survives."""
 
-    assert exc_info.value.output == b"partial"
-    assert exc_info.value.stderr == b"err"
+    class PipeHeldProc:
+        pid = 4321
+
+        def __init__(self):
+            self.calls = 0
+
+        def communicate(self, input=None, timeout=None, **kwargs):  # noqa: A002 - mirrors subprocess API.
+            self.calls += 1
+            # Like Popen, each timeout re-reports everything read so far.
+            seen = [b"early", b"early\nverdict-on-term", b"early\nverdict-on-term"][self.calls - 1]
+            raise subprocess.TimeoutExpired("sleep 10", timeout or 0, output=seen, stderr=b"err%d" % self.calls)
+
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        _run_fake(monkeypatch, PipeHeldProc())
+
+    assert killpg_calls == [(4321, signal.SIGTERM), (4321, signal.SIGKILL)]
+    assert exc_info.value.output == b"early\nverdict-on-term"
+    assert exc_info.value.stderr == b"err3"
 
 
 @pytest.mark.parametrize("raised", [KeyboardInterrupt, SystemExit])
@@ -122,6 +136,32 @@ def test_interrupt_kills_the_group_without_a_grace(monkeypatch, killpg_calls, ra
 
     assert killpg_calls == [(4321, signal.SIGKILL)]
     assert fake_proc.communicate_timeouts == [0.1, 1]
+
+
+@pytest.mark.parametrize("raised", [KeyboardInterrupt, SystemExit])
+def test_interrupt_during_the_grace_still_kills_the_group(monkeypatch, killpg_calls, raised):
+    """Ctrl-C while a TERM-ignoring step sits in its grace must not leave the group running."""
+
+    class GraceInterruptedProc:
+        pid = 4321
+
+        def __init__(self):
+            self.communicate_timeouts = []
+
+        def communicate(self, input=None, timeout=None, **kwargs):  # noqa: A002 - mirrors subprocess API.
+            self.communicate_timeouts.append(timeout)
+            if len(self.communicate_timeouts) == 1:
+                raise subprocess.TimeoutExpired("sleep 10", timeout or 0)
+            if len(self.communicate_timeouts) == 2:
+                raise raised()
+            return b"", b""
+
+    fake_proc = GraceInterruptedProc()
+    with pytest.raises(raised):
+        _run_fake(monkeypatch, fake_proc)
+
+    assert killpg_calls == [(4321, signal.SIGTERM), (4321, signal.SIGKILL)]
+    assert fake_proc.communicate_timeouts == [0.1, GRACE, 1]
 
 
 def test_shell_timeout_kills_grandchild_holding_stdout_pipe():
