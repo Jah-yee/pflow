@@ -555,7 +555,8 @@
       "stdout_is_binary": "bool",
       "stderr": "str",
       "stderr_is_binary": "bool",
-      "exit_code": "int"
+      "exit_code": "int",
+      "timeout": "bool"
     }
   }
 }

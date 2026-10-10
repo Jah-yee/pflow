@@ -51,6 +51,16 @@ FAILING_COMMAND_IR = {
 }
 
 
+# `facts` resolves; `video` reads a field the node's result does not have (#754).
+PARTIAL_OUTPUTS_IR = {
+    "nodes": [{"id": "run", "type": "code", "params": {"code": 'result: dict = {"verdict": "hang"}'}}],
+    "outputs": {
+        "facts": {"source": "${run.result}"},
+        "video": {"source": "${run.result.video_path}"},
+    },
+}
+
+
 def _large_batch_failure_ir() -> dict:
     payload = "PAYLOAD-START " + " ".join(f"token{i}" for i in range(200)) + " PAYLOAD-END"
     return {
@@ -189,6 +199,61 @@ class TestExecuteWorkflowErrors:
         assert "Advisories:" in text
         assert "## Input" in text
         assert "## Inputs" in text
+
+    def test_output_resolution_failure_text_keeps_resolved_outputs(self, tmp_path):
+        """#754: MCP's failure response is text, so the outputs that resolved before
+        one declared output failed are listed there, beside the `?? null` hint."""
+        workflow_path = tmp_path / "partial.pflow.md"
+        write_workflow_file(PARTIAL_OUTPUTS_IR, workflow_path)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            ExecutionService.execute_workflow(str(workflow_path))
+
+        text = str(exc_info.value)
+        resolved_section = text.split("Outputs that resolved before the failure:", 1)[1]
+        assert '"facts"' in resolved_section
+        assert '"verdict": "hang"' in resolved_section
+        assert '"video"' not in resolved_section
+        assert "${run.result.video_path ?? null}" in text
+
+    def test_node_failure_text_lists_no_resolved_outputs(self, tmp_path):
+        """Before outputs are populated, node `summary`'s namespace sits under the declared
+        output name `summary` — it must not be listed as a resolved output."""
+        workflow = {
+            "nodes": [
+                {"id": "summary", "type": "code", "params": {"code": 'result: str = "hi"'}},
+                {"id": "boom", "type": "code", "params": {"code": 'raise RuntimeError("boom-7")\nresult: str = ""'}},
+            ],
+            "edges": [{"from": "summary", "to": "boom"}],
+            "outputs": {"summary": {"source": "${summary.result}"}},
+        }
+        workflow_path = tmp_path / "node-fails.pflow.md"
+        write_workflow_file(workflow, workflow_path)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            ExecutionService.execute_workflow(str(workflow_path))
+
+        text = str(exc_info.value)
+        assert "boom-7" in text
+        assert "Outputs that resolved" not in text
+
+    def test_resolved_output_with_non_string_keys_keeps_the_failure_text(self, tmp_path):
+        workflow_path = tmp_path / "tuple-keys.pflow.md"
+        write_workflow_file(
+            {
+                **PARTIAL_OUTPUTS_IR,
+                "nodes": [{"id": "run", "type": "code", "params": {"code": 'result: dict = {(1, 2): "x"}'}}],
+            },
+            workflow_path,
+        )
+
+        with pytest.raises(RuntimeError) as exc_info:
+            ExecutionService.execute_workflow(str(workflow_path))
+
+        text = str(exc_info.value)
+        assert "Template Resolution Failed" in text
+        assert "Outputs that resolved before the failure:" in text
+        assert "(1, 2)" in text
 
     def test_large_batch_failure_text_uses_compact_item_summary(self, tmp_path):
         workflow_path = tmp_path / "large-batch-fail.pflow.md"

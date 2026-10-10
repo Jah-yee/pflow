@@ -33,7 +33,10 @@ def format_error_json(
 
     Returns a dict conforming to the unified error shape:
     {success, status, error, errors, workflow,
-     [duration_ms, metrics, execution, execution_id, resume_command]}
+     [result, duration_ms, metrics, execution, execution_id, resume_command]}
+
+    ``result`` (result path only) appears when the run failed at output
+    resolution: it holds the declared outputs that did resolve.
 
     ``resume_execution_id`` (result path only): when the caller knows the failed
     run left a resumable trace, the document gains ``execution_id`` and the
@@ -59,6 +62,7 @@ def _format_from_result(
 ) -> dict[str, Any]:
     """Format error from ExecutionResult (post-execution failure)."""
     from pflow.execution.formatters.error_formatter import format_execution_errors
+    from pflow.execution.formatters.success_formatter import collect_outputs_resolved_before_failure
 
     status = getattr(result, "status", None)
     status_str = status.value if status else "failed"
@@ -91,6 +95,10 @@ def _format_from_result(
             if isinstance(diagnostic, Diagnostic)
         ],
     }
+
+    resolved_outputs = collect_outputs_resolved_before_failure(result, ir_data) if ir_data else None
+    if resolved_outputs is not None:
+        output["result"] = resolved_outputs
 
     # Workflow metadata
     output["workflow"] = workflow_metadata or {"action": "unsaved"}

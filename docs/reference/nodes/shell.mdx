@@ -18,8 +18,8 @@ The shell node runs commands with pipes, redirects, and standard shell features.
 | `stdin` | any | No | - | Input data for the command |
 | `cwd` | str | No | Current dir | Working directory |
 | `env` | dict | No | `{}` | Values bound as environment variables; the command reads them as `"$NAME"` |
-| `timeout` | int | No | `30` | Maximum execution time in seconds |
-| `ignore_errors` | bool | No | `false` | Continue workflow on non-zero exit |
+| `timeout` | int | No | `30` | Maximum execution time in seconds — see [Timeouts](#timeouts) |
+| `ignore_errors` | bool | No | `false` | Continue workflow on non-zero exit or timeout |
 
 ## Output
 
@@ -30,7 +30,8 @@ The shell node runs commands with pipes, redirects, and standard shell features.
 | `stderr` | str | Error output (UTF-8 or base64 if binary) |
 | `stderr_is_binary` | bool | `true` if stderr is base64-encoded |
 | `exit_code` | int | Exit code (0=success, -1=timeout, -2=execution failure) |
-| `error` | str | Error message (only on timeout/failure) |
+| `timeout` | bool | `true` if the command was stopped for exceeding `timeout` |
+| `error` | str | Error message (only when the step fails) |
 
 ## Passing values to the command
 
@@ -259,7 +260,23 @@ Run the deployment script.
 | -1 | Timeout |
 | -2 | Execution failure |
 
-The node returns `error` action on non-zero exit (unless `ignore_errors` is `true` or it's an auto-handled pattern like grep).
+The node returns `error` action on non-zero exit or timeout (unless `ignore_errors` is `true` or it's an auto-handled pattern like grep).
+
+### Timeouts
+
+When a step runs past `timeout`, pflow sends `SIGTERM` to the command and every process it started, waits up to 5 seconds, then sends `SIGKILL` to whatever is still running. A `trap '…' TERM` in the command runs, and whatever it prints is kept in `stdout` and `stderr` — use it to report a partial result before the step stops:
+
+```shell
+trap 'echo "stopped early, partial results:"; cat progress.txt; exit 1' TERM
+./process-items.sh > progress.txt
+cat progress.txt
+```
+
+Keep the long-running command off the last line, as above, or join it to the trap with `;` (`trap '…' TERM; ./process-items.sh`). macOS's `/bin/sh` replaces itself with a final line that is a single command, and the trap goes with it.
+
+On Windows there is no `SIGTERM` for the Git Bash process tree: a timed-out step is killed at once and its trap does not run ([ADR-0013](https://github.com/spinje/pflow/blob/main/context/adr/0013-116-shell-node-posix-sh-everywhere.md): the shell dialect is the same everywhere, the stop signal is platform-native). Everything else is the same on both platforms.
+
+A timed-out step has `exit_code` -1 and `timeout` `true`, and keeps the output it wrote before stopping. It returns `error` action — or, with `ignore_errors: true`, continues on the normal path so a later step can read that partial output.
 
 ## Recommended tools
 

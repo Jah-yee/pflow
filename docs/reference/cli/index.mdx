@@ -326,7 +326,7 @@ All workflow results, metrics, and errors serialize to a single JSON object on s
 | Field | Description |
 |-------|-------------|
 | `success` | `true` if workflow completed, `false` if failed |
-| `result` | Workflow output (object, string, or array based on declared outputs) |
+| `result` | Workflow output (object, string, or array based on declared outputs). On failure, present only when a declared output failed to resolve: it holds the outputs that did |
 | `duration_ms` | Total execution time in milliseconds |
 | `total_cost_usd` | LLM API cost (0.0 if no LLM calls) |
 | `execution.cache_hits` | Number of nodes served from memoization cache |
