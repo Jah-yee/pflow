@@ -1,5 +1,11 @@
 # Task 120 — diagnostics checkpoint (CP-1, show before code)
 
+> **RULED 2026-10-10 — user: *"go ahead with this"* on the five recommendations presented in plain language by the main
+> orchestrator.** R1 = `Invalid input value` (distinct title, category stays `validation`) · R2 = the source clause on every
+> message, as tabled in §1.2 · R3 = yes, the `??` operand sentence · R4 = resolved (`pflow settings set-env`) · R5 = 80
+> characters, `<REDACTED>` for sensitive names · R6 = the §1.14 reason text with its two remedies. The AFTER blocks below
+> are the contract; the build may start (plan §7).
+
 Every new or changed user-facing message, with the BEFORE **executed** on `285e7b3f` (2026-10-10) and the AFTER
 drafted. Rulings R1–R5 at the end. **The build does not start until this file is ruled** (plan §7). Text in the
 AFTER blocks is the contract the tests assert against (structured fields first — `context["path"]`,

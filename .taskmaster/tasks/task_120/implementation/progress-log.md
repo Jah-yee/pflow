@@ -59,3 +59,13 @@ resume path for any successor.
   lenses' own corrections; the completion gate re-reads the integrated code).
 - Next: commit plan + checkpoint + spec + log on `feat/task-120-declared-input-types`; hand back (CP-1 R1–R3,
   R5, R6 to rule; 181 merges first; main orchestrator decides planner-implements vs task-orchestrator).
+
+## [2026-10-10] main orchestrator — CP-1 RULED
+- Did: relayed the diagnostics checkpoint to the user in plain language (one before/after example + the five rulings with
+  recommendations); user: *"go ahead with this"*.
+- Changed: `diagnostics-checkpoint.md` header (RULED block), plan header line, this log.
+- Verified: R1 `Invalid input value` · R2 source clause everywhere · R3 yes · R5 80 chars + `<REDACTED>` · R6 §1.14 reason text.
+  R4 already resolved. | Assumed: nothing.
+- Deviations/surprises: the planner's `__pflow_input_types__` carrier deviation was accepted by the main orchestrator (2/5,
+  reversible); ADR-0017's carrier wording and Task 112's top block were amended on MAIN (uncommitted) — not on this branch.
+- Next: build launches (Opus task-orchestrator, implement-from-plan) after Task 181 merges; P0 re-verifies 181's shapes.

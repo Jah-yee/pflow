@@ -1,5 +1,7 @@
 # Task 120 — implementation plan
 
+> **CP-1 RULED 2026-10-10 (user: *"go ahead with this"*): R1 title `Invalid input value` · R2 source clause everywhere · R3 yes · R5 80 chars · R6 the §1.14 reason text — all as recommended; see `diagnostics-checkpoint.md` header. The build may start once Task 181 has merged (§0).**
+
 **Goal.** A workflow input's declared type is decided once, where the value enters, by the declaration of
 what receives it — and nothing downstream re-infers it. Wrong-typed values fail with an actionable error.
 
