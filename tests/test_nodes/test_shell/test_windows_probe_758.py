@@ -62,17 +62,25 @@ def _measure(name: str, bash: str, stop) -> str:
         stop_note = stop(proc, bash)
     except Exception as exc:
         stop_note = f"raised {exc!r}"
+    after = ""
     try:
         out, err = proc.communicate(timeout=6)
         how = "EXITED"
     except subprocess.TimeoutExpired:
+        after = _run([bash, "-c", TABLE], bash)
+        rc_at_grace_end = proc.poll()
         shell_module._terminate_windows_process_tree(proc.pid)
         proc.kill()
-        out, err = proc.communicate(timeout=10)
-        how = "NEEDED-FORCE"
+        try:
+            out, err = proc.communicate(timeout=25)
+            how = f"NEEDED-FORCE (wrapper rc at grace end={rc_at_grace_end})"
+        except subprocess.TimeoutExpired:
+            out, err = b"", b""
+            how = f"NEEDED-FORCE AND DRAIN HUNG (wrapper rc at grace end={rc_at_grace_end})"
     return (
         f"\n=== [{name}] {how} after {time.monotonic() - t0:.2f}s rc={proc.returncode} popen_pid={proc.pid}\n"
         f"stop: {stop_note}\nstdout={out!r}\nstderr={err[-300:]!r}\nproc table before stop: {table}\n"
+        f"proc table at grace end: {after}\n"
     )
 
 
@@ -104,5 +112,8 @@ def test_probe_758_windows_graceful_stop_options():
         ("msys_group_term_via_proc", _msys_group_term),
         ("msys_kill_exe_W", _msys_kill_w),
     ]:
-        report += _measure(name, bash, stop)
+        try:
+            report += _measure(name, bash, stop)
+        except Exception as exc:
+            report += f"\n=== [{name}] PROBE CRASHED: {exc!r}\n"
     pytest.fail("MEASUREMENT (deliberate failure to surface data):\n" + report)
