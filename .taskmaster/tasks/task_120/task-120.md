@@ -49,7 +49,7 @@ crosses.* Executed on `b2cd92e3` — `--validate-only` printed "✓ Workflow is 
 8. `type: any` given `02134` → int, `{"a":1}` → dict.
 9. `${v.a}` on a `type: string` input validates and resolves.
 10. A sub-workflow's supplied inputs are coerced once at the child's first compile, but execution then
-    overwrites them with the raw supplied values (`workflow_executor.py:~419-433`): a child `s: string` given
+    overwrites them with the raw supplied values (`workflow_executor.py:~408-422`): a child `s: string` given
     `{"a":1}` receives a dict; `n: integer` given `"7"` receives the string.
 11. `pflow resume <id> zip=02134` and `--only … zip=0099` deliver `2134` / `99` — the same CLI
     parse as #687 on two more commands (`resume_source` seeds node outputs only; inputs come from
@@ -141,9 +141,9 @@ bypasses every check). The `VALIDATION_PLACEHOLDER` passthrough stays (`predict.
   and silently marks every LLM prediction skipped, so (a) would turn a visible warning into silence.
 
 **The CLI never guesses a workflow input's type.** `cli/param_parsing.parse_workflow_params` returns
-raw strings for all five workflow-input callers (`run.py`, `resume.py` — which today parses argv
-before the target is known, reorder it — `analyze_cache.py`, `ui/server.py` preflight + spawn, which
-must build params exactly as the run it spawns); the (d) lossless inference lives in the coercer's
+raw strings for all five workflow-input callers (`run.py`, `resume.py` — it parses argv before the target
+is known, which is harmless once the parser infers nothing — `analyze_cache.py`, `ui/server.py` preflight +
+spawn, which must build params exactly as the run it spawns); the (d) lossless inference lives in the coercer's
 `any`/untyped branch; `_probe_impl.py` has registry param declarations but no WORKFLOW-input declarations and today calls the shared
 `parse_workflow_params` — it must explicitly keep the old inference path when that parser changes. The
 web re-run prefill (`ui/run_node.read_run_inputs` → `format_param_value`) is the inverse of today's
@@ -153,10 +153,14 @@ inference — keep the round-trip true.
 (`_resolve_string` holds the leaf rule: `auto_parse and isinstance(value, str)` → `try_parse_json`),
 keyed on "this reference's root is a declared non-`any` input" — **root-wide** (ruling (i)): a string
 descendant of a declared `object`/`array` input (`${data.payload}` holding JSON text) stays text too; `any`/untyped
-keep today's traversal parse. The declared-input names and types reach the resolver on `TemplateConfig` (precedent: `optional_input_keys`, built
-at `compiler.py:~320`). Task 118's `parses_leaves(template_config, key)` is **per param and is not
-consulted on the `inputs:` branch** (`template_resolution.py:~272`, the #686 site) — the comment at
-`core/workflow/template_surfaces.py:27` says Task 120 *replaces* it; do that, do not grow it.
+keep today's traversal parse. The declared-input names and types ride the shared store under one reserved key
+(`core/templates.DECLARED_INPUT_TYPES_KEY`), recorded on `CompiledWorkflow` by the compiler and installed per
+workflow by `WorkflowEngine.run` and the dry-run planner exactly as `__pflow_prompt_cache__` is — so every
+`resolve()` against the store inherits the rule, and a step's own `inputs:` keys shadow it per node (the
+resolver rewrites the map in its context copy). Task 118's `parses_leaves(template_config, key)` is **per param
+and is not consulted on the `inputs:` branch** (`template_resolution.py:~276`, the #686 site) — its docstring and
+`binds_as_text`'s (`core/workflow/template_surfaces.py:60-64`) say Task 120 *replaces* them; do that, do not
+grow them.
 **Every auto-parse site adopts the one policy**: `template_resolution.py` `inputs:` branch (`~272`),
 dict/list leaves (`~280`), simple-template-into-container (`~289`); `batch_executor.py` inline items
 (`~119`, `~126-130`); the dry-run planner's hand-copied `resolve(..., auto_parse=True)` at
@@ -208,8 +212,10 @@ fine). No trace-format change (only value types in `meta.inputs` change; memo ke
   exists. Say how the carrier tells them apart (a name set alone cannot).
 - **Whole-map `inputs:`.** "The parent stops auto-parsing a workflow step's `inputs:`" means the VALUES of a
   dict-form `inputs:`. A whole-param `inputs: ${fetch.stdout}` holding a JSON object is parsed into the map
-  today (the simple-template-into-container branch, `template_resolution.py:~285`) and the child requires a
-  dict (`workflow_executor.py:~731`): keep outer-map parsing, or reject the form with a diagnostic — state which.
+  today by the dry-run planner only (`execution/plan.py:~1587`); the engine already rejects it
+  (`template_resolution.py:~281-285` passes `auto_parse=False` for a string template, and
+  `workflow_executor.py:~727-733` requires a dict): keep outer-map parsing, or reject the form with a
+  diagnostic — state which.
 - **Lossless inference is executable.** Name the candidate parser, the canonical renderer and the exact
   comparison (`param_parsing` renders compact JSON, `templates.to_string` spaced JSON with `True`), the `null`
   policy, and the SOURCE classes that infer (CLI token, web-form token) vs pass through (MCP, sub-workflow, YAML
@@ -219,8 +225,8 @@ fine). No trace-format change (only value types in `meta.inputs` change; memo ke
   its rule (source-root protection only, upstream-output parsing kept) without implying annotations exist.
 - **Child compile.** The compile-time `prepare_inputs` also resolves env/settings/default fallbacks for the
   child: a "defaults-only" mode must keep that; the per-item `prep` check runs before it. `_validate_child_params`
-  raises `ValueError` and `prep` keeps only `str(e)` (`workflow_executor.py:~179`) — the structured Diagnostic
-  must survive the recoverable path.
+  raises `ValueError` and `prep` keeps only `str(e)` (`workflow_executor.py:~181`) — the structured Diagnostic
+  must survive the recoverable path (the existing `child_failure` bundle is the channel).
 - **HTTP `headers` / `params` string maps** carry the same JSON-parse hazard `env:` had (a header value that
   looks like JSON is parsed into a dict) — Task 118 handed it to this task's policy (118 plan §10). State whether
   the consumer-declares-text rule covers them (recommended: yes — an HTTP header value is text by protocol).
@@ -256,38 +262,41 @@ fine). No trace-format change (only value types in `meta.inputs` change; memo ke
   is written at Part 2's end). **Coordinate with Task 181** (same `_resolve_string` arm).
 - **Tests that pin today's leniency flip deliberately and are named in the plan**:
   `tests/test_core/test_param_coercion.py` `*returns_original` and `:178-199` (stringify);
-  `tests/test_runtime/test_prepare_inputs_coercion.py:18,153,163`; `test_validate_only.py:192-195`
-  ("`prepare_inputs` not called"); `test_rerun_display.py:645-709` and `test_run_node.py:511-532`
-  (the inference round-trip). Keep `test_param_coercion.py:439` (placeholder).
+  `tests/test_runtime/test_prepare_inputs_coercion.py:18,153,163`; `tests/test_cli/test_validate_only.py:205-235`
+  ("`prepare_inputs` not called"); `tests/test_cli/test_rerun_display.py:645-711` and
+  `tests/test_cli/test_run_node.py:507-533` (the inference round-trip). Keep `test_param_coercion.py:439`
+  (placeholder).
 - **New tests the plan must name**: a batch of sub-workflows with a type error under `continue`;
   typed-input parity across CLI / MCP / web / resume / child; `--dry-run` vs runtime per-item child
   inputs; parity-corpus rows for the declared-root rule (`test_template_parity.py`).
 - **Stale surfaces** (verify each): `guide/core.md:437-470` (auto-parse promised for inputs) and
   `:661-675` (type table says "integer: Rejects floats" — the natural home for (b)); BOTH MCP
   instruction copies (`mcp_server/resources/instructions/mcp-agent-instructions.md:~1017-1040`,
-  `mcp-sandbox-agent-instructions.md:~1000-1020`); `guide/nodes/code.md:64` ("declare dict/list not
-  str" flips); `guide/nodes/shell.md:64`; `guide/features/batch.md:35`; `guide/core.md:298` (`any`);
-  `docs/reference/cli/index.mdx:152-158`, `docs/reference/nodes/code.mdx:104`,
-  `docs/how-it-works/template-variables.mdx:90-92`, `docs/reference/nodes/index.mdx:67`;
-  `src/pflow/core/CLAUDE.md:104-107,198-200` and `core/templates.py:43-46` and `architecture/
-  reference/template-variables.md:618-619` (all claim `TypeSpec.accepts` is in use — it has zero
+  `mcp-sandbox-agent-instructions.md:~1001-1024`, plus their "integer: Rejects floats" rows at `:1276` /
+  `:1255`); `guide/nodes/code.md:64` ("declare dict/list not str" flips); `guide/nodes/shell.md:54`;
+  `guide/features/batch.md:37`; `guide/core.md:298` (`any`);
+  `docs/reference/cli/index.mdx:152-158`, `docs/reference/nodes/code.mdx:104-110`,
+  `docs/how-it-works/template-variables.mdx:90-123`, `docs/reference/nodes/index.mdx:67`;
+  `src/pflow/core/CLAUDE.md:105-107,199-201` and `core/templates.py:43-46` and `architecture/
+  reference/template-variables.md:621-623` (all claim `TypeSpec.accepts` is in use — it has zero
   callers); `runtime/compilation/CLAUDE.md:58-66`, `runtime/engine/CLAUDE.md:79-80`,
   `runtime/CLAUDE.md:53-56`, `cli/CLAUDE.md:15`; `prompt_cache_analysis/context.py:51-53`;
   `param_coercion.py:236-262`; `web/src/components/RunForm.tsx:8-12`, `web/src/utils/
   controlForType.ts:8-9`, `RunPanel.tsx:24-25,59-61`; `architecture/core-concepts/
   data-type-coercion.md:67-146` (cites deleted files; no entry for the input boundary).
 - `display_rerun_commands` / `format_rerun_command` (`rerun_display.py:31-95`) have no production
-  readers — delete rather than adapt. `last_execution_params` (`runner.py:~798`) should store the
-  coerced values, as the trace does.
+  readers — delete rather than adapt (with `filter_user_params` and the dead `ctx.obj["execution_params"]`
+  write it feeds). `last_execution_params` (`runner.py:~796-827`) already stores the coerced values — compile
+  mutates the runner's `params` in place — pin it.
 - **ADR-0017** (the parse rule) is written with this spec; the planner amends it only through the
   main orchestrator.
 
 ## Dependencies
 
-Builds after Task 118 Part 2 (PR #723 + `.taskmaster/tasks/task_118/implementation/` are the
-hand-off until its task-review exists). Coordinates with Task 181 (its plan on branch
-`feat/task-181-mcp-code-params-json`). Read first: Task 170's task-review, ADR-0006, ADR-0016,
-ADR-0017, issues #686 #687 #297 #188 in full (body + comments), Task 112's top block.
+Builds after Task 118 Part 2 (merged `1d393487`; its task-review is the contract) and after Task 181 (its
+plan on branch `feat/task-181-mcp-code-params-json`; same `_resolve_string` arm — the plan's §0 re-verifies
+181's shipped shapes). Read first: Task 118's and Task 170's task-reviews, ADR-0006, ADR-0016, ADR-0017,
+issues #686 #687 #297 #188 in full (body + comments), Task 112's top block.
 
 ## Verification (intent)
 
@@ -301,5 +310,7 @@ same typed value for the same input.
 
 ## References
 
-- Battery ledger (local): `scratchpads/session-12/task-120-spec-battery.md`; issues #686, #687,
-  #297, #188; #742 (YAML literal re-typing, out of scope); #743 (declared output types, out of scope).
+- Battery ledger (local): `scratchpads/session-12/task-120-spec-battery.md`; issues #686, #687 (owned),
+  #188 (closed by the per-item child boundary), #297 (its validate-only type/extras half lands here; the
+  shape-check refactor stays its own); #742 (YAML literal re-typing, out of scope); #743 (declared output
+  types, out of scope).
