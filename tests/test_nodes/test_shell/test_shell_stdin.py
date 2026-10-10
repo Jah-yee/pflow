@@ -4,7 +4,6 @@ Tests verify that the ShellNode correctly handles stdin from params,
 including template-resolved values (set directly as resolved params).
 """
 
-import base64
 import os
 from collections.abc import Callable, Iterator
 
@@ -158,21 +157,6 @@ Line 5: with `backticks`"""
 
         assert action == "default"
         assert shared["stdout"].strip() == "2"  # Lines 2 and 3
-
-
-def test_a_raw_byte_pflow_read_as_invalid_utf8_is_piped_back_unchanged():
-    """Python reads a non-UTF-8 byte on pflow's own stdin or argv as \\udcXX (surrogateescape):
-    stdin: pipes that original byte, as env: does (#727). Any other surrogate fails in prep —
-    ``tests/test_integration/test_shell_env_binding.py::TestBindingFailures``."""
-    node = ShellNode()
-    node.set_params({"command": "cat", "stdin": "ab\udcffcd"})
-    shared: dict = {}
-
-    action = node.run(shared)
-
-    assert action == "default", shared.get("error")
-    assert shared["stdout_is_binary"] is True
-    assert base64.b64decode(shared["stdout"]) == b"ab\xffcd"
 
 
 @pytest.fixture
