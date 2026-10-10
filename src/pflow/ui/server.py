@@ -64,6 +64,7 @@ from pflow.core.exceptions import (
     ResumeSupersededError,
 )
 from pflow.core.gate import masked_gate_dict
+from pflow.core.node_type_display import node_type_tag
 from pflow.core.trace_io import load_trace_file
 from pflow.core.tts import wav_duration
 from pflow.core.workflow.graph import render_react_flow
@@ -1522,7 +1523,8 @@ def gate(request: Request) -> Response:
 
     ``GET /api/gate?run=<execution_id>`` → ``{paused_node_id, gate_kind, gate_request}`` with the
     ``gate_request`` secret-masked via ``masked_gate_dict`` — masking is display-surface policy and
-    the browser is a display surface (ADR-0009); the on-disk trailer stays unmasked. The bulky
+    the browser is a display surface (ADR-0009); the on-disk trailer stays unmasked. Its
+    ``node_type`` is projected to the ``node_type_tag`` (as ``/api/run-node`` does). The bulky
     payload is served ON DEMAND here precisely so it never rides the SSE wire or the ``/api/runs``
     listing (their allowlists exist to keep it off — PR #543).
 
@@ -1563,7 +1565,10 @@ def gate(request: Request) -> Response:
     return _json({
         "paused_node_id": paused_node_id,
         "gate_kind": gate_request["kind"],
-        "gate_request": masked_gate_dict(gate_request),
+        "gate_request": {
+            **masked_gate_dict(gate_request),
+            "node_type": node_type_tag(str(gate_request.get("node_type", ""))),
+        },
     })
 
 

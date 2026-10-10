@@ -1080,6 +1080,8 @@ class TestGateEndpoint:
         assert "sk-super-secret" not in response.text, "the raw secret never reaches the browser"
         assert body["gate_request"]["iteration"] is None  # a non-loop step: the key rides, empty (Task 179)
         assert body["gate_request"]["max_iterations"] is None  # …and so does the cap (Task 183)
+        # The panel eyebrow's kind: the display tag, not the trace's Python class name ("ShellNode").
+        assert body["gate_request"]["node_type"] == "shell"
 
     @pytest.mark.trace_files
     def test_loop_pause_payload_carries_the_iteration(self, tmp_path: Path, monkeypatch) -> None:
@@ -1097,6 +1099,7 @@ class TestGateEndpoint:
         assert body["paused_node_id"] == "gated"
         assert body["gate_request"]["iteration"] == 1
         assert body["gate_request"]["max_iterations"] == 3  # Task 183: the panel's ONLY source for "of up to 3"
+        assert body["gate_request"]["node_type"] == "code"  # the display tag; the trace records "PythonCodeNode"
 
     @pytest.mark.trace_files
     def test_long_approval_command_is_served_in_full_not_as_a_blob_ref(self, tmp_path: Path, monkeypatch) -> None:
