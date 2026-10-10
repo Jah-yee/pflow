@@ -12,8 +12,8 @@ MCP (Model Context Protocol) lets you extend pflow with external tools. When you
 
 ## How it works
 
-1. **Add an MCP server** with `pflow mcp add`
-2. **Sync tools** with `pflow mcp sync` (or let auto-sync handle it)
+1. **Add an MCP server** with `pflow mcp add` — it discovers the server's tools right away
+2. **Re-sync** with `pflow mcp sync` after editing the config file or fixing a server that failed
 3. **Tools become nodes** named `mcp-{server}-{tool}`
 4. **Agent uses them** like any other node
 
@@ -130,11 +130,11 @@ MCP nodes return `error` action on:
 
 The node does **not** retry automatically - MCP calls start a server subprocess, and retries would cause resource conflicts.
 
-## Auto-sync
+## When tools are synced
 
-When you run a workflow, pflow automatically syncs MCP tools if the server configuration has changed. You don't need to manually run `pflow mcp sync` after adding servers.
+`pflow mcp add` discovers tools from the servers it adds. Running a workflow never contacts servers to discover tools — it uses the tools already in the registry.
 
-Manual sync is useful for:
-- Testing connection immediately after adding a server
-- Debugging connection issues
-- Forcing re-discovery without running a workflow
+Run `pflow mcp sync <server>` (or `--all`) when:
+- `pflow mcp add` reported a server it could not reach (fix the token or start the server, then sync)
+- You edited `~/.pflow/mcp-servers.json` by hand
+- A server added or changed its tools
