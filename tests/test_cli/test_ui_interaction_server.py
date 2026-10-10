@@ -46,7 +46,11 @@ def _client(app: Starlette | None = None) -> TestClient:
 _VALID_IR = {
     "nodes": [
         {"id": "greet", "type": "shell", "params": {"command": "echo hello"}},
-        {"id": "done", "type": "shell", "params": {"command": "echo ${greet.stdout}"}},
+        {
+            "id": "done",
+            "type": "shell",
+            "params": {"command": 'echo "$GREET_STDOUT"', "env": {"GREET_STDOUT": "${greet.stdout}"}},
+        },
     ],
     "edges": [{"from": "greet", "to": "done"}],
 }
@@ -463,7 +467,7 @@ def _workflow_with_input(tmp_path: Path, *, required: bool) -> Path:
     path.write_text(
         "# WithInput\n\nEchoes an input.\n\n## Inputs\n\n"
         "### text\n\nText to echo.\n\n- type: string\n" + default_line + "\n"
-        '## Steps\n\n### echo\n\nEchoes the text.\n\n- type: shell\n- command: echo "${text}"\n',
+        '## Steps\n\n### echo\n\nEchoes the text.\n\n- type: shell\n- env: { TEXT: ${text} }\n- command: echo "$TEXT"\n',
         encoding="utf-8",
     )
     return path
@@ -936,6 +940,22 @@ class TestRunEndpoint:
                 assert response.status_code == 400, body
         popen.assert_not_called()
 
+    def test_validator_only_error_is_400_and_does_not_spawn(self, tmp_path: Path) -> None:
+        """A template the compiler accepts but the full validator rejects — the spawned run would die
+        before writing its trace, so the pre-flight runs the same validation."""
+        workflow = tmp_path / "validator-only.pflow.md"
+        workflow.write_text(
+            "# Validator Only\n\nOne step.\n\n## Steps\n\n### save\n\nSave.\n\n- type: write-file\n"
+            "- file_path: x.txt\n- content: ${nope}\n",
+            encoding="utf-8",
+        )
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post("/api/run", json={"workflow": str(workflow), "inputs": {}})
+
+        assert response.status_code == 400, response.text
+        assert "nope" in json.dumps(response.json()["errors"])
+        popen.assert_not_called()
+
     def test_missing_required_input_is_400_with_diagnostics_and_does_not_spawn(self, tmp_path: Path) -> None:
         # The pre-flight compile (off-loop) catches the silent pre-trace-failure class as a clean 400.
         workflow = _workflow_with_input(tmp_path, required=True)
@@ -977,6 +997,43 @@ def _write_paused_trace(
             trailer["gate_request"] = gate_request
     lines = [meta, trailer]
     (debug / name).write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+
+
+def _escalation_wf(tmp_path: Path, question: str) -> Path:
+    """A real escalating workflow (``EscalatingNode`` from test_gate_pause, a non-code producer) whose
+    gate asks ``question``. Registry injection is the test_paused_cli.py pattern — works only inside
+    pytest, where isolate_pflow_config redirects Registry to tmp paths."""
+    from pflow.registry import Registry
+    from tests.test_runtime.test_gate_pause import EscalatingNode
+
+    registry = Registry()
+    nodes = registry.load()
+    nodes["escalating-node"] = {
+        "module": "tests.test_runtime.test_gate_pause",
+        "class_name": "EscalatingNode",
+        "docstring": EscalatingNode.__doc__ or "",
+        "file_path": "tests/test_runtime/test_gate_pause.py",
+        "type": "core",
+        "interface": {
+            "description": "Test node that raises a decision escalation.",
+            "params": [{"key": "question", "type": "str", "description": "The escalation question"}],
+            "inputs": [],
+            "outputs": [{"key": "result", "type": "dict", "description": "Carries the escalation marker"}],
+            "actions": ["default"],
+        },
+    }
+    registry.save(nodes)
+    wf = tmp_path / "esc_demo.pflow.md"
+    wf.write_text(
+        "# Escalation Demo\n\nAn escalating step, then a consumer.\n\n## Steps\n\n"
+        "### esc\n\nRaises a decision escalation.\n\n"
+        f"- type: escalating-node\n- question: {question}\n- next: after\n\n"
+        "### after\n\nReads the decision.\n\n- type: shell\n"
+        "- env:\n    ESC_RESULT_ESCALATION_DECISION_CHOSEN: ${esc.result.escalation.decision.chosen}\n\n"
+        '```shell command\necho "picked $ESC_RESULT_ESCALATION_DECISION_CHOSEN"\n```\n',
+        encoding="utf-8",
+    )
+    return wf
 
 
 class TestGateEndpoint:
@@ -1022,6 +1079,9 @@ class TestGateEndpoint:
         assert body["gate_request"]["preview"]["env"]["API_KEY"] == "<REDACTED>"
         assert "sk-super-secret" not in response.text, "the raw secret never reaches the browser"
         assert body["gate_request"]["iteration"] is None  # a non-loop step: the key rides, empty (Task 179)
+        assert body["gate_request"]["max_iterations"] is None  # …and so does the cap (Task 183)
+        # The panel eyebrow's kind: the display tag, not the trace's Python class name ("ShellNode").
+        assert body["gate_request"]["node_type"] == "shell"
 
     @pytest.mark.trace_files
     def test_loop_pause_payload_carries_the_iteration(self, tmp_path: Path, monkeypatch) -> None:
@@ -1038,6 +1098,53 @@ class TestGateEndpoint:
         body = _client().get("/api/gate", params={"run": token}).json()
         assert body["paused_node_id"] == "gated"
         assert body["gate_request"]["iteration"] == 1
+        assert body["gate_request"]["max_iterations"] == 3  # Task 183: the panel's ONLY source for "of up to 3"
+        assert body["gate_request"]["node_type"] == "code"  # the display tag; the trace records "PythonCodeNode"
+
+    @pytest.mark.trace_files
+    def test_long_approval_command_is_served_in_full_not_as_a_blob_ref(self, tmp_path: Path, monkeypatch) -> None:
+        """#720: the trace interns every string >= 1 KB as a ``$pflow_blob`` ref whose body sits on an
+        EARLIER line; the paused trailer's ``gate_request`` carries only the ref. A real gated run with a
+        2 KB command must reach the panel as the full command (presence) — never the ref (absence), or
+        the human approves a command they cannot see."""
+        self._debug_dir(tmp_path, monkeypatch)
+        command = "echo " + " ".join(f"segment{i:03d}" for i in range(200))
+        assert len(command.encode()) >= 2048
+        wf = tmp_path / "big_cmd.pflow.md"
+        wf.write_text(
+            "# Big Command\n\nA gated step with a long command.\n\n## Steps\n\n"
+            "### big\n\nNeeds approval.\n\n- type: shell\n- approval: required\n"
+            f"- command: {command}\n",
+            encoding="utf-8",
+        )
+        run = CliRunner(mix_stderr=False).invoke(cli, [str(wf)])
+        assert run.exit_code == 4, run.stderr
+        token = _TOKEN_RE.search(run.stdout).group(1)
+        trace = next((tmp_path / ".pflow" / "debug").glob("workflow-trace-*.json")).read_text(encoding="utf-8")
+        assert "$pflow_blob" in trace.splitlines()[-1], "precondition: the trailer carries an interned ref"
+
+        response = _client().get("/api/gate", params={"run": token})
+        assert response.status_code == 200
+        assert response.json()["gate_request"]["preview"]["command"] == command
+        assert "$pflow_blob" not in response.text
+
+    @pytest.mark.trace_files
+    def test_long_escalation_question_is_served_in_full_not_as_a_blob_ref(self, tmp_path: Path, monkeypatch) -> None:
+        """#720: the escalation arm — a 2 KB question (interned on the node's output event, referenced
+        by the trailer) reaches the panel as text. A ref here crashed the whole viewer (an object as a
+        React child)."""
+        self._debug_dir(tmp_path, monkeypatch)
+        question = "Which configuration layout should the migration use? " * 40
+        question = question.strip()
+        assert len(question.encode()) >= 2048
+        run = CliRunner(mix_stderr=False).invoke(cli, [str(_escalation_wf(tmp_path, question))])
+        assert run.exit_code == 4, run.stderr
+        token = _TOKEN_RE.search(run.stdout).group(1)
+
+        response = _client().get("/api/gate", params={"run": token})
+        assert response.status_code == 200
+        assert response.json()["gate_request"]["question"] == question
+        assert "$pflow_blob" not in response.text
 
     def test_unknown_run_id_is_404(self, tmp_path: Path, monkeypatch) -> None:
         self._debug_dir(tmp_path, monkeypatch)
@@ -1088,14 +1195,32 @@ class TestGateEndpoint:
         response = _client().get("/api/gate", params={"run": "kindless-run"})
         assert response.status_code == 404
 
+    def test_unparseable_trace_is_404_not_500(self, tmp_path: Path, monkeypatch) -> None:
+        """A paused trace the full reader cannot parse (a malformed line before the trailer) is the
+        not-paused 404 — the same trace `pflow resume` refuses — never a 500."""
+        debug = self._debug_dir(tmp_path, monkeypatch)
+        name = "workflow-trace-aaa-wf-20260101-000000-000001.json"
+        _write_paused_trace(
+            debug,
+            name,
+            "/wf.pflow.md",
+            execution_id="garbled-run",
+            gate_request={"node_id": "deploy", "node_type": "shell", "kind": "action_approval", "preview": {}},
+        )
+        meta_line, trailer_line = (debug / name).read_text(encoding="utf-8").splitlines()
+        (debug / name).write_text(f"{meta_line}\n{{not json\n{trailer_line}\n", encoding="utf-8")
+        response = _client().get("/api/gate", params={"run": "garbled-run"})
+        assert response.status_code == 404
+        assert "not paused" in response.json()["error"], "the run was discovered; the parse failed"
+
     def test_missing_run_param_is_400(self, tmp_path: Path, monkeypatch) -> None:
         self._debug_dir(tmp_path, monkeypatch)
         assert _client().get("/api/gate").status_code == 400
         assert _client().get("/api/gate", params={"run": ""}).status_code == 400
 
     def test_oversized_gate_request_is_still_served(self, tmp_path: Path, monkeypatch) -> None:
-        """A paused trailer larger than the reader's 64 KB tail window (Task 171 gotcha) is still served
-        in full — the endpoint rides read_run_trailer's one-shot full re-read."""
+        """A paused trailer larger than a 64 KB tail window (the Task 171 gotcha for tail readers) is
+        still served in full — the endpoint reads the whole trace, never a bounded tail."""
         debug = self._debug_dir(tmp_path, monkeypatch)
         big_value = "x" * 100_000
         _write_paused_trace(
@@ -1156,6 +1281,34 @@ _FAILING_WF = """# Failing Demo
 A workflow whose only step fails.
 
 ## Steps
+
+### boom
+
+Always fails.
+
+- type: shell
+
+```shell command
+exit 7
+```
+"""
+
+# An upstream step, then a failing side-effecting one — an edit to `prep` is an edit to a restored step.
+_PREP_THEN_FAILING_WF = """# Prep Then Fail
+
+A completed step, then one that fails.
+
+## Steps
+
+### prep
+
+Prepare.
+
+- type: shell
+
+```shell command
+echo prep
+```
 
 ### boom
 
@@ -1283,39 +1436,8 @@ class TestResumeEndpoint:
     def test_choose_on_a_real_escalation_maps_to_its_flag(self, tmp_path: Path, monkeypatch) -> None:
         """An escalation pause answered with `choose` → `--choose <text>` (the label text — the
         numeric mapping is a loader-side terminal convenience; edge ledger #9)."""
-        from pflow.registry import Registry
-        from tests.test_runtime.test_gate_pause import EscalatingNode
-
         self._home(tmp_path, monkeypatch)
-        # Registry injection (the test_paused_cli.py pattern — works only inside pytest, where
-        # isolate_pflow_config redirects Registry to tmp paths).
-        registry = Registry()
-        nodes = registry.load()
-        nodes["escalating-node"] = {
-            "module": "tests.test_runtime.test_gate_pause",
-            "class_name": "EscalatingNode",
-            "docstring": EscalatingNode.__doc__ or "",
-            "file_path": "tests/test_runtime/test_gate_pause.py",
-            "type": "core",
-            "interface": {
-                "description": "Test node that raises a decision escalation.",
-                "params": [{"key": "question", "type": "str", "description": "The escalation question"}],
-                "inputs": [],
-                "outputs": [{"key": "result", "type": "dict", "description": "Carries the escalation marker"}],
-                "actions": ["default"],
-            },
-        }
-        registry.save(nodes)
-        wf = tmp_path / "esc_demo.pflow.md"
-        wf.write_text(
-            "# Escalation Demo\n\nAn escalating step, then a consumer.\n\n## Steps\n\n"
-            "### esc\n\nRaises a decision escalation.\n\n"
-            "- type: escalating-node\n- question: pick a or b\n- next: after\n\n"
-            "### after\n\nReads the decision.\n\n- type: shell\n\n"
-            '```shell command\necho "picked ${esc.result.escalation.decision.chosen}"\n```\n',
-            encoding="utf-8",
-        )
-        token = self._pause(wf)
+        token = self._pause(_escalation_wf(tmp_path, "pick a or b"))
         with patch("pflow.ui.server.subprocess.Popen") as popen:
             response = _client().post("/api/resume", json={"run": token, "choose": "b"})
         assert response.status_code == 200, response.text
@@ -1333,6 +1455,67 @@ class TestResumeEndpoint:
         plain_argv, forced_argv = (call.args[0] for call in popen.call_args_list)
         assert "--force" not in plain_argv, "the server NEVER adds --force itself"
         assert forced_argv[-1] == "--force"
+
+    @staticmethod
+    def _pause_loop(tmp_path: Path) -> str:
+        wf = tmp_path / "gated_loop.pflow.md"
+        wf.write_text(_LOOP_GATE_WF, encoding="utf-8")
+        result = CliRunner(mix_stderr=False).invoke(cli, [str(wf), f"marker={tmp_path / 'effects.txt'}"])
+        assert result.exit_code == 4, result.stderr
+        return _TOKEN_RE.search(result.stdout).group(1)
+
+    def test_auto_approve_maps_to_the_paused_step(self, tmp_path: Path, monkeypatch) -> None:
+        """Task 183: "Approve all remaining" → `--approve yes --auto-approve <paused step>`, the step id
+        taken from the pre-flight's source (the CLI half — that this argv finishes the loop — is
+        `test_paused_cli.py::test_approve_yes_with_auto_approve_runs_gated_loop_to_completion`)."""
+        self._home(tmp_path, monkeypatch)
+        token = self._pause_loop(tmp_path)
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post("/api/resume", json={"run": token, "approve": "yes", "auto_approve": True})
+        assert response.status_code == 200, response.text
+        prefix = [sys.executable, "-m", "pflow.cli", "resume", token, "--output-format", "json"]
+        assert popen.call_args.args[0] == [*prefix, "--approve", "yes", "--auto-approve", "gated"]
+
+    def test_auto_approve_false_or_absent_is_a_plain_approve(self, tmp_path: Path, monkeypatch) -> None:
+        self._home(tmp_path, monkeypatch)
+        token = self._pause_loop(tmp_path)
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            absent = _client().post("/api/resume", json={"run": token, "approve": "yes"})
+            false = _client().post("/api/resume", json={"run": token, "approve": "yes", "auto_approve": False})
+        assert absent.status_code == false.status_code == 200
+        prefix = [sys.executable, "-m", "pflow.cli", "resume", token, "--output-format", "json"]
+        assert [call.args[0] for call in popen.call_args_list] == [[*prefix, "--approve", "yes"]] * 2
+
+    def test_auto_approve_with_force_carries_both_flags(self, tmp_path: Path, monkeypatch) -> None:
+        """The stale/side-effect ack retry re-sends the bulk answer with `force: true`."""
+        self._home(tmp_path, monkeypatch)
+        token = self._pause_loop(tmp_path)
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post(
+                "/api/resume", json={"run": token, "approve": "yes", "auto_approve": True, "force": True}
+            )
+        assert response.status_code == 200, response.text
+        assert popen.call_args.args[0][-5:] == ["--approve", "yes", "--auto-approve", "gated", "--force"]
+
+    def test_auto_approve_on_a_non_loop_approval_is_accepted(self, tmp_path: Path, monkeypatch) -> None:
+        """CLI parity: "loop gates only" is the panel's rule, not the endpoint's."""
+        self._home(tmp_path, monkeypatch)
+        token = self._pause(self._paused_wf(tmp_path))
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post("/api/resume", json={"run": token, "approve": "yes", "auto_approve": True})
+        assert response.status_code == 200, response.text
+        assert popen.call_args.args[0][-4:] == ["--approve", "yes", "--auto-approve", "gated"]
+
+    def test_auto_approve_on_a_paused_escalation_is_409_answer_required(self, tmp_path: Path, monkeypatch) -> None:
+        """An approve answer on an escalation is the loader's `wrong_flag` refusal — unchanged by
+        `auto_approve`, and nothing spawns."""
+        self._home(tmp_path, monkeypatch)
+        token = self._pause(_escalation_wf(tmp_path, "pick a or b"))
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post("/api/resume", json={"run": token, "approve": "yes", "auto_approve": True})
+        assert response.status_code == 409
+        assert response.json()["refusal"] == "answer_required"
+        popen.assert_not_called()
 
     def test_superseded_token_is_409_and_does_not_spawn(self, tmp_path: Path, monkeypatch) -> None:
         self._home(tmp_path, monkeypatch)
@@ -1367,17 +1550,102 @@ class TestResumeEndpoint:
         popen.assert_not_called()
 
     def test_stale_workflow_is_409_and_does_not_spawn(self, tmp_path: Path, monkeypatch) -> None:
+        """An edit to a step the resume restores (g1, before the gate) refuses with the CLI's text and
+        the structured fields; `hash_known` and the `refusal` literal stay on the 409."""
         self._home(tmp_path, monkeypatch)
         wf = self._paused_wf(tmp_path)
         token = self._pause(wf)
-        wf.write_text(wf.read_text(encoding="utf-8") + "\n<!-- edited since the pause -->\n", encoding="utf-8")
+        wf.write_text(wf.read_text(encoding="utf-8").replace('"g1-value"', '"g1-value-2"'), encoding="utf-8")
         with patch("pflow.ui.server.subprocess.Popen") as popen:
             response = _client().post("/api/resume", json={"run": token, "approve": "yes"})
         assert response.status_code == 409
         body = response.json()
         assert body["refusal"] == "stale_workflow"
         assert body["hash_known"] is True
+        # The refusal's own text rides `errors[0]` — the browser's ack panel renders it verbatim (#721).
+        (diagnostic,) = body["errors"]
+        assert diagnostic["message"].startswith("'g1' was edited. Resume re-runs nothing before 'gated'")
+        assert diagnostic["suggestions"][1].startswith("Pass --force to resume anyway")
+        assert diagnostic["context"]["changed_steps"] == ["g1"]
+        assert diagnostic["context"]["resume_point"] == "gated"
         popen.assert_not_called()
+
+    def test_an_edit_after_the_resume_point_spawns(self, tmp_path: Path, monkeypatch) -> None:
+        self._home(tmp_path, monkeypatch)
+        wf = self._paused_wf(tmp_path)
+        token = self._pause(wf)
+        wf.write_text(
+            wf.read_text(encoding="utf-8") + "\n### after\n\nAfter the gate.\n\n- type: shell\n- command: true\n",
+            encoding="utf-8",
+        )
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post("/api/resume", json={"run": token, "approve": "yes"})
+        assert response.status_code == 200, response.text
+        popen.assert_called_once()
+
+    def test_stale_refusal_of_a_started_step_carries_the_re_fire_line(self, tmp_path: Path, monkeypatch) -> None:
+        """An edited upstream step while the failed entry already started: the stale body's suggestion
+        says --force re-fires it — the line the browser ack must show before "Resume anyway" (#721)."""
+        self._home(tmp_path, monkeypatch)
+        wf = tmp_path / "failing.pflow.md"
+        wf.write_text(_PREP_THEN_FAILING_WF, encoding="utf-8")
+        failed = CliRunner(mix_stderr=False).invoke(cli, [str(wf)])
+        assert failed.exit_code == 1, failed.stderr
+        wf.write_text(_PREP_THEN_FAILING_WF.replace("echo prep", "echo prep-2"), encoding="utf-8")
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post("/api/resume", json={"run": str(wf)})
+        assert response.status_code == 409
+        body = response.json()
+        assert body["refusal"] == "stale_workflow"
+        (diagnostic,) = body["errors"]
+        assert "--force also re-runs 'boom' (a shell step that already started" in diagnostic["suggestions"][1]
+        popen.assert_not_called()
+
+    def test_validator_only_error_in_an_edited_workflow_is_400_with_every_error(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Resume no longer needs --force for an edit after the resume point, so an edit that only the
+        full validator rejects reaches the pre-flight — which runs the child's own validation."""
+        self._home(tmp_path, monkeypatch)
+        wf = self._paused_wf(tmp_path)
+        token = self._pause(wf)
+        wf.write_text(
+            wf.read_text(encoding="utf-8")
+            + "\n### after\n\nAfter.\n\n- type: write-file\n- file_path: x.txt\n- content: ${nope} ${nada}\n",
+            encoding="utf-8",
+        )
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post("/api/resume", json={"run": token, "approve": "yes"})
+        assert response.status_code == 400, response.text
+        body = response.json()
+        assert "refusal" not in body
+        messages = " ".join(error["message"] for error in body["errors"])
+        assert "nope" in messages and "nada" in messages
+        popen.assert_not_called()
+
+    def test_relative_sub_workflow_and_new_optional_input_pass_the_preflight(self, tmp_path: Path, monkeypatch) -> None:
+        """The pre-flight validates like the child: a relative `./child.pflow.md` resolves against the
+        workflow file, and a newly declared optional input gets its default — neither is a false 400."""
+        self._home(tmp_path, monkeypatch)
+        wf = self._paused_wf(tmp_path)
+        token = self._pause(wf)
+        (tmp_path / "child.pflow.md").write_text(
+            "# Child\n\nOne step.\n\n## Steps\n\n### inner\n\nInner.\n\n- type: shell\n- command: true\n",
+            encoding="utf-8",
+        )
+        wf.write_text(
+            wf.read_text(encoding="utf-8").replace(
+                "## Steps\n", "## Inputs\n\n### tone\n\nOptional.\n\n- type: string\n- default: calm\n\n## Steps\n"
+            )
+            + "\n### after\n\nAfter.\n\n- type: workflow\n- workflow: ./child.pflow.md\n"
+            + "\n### last\n\nUse the input.\n\n- type: shell\n- env:\n    TONE: ${tone}\n\n"
+            + '```shell command\necho "$TONE"\n```\n',
+            encoding="utf-8",
+        )
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post("/api/resume", json={"run": token, "approve": "yes"})
+        assert response.status_code == 200, response.text
+        popen.assert_called_once()
 
     def test_unanswered_paused_is_409_answer_required_with_the_masked_gate(self, tmp_path: Path, monkeypatch) -> None:
         self._home(tmp_path, monkeypatch)
@@ -1413,6 +1681,40 @@ class TestResumeEndpoint:
         with patch("pflow.ui.server.subprocess.Popen") as popen:
             for body in bad_bodies:
                 assert _client().post("/api/resume", json=body).status_code == 400, body
+        popen.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("body", "error"),
+        [
+            (
+                {"approve": "no", "auto_approve": True},
+                "Field 'auto_approve' requires approve: \"yes\" — it pre-approves this step's remaining "
+                "iterations, which contradicts denying it.",
+            ),
+            (
+                {"choose": "b", "auto_approve": True},
+                "Field 'auto_approve' applies to approval gates only — escalations cannot be pre-answered.",
+            ),
+            ({"auto_approve": True}, "Field 'auto_approve' requires approve: \"yes\"."),
+            ({"approve": "yes", "auto_approve": "true"}, "Field 'auto_approve' must be a boolean."),
+            (
+                {"approve": "yes", "autoApprove": True},
+                "Unknown field(s): autoApprove — expected run, approve, choose, force, auto_approve.",
+            ),
+        ],
+        ids=["with-deny", "with-choose", "no-answer", "string", "unknown-key"],
+    )
+    def test_auto_approve_contradictions_are_400_before_any_io(
+        self, tmp_path: Path, monkeypatch, body: dict[str, object], error: str
+    ) -> None:
+        """Task 183 D7: refused on the body's shape alone — a REAL paused loop token underneath
+        proves the refusal never reached pre-flight (which would accept the token)."""
+        self._home(tmp_path, monkeypatch)
+        token = self._pause_loop(tmp_path)
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post("/api/resume", json={"run": token, **body})
+        assert response.status_code == 400
+        assert response.json() == {"error": error}
         popen.assert_not_called()
 
     def test_equals_bearing_target_is_400_and_does_not_spawn(self, tmp_path: Path, monkeypatch) -> None:

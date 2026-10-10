@@ -2632,6 +2632,13 @@ button.say-affordance {
   justify-content: flex-end;
   gap: 8px;
 }
+/* A loop approval's three answers (Task 183) don't fit the callout's ~296px row: Deny · Approve
+   keep their row and order, and Approve all remaining spans the pair's width on a row under it. */
+.gate-actions.gate-actions-loop {
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: end;
+}
 .gate-btn {
   padding: 6px 14px;
   border-radius: 7px;
@@ -2659,12 +2666,27 @@ button.say-affordance {
 .gate-primary:hover:not(:disabled) {
   filter: brightness(1.1);
 }
+/* Approve all remaining: affirmative but secondary — an accent tint and accent text, never a
+   second accent fill. One line: the label never wraps. */
+.gate-approve-all {
+  grid-column: 1 / -1;
+  white-space: nowrap;
+  background: color-mix(in oklab, var(--accent) 12%, var(--bg-field));
+  border-color: color-mix(in oklab, var(--accent) 45%, transparent);
+  color: var(--accent);
+}
+/* The position half of the eyebrow: a wrapping eyebrow breaks only BETWEEN the id and it. */
+.gate-eyebrow-position {
+  white-space: nowrap;
+}
 /* Deny stays quiet (a clean human "no" is a first-class outcome, not a red alarm). */
 .gate-note {
   margin: 0;
   font-size: 12px;
   color: var(--text-muted);
   line-height: 1.45;
+  /* Server refusal text names step ids verbatim; an unbreakable snake_case id must wrap, not clip. */
+  overflow-wrap: anywhere;
 }
 /* An ack-required warning (stale workflow / side effects may re-fire) — amber, matching the
    paused/stopped palette. `code` inside names the node. */

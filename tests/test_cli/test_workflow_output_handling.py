@@ -529,6 +529,54 @@ class TestWorkflowOutputHandling:
         assert "TARGET_ONLY_VALUE" not in explicit.stdout
         assert "--only active" not in explicit.stderr
 
+    def test_real_cli_declared_output_resolving_to_null_is_a_value(self, tmp_path):
+        """Real CLI regression (#753): a declared output whose source resolves to JSON
+        ``null`` is a value on every output surface — never dropped like a missing key.
+        The absence half stays loud: an undeclared ``-o`` key still warns "not found"."""
+        runner = click.testing.CliRunner(mix_stderr=False)
+        workflow = {
+            "ir_version": "0.1.0",
+            "outputs": {
+                "video": {"description": "Null video path", "source": "${run.stdout.video_path}"},
+                "facts": {"description": "Whole verdict", "source": "${run.stdout}"},
+            },
+            "nodes": [
+                {
+                    "id": "run",
+                    "type": "shell",
+                    "cache": False,
+                    "params": {"command": 'printf \'{"verdict":"ok","video_path":null}\''},
+                },
+            ],
+            "edges": [],
+        }
+        workflow_file = tmp_path / "null-output.pflow.md"
+        workflow_file.write_text(ir_to_markdown(workflow), encoding="utf-8")
+
+        as_json = runner.invoke(main, ["--output-format", "json", str(workflow_file)])
+        assert as_json.exit_code == 0, as_json.stderr
+        assert json.loads(as_json.stdout)["result"] == {
+            "video": None,
+            "facts": {"verdict": "ok", "video_path": None},
+        }
+
+        explicit_print = runner.invoke(main, ["-p", "-o", "video", str(workflow_file)])
+        assert explicit_print.exit_code == 0, explicit_print.stderr
+        assert explicit_print.stdout == "null\n"
+
+        declared_print = runner.invoke(main, ["-p", str(workflow_file)])
+        assert declared_print.exit_code == 0, declared_print.stderr
+        assert declared_print.stdout == "null\n"
+
+        explicit_text = runner.invoke(main, ["-o", "video", str(workflow_file)])
+        assert explicit_text.exit_code == 0, explicit_text.stderr
+        assert explicit_text.stdout == "null\n"
+        assert "not found" not in explicit_text.stderr
+
+        missing = runner.invoke(main, ["-o", "nope", str(workflow_file)])
+        assert missing.stdout == ""
+        assert "output key 'nope' not found" in missing.stderr
+
     def test_print_only_suppresses_routing_note_but_keeps_only_indicator(self, capsys):
         """-p suppresses the routing note while preserving the --only mode line."""
         from pflow.cli.workflow_output import _handle_text_output

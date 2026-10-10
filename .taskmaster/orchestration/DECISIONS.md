@@ -23,11 +23,16 @@ Home: `ORCHESTRATION.md` "Worktree & git flow"
 
 Implementing agents commit and push on their feature branches. The main orchestrator commits to
 `main` only on the user's explicit word, and pushing `main` always needs it — approval to edit or
-reconcile is not approval to commit, and closing a session authorizes none. Sole exception: a
-minimal prep commit of producer-facing tracked inputs immediately before provisioning an approved
-worktree; that approval covers its push; nothing producer-facing changed ⇒ no prep commit, branch
-from verified `origin/main`. Orchestration state never rides a PR — user: *"we keep this as
-simple as possible for this repo (no docs prs)"*.
+reconcile is not approval to commit. Two standing exceptions: (1) a minimal prep commit of
+producer-facing tracked inputs immediately before provisioning an approved worktree; that approval
+covers its push; nothing producer-facing changed ⇒ no prep commit, branch from verified
+`origin/main`. (2) **The close ritual commits and pushes the orchestration state set itself** —
+`.taskmaster/orchestration/` only (CURRENT-STATE, RECURRENCE, STANDING-KNOWLEDGE, DECISIONS,
+`sessions/`), by pathspec, never `-A` — user: *"we should probably add this to a step in the close
+orchestration skill to commit when closing session?"*, ruled for that set only; producer-facing edits
+(specs, ADRs, CONTEXT.md, skills, agent defs) still wait for the word or ride exception (1).
+Orchestration state never rides a PR — user: *"we keep this as simple as possible for this repo (no
+docs prs)"*.
 
 Home: this row (cited from the role prompt and the close skill)
 

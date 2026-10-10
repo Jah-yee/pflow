@@ -86,6 +86,10 @@ class ResumeSource:
     `None` when its events carry no recorded position (a non-loop step, a trace
     that predates loop position, or a step given `loop:` since the run — a loop
     step then restarts at 1 and says so). Derived by `resume_iteration`, the one reader of the events' field.
+
+    Task 180: `step_identity` is the meta line's per-step identity map
+    (`core/workflow_id.step_identity`) — `None` on a trace that predates it or
+    carries a malformed one, which keeps the whole-workflow `content_hash` check.
     """
 
     path: Path
@@ -99,6 +103,7 @@ class ResumeSource:
     paused_node_id: str | None = None
     gate_request: dict[str, Any] | None = None
     entry_iteration: int | None = 1
+    step_identity: dict[str, Any] | None = None
 
 
 def _is_trace_locked(path: Path) -> bool | None:
@@ -340,16 +345,15 @@ def _seedable_final_events(
     if entry_node_id is None:
         scope = events
     else:
-        idx = next(
-            (
-                i
-                for i, e in enumerate(events)
-                if e.get("node_id") == entry_node_id and (e.get("iteration") or 1) >= entry_iteration
-            ),
-            None,
-        )
+        idx = next((i for i, e in enumerate(events) if _resumes_from(e, entry_node_id, entry_iteration)), None)
         scope = events if idx is None else events[:idx]
     return {nid: ev for nid, ev in final_events_by_node(scope).items() if ev.get("status") != "failed"}
+
+
+def _resumes_from(event: dict[str, Any], entry_node_id: str, entry_iteration: int) -> bool:
+    """Whether ``event`` is the entry's at ``entry_iteration`` or later — the first such event is
+    where the seed slice ends and where the resume re-runs from (a keyless event is iteration 1)."""
+    return event.get("node_id") == entry_node_id and (event.get("iteration") or 1) >= entry_iteration
 
 
 def lossy_seed(
@@ -366,6 +370,62 @@ def lossy_seed(
         if lossy:
             return node_id, [str(entry) for entry in lossy]
     return None
+
+
+def restored_node_ids(source: ResumeSource) -> list[str]:
+    """The steps a resume of ``source`` restores instead of re-running, in run order.
+
+    The loader's own seed derivation (the arguments ``load_resume_source`` scans) minus the entry,
+    which runs — the same set the engine counts as "N upstream steps restored".
+    """
+    seedable = _seedable_final_events(source.events, source.entry_node_id, source.entry_iteration or 1)
+    return [node_id for node_id in seedable if node_id != source.entry_node_id]
+
+
+def entry_never_started(source: ResumeSource) -> bool:
+    """Whether the source run PROVES the entry never began on any visit the resume re-runs (#690).
+
+    ``begin_node`` flushes a top-level ``node.start`` before a step's prep/exec, and the step's
+    terminal ``event`` reuses that line's ``id``; a failure raised earlier (template resolution, a
+    loop-carry error) records a FAILED ``event`` with no ``node.start``. The resume re-runs from the
+    entry's first event at ``entry_iteration`` or later (``_resumes_from``, the seed slice's own
+    cut), so from there on every line of the entry must be exactly that: a failed, unpaired event.
+    A ``node.start`` (a visit that began) or any other event — a ``restored`` re-record or a cache
+    hit, which stand for a run that executed earlier, also unpaired — is no proof. Traces without
+    ``content_hash`` predate ``node.start`` (both arrived with Task 173) and prove nothing either.
+    """
+    entry = source.entry_node_id
+    if entry is None or source.content_hash is None:
+        return False
+    try:
+        lines = [
+            line
+            for line in _iter_raw_trace_lines(source.path)
+            if line.get("parent_id") is None
+            and line.get("node_id") == entry
+            and line.get("kind") in ("node.start", "event")
+        ]
+    except (OSError, ValueError):
+        return False
+    first_iteration = source.entry_iteration or 1
+    cut = next(
+        (
+            i
+            for i, line in enumerate(lines)
+            if line.get("kind") == "event" and _resumes_from(line, entry, first_iteration)
+        ),
+        None,
+    )
+    if cut is None:
+        return False
+    started_ids = {line.get("id") for line in lines[:cut] if line.get("kind") == "node.start"}
+    return all(
+        line.get("kind") == "event"
+        and line.get("status") == "failed"
+        and isinstance(line.get("id"), int)
+        and line["id"] not in started_ids
+        for line in lines[cut:]
+    )
 
 
 def _apply_gate_resolutions(path: Path, events: list[dict[str, Any]]) -> None:
@@ -895,7 +955,20 @@ def load_resume_source(
         paused_node_id=paused_node_id,
         gate_request=gate_request,
         entry_iteration=entry_iteration,
+        step_identity=_recorded_step_identity(data),
     )
+
+
+def _recorded_step_identity(data: dict[str, Any]) -> dict[str, Any] | None:
+    """The trace's ``step_identity`` when its envelope (a ``steps`` map, a ``start`` id or null) is intact,
+    else ``None`` — the preflight then falls back to the whole-workflow hash. Individual step entries are
+    not vetted here: the preflight treats a missing or malformed one as edited (fail-closed)."""
+    identity = data.get("step_identity")
+    if not isinstance(identity, dict) or not isinstance(identity.get("steps"), dict):
+        return None
+    if not isinstance(identity.get("start"), (str, type(None))):
+        return None
+    return identity
 
 
 # The EXACT engine-injected reserved keys that ``apply_memo_hit`` strips when
@@ -975,7 +1048,9 @@ class PausedRun:
     of truth — the row carries only what the list renders); ``paused_at`` is the
     trailer's ``end_time`` ISO string (the moment the run finalized paused);
     ``iteration`` is ``gate_request["iteration"]`` — the loop iteration that raised
-    the gate (``None`` for a non-loop step; Task 179).
+    the gate (``None`` for a non-loop step; Task 179); ``max_iterations`` is
+    ``gate_request["max_iterations"]`` — the loop's cap as known at the gate (``None``
+    when unknown, and for records written before Task 183).
     """
 
     execution_id: str
@@ -986,6 +1061,7 @@ class PausedRun:
     paused_at: str | None
     path: Path
     iteration: int | None = None
+    max_iterations: int | None = None
 
 
 def _scan_tail_for_trailer(tail: bytes) -> tuple[dict[str, Any] | None, bool]:
@@ -1078,6 +1154,7 @@ def list_paused_runs(debug_dir: Path | None = None) -> list[PausedRun]:
             continue
         gate_kind = gate_request.get("kind")
         iteration = gate_request.get("iteration")
+        max_iterations = gate_request.get("max_iterations")
         paused_at = trailer.get("end_time")
         workflow_name = meta.get("workflow_name")
         pending.append(
@@ -1090,6 +1167,7 @@ def list_paused_runs(debug_dir: Path | None = None) -> list[PausedRun]:
                 paused_at=paused_at if isinstance(paused_at, str) else None,
                 path=trace_file,
                 iteration=iteration if isinstance(iteration, int) else None,
+                max_iterations=max_iterations if isinstance(max_iterations, int) else None,
             )
         )
     return pending

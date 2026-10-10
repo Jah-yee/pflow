@@ -1,4 +1,4 @@
-# CURRENT-STATE.md (last verified: 2026-10-06, session-10 close — main @ 3b342ce9)
+# CURRENT-STATE.md (last verified: 2026-10-08, session-12 close — main @ f78b40a1)
 
 _Living state header — the ONE mandatory session-start read (~80-line budget; state + pointers
 only). Rewritten at close/park (ORCHESTRATION "Artifacts and ownership"); work done outside a
@@ -9,83 +9,76 @@ braindumps); routing: `sessions/INDEX.md`. Every claim here is a pointer to veri
 ## Process
 
 - Root `CLAUDE.md` Code Quality carries the user's governing lens VERBATIM; quote it in every packet.
-- Lens selection is by TRIGGER, never diff size (deep-review skill, rewritten s10 with the user); spec-review
-  mode and the standing dogfood pass are the main orchestrator's (ORCHESTRATION "Review policy").
-- `docs/` is a required stale-surface sweep for every lane/task (root CLAUDE.md:184, lane def, spec-conformance).
-- Session-10's end-to-end grant is CLOSED — a grant never carries to the next session.
+- Session-12's end-to-end grant is CLOSED. Main orchestrator ran Fable, then **Opus** from the swap (user `/model`,
+  saved as default); routing table unchanged (DECISIONS #24).
+- Review dispatch changed this session (deep-review SKILL, committed `45e15e2e` + uncommitted spec-mode sentence):
+  plan- AND spec-mode reading batteries go through the pflow fan-out on codex; task completion gates add
+  `simplicity` + `spec-conformance`.
 
-## In flight
+## In flight — nothing live; two PLANNED tasks parked (worktrees kept, branches LOCAL, not pushed)
 
-- Nothing live. No worktrees besides main, no open PRs, no live agents. `origin/main == main == 3b342ce9`;
-  the push CI for it was in progress at close (GitHub Actions had an open incident all day — read the failing
-  step's log before calling a red run a regression).
-
-## Committed by the user
-
-- The session-10 doc set (skill rewrite, defs, CLAUDE.md, ADR-0016, specs, state files) landed as the user's own
-  commit `0d935987` "docs: session 10 docs". The 118 spec + ADR-0016 are therefore on main — the next session's
-  118 planner needs NO prep commit, only a push check (`git status -sb` vs `origin/main`).
-
-## Recently shipped (session-10, 2026-10-05 → 10-06)
-
-- **Task 179** (durable loop position, PR #713; closes #659; trace format 2.8.0; resume refuses lossy seeds).
-- Lane B: #678 (#704) · #521+#389 (#705) · #627 (#707, `NodeError` + ratchet).
-- Issue hygiene: 19 closed (4 verified-fixed in the morning, 15 by the KEEP-biased triage), 11 narrowing/evidence
-  comments, 26 filed (#684–#712 — dogfood + lane follow-ups). Open: 145.
+- **Task 183** (loop gates "of up to M" + "Approve all remaining") — `feat/task-183-loop-gate-approve-all` @ `9b6354b1`.
+  RULED (R1 yes, R2 (a), P4 web phase on **Opus** by the user's word). Branch is behind main by 8+ commits incl. Task
+  180's trace 2.9.0 → 183 takes **2.10.0**. Launch an Opus task-orchestrator on the plan; it merges main first.
+- **Task 181** (MCP code params + `${x|json}`) — `feat/task-181-mcp-code-params-json` @ `d7383363`. CP-1 RULED (all
+  as recommended). Its gate (118 Part 2) is MERGED. P0 re-verifies 118's shipped shapes: `data_flow.step_scope`,
+  `body_reference_roots` in `validate_workflow_templates`, web `isCodeBody` (`web/src/utils/format.ts`). Coordinates
+  with Task 120 on the `core/templates.resolve` leaf policy.
+- Engine seam: 183 and 181 both touch the engine — serialize (183 first: smaller, fully ruled, trace bump).
 
 ## Next session, recommended order (NOT yet user-agreed)
 
-1. **Task 118 planner** (lane A, Fable; spec + ADR-0016 committed in `0d935987`):
-   shell `env:` binding, bodies untemplated, `|json` filter — its trigger (#678 merged) is met.
-2. Engine seam is QUIET now → the lanes serialized behind 179 are free: **#690** (fix-then-resume refused
-   twice) · **#458** (`--only` inputs ignored, re-observed) · **#503** + `batch_executor.py:1190` (engine vanilla
-   raises; extend #627's ratchet) · **#710** · **#711**. Launch at most 3 lanes + 1 planner (host load).
-3. **Task 120** (strict input types; `next`, observed via dogfood) — small, no engine contact; pairs with #297.
-4. Lane-B fill, disjoint: **#696/#697** (security: unmasked `<X>_KEY`; `report` renders secrets) · **#685** (MCP
-   `Error: Error` + Windows smoke flake root cause) · **#684** (structured node suggestions — show-before-code)
-   · **#520/#681** (validator seam, now free) · **#706** (fan-out `target` — a QUIET moment, shared tooling).
-   · **#714 then #656** (web UI, Fable, screenshots before ship): #714 pins Approve/Deny out of the gate panel's
-   scroll; #656 (REOPENED by the user post-close) adds "iteration N of M" + "Approve all remaining" — the limit
-   needs a `GateRequest` field from `runtime/engine/gate.py` → engine contact, route as a small task or a scoped
-   engine exception (precedent #615).
-5. **Release v0.16.0** — ASKED THREE TIMES, NOT ANSWERED (s10). 43+ commits since v0.15.1. Do not nag; surface
-   once with the dogfood pass as the pre-release gate (release skill now requires it).
-6. Task 178 (MCP SDK 2.x; refresh its research — PyPI is at 2.3.0, research pinned 2.2.0).
+1. **User rulings on Task 120's three new decisions (i)–(iii)** (spec `## DECISIONS FOR THE USER`, recommendations
+   inline) — then prep-commit the spec + ADR-0017 and launch its **Fable planner** (DECISIONS #24). The spec had
+   two review rounds (7 Claude + 6 codex lenses; codex fresh re-read) — ledger `scratchpads/session-12/`.
+2. **Task 183 build** (above), then **Task 181 build**.
+3. Lane-B fill: #727 (stdin encode before spawn — now unblocked) · #746 (approval preview shows typed env values —
+   consent surface) · #728 · #729 · #722 · #716 · #748 · #749 · #741 (changelog workflow, before next release).
+4. File Task 180's follow-up candidates after verifying each (`.taskmaster/tasks/task_180/task-review.md`
+   follow-ups: web "Resume anyway" when the resume point is gone; replay banner covers the refusal title at
+   760×560; failed `--only` prints a resume hint resume rejects; batched host stopped by a child gate resumes as
+   "no failed step"; child-file edits invisible to resume; screenshot-tool items).
 
 ## Decisions pending the user
 
-- **#692** product question: no command deletes a saved workflow (rec. `pflow delete <name>`).
-- **#684** render shape for node-failure suggestions (lane hands back BEFORE/AFTER first).
-- Specs 99 and 121 carry "SPEC REWRITE REQUIRED" blocks — no planner launches on them until rewritten.
-- RECURRENCE promotions applied at s10 close (ratify or revert): kill-by-PID mechanism in two defs; the interim
-  sentence in the role prompt; the `gh run list --branch` line in STANDING-KNOWLEDGE. n=3 "read the cited
-  function before writing a mechanism" → PROPOSED home: ADR-FORMAT.md review rule + create-task skill.
+- Task 120 (i)–(iii) above. **Task 180 edge**: a run stopped BETWEEN steps (interrupt / escalation), then a step
+  inserted right after the last finished one — refuses by the ruled rule, though `--force` would run it (not skip);
+  kept refusing (ruled behaviour) — ask whether to relax.
+- Carried, never answered: **#692** (`pflow delete <name>` — tonight's dogfood left 3 `dogfood-s12-*` saved
+  workflows the CLI cannot remove).
+- Promotions to ratify or revert (applied at closes): s10 — kill-by-PID in two defs, the interim sentence, the
+  `gh run list --branch` line; s11 — ADR-FORMAT "re-derive every mechanism", lane-implementer "kill shells left in
+  the tree"; **s12** — release skill "wait in-turn for the changelog run". RECURRENCE `→ PROPOSED`: never
+  `git stash` (severity override, since s09); the `ls`→eza alias (s12, see RECURRENCE).
 
 ## Do not re-raise (declined, with the trigger that reopens each)
 
 - pr-closer / RELEASE-BLOCK / batched releases / docs-PR lane / automatic PR review / cross-task knowledge
   base — never (DECISIONS #5/#31).
-- **#665** (`save --force` data loss) — user: *"save isnt a top tier feature right now all uses ive had myself
-  has been in a local repo"*; reopens when saved-library use becomes real (external users, or the user saves).
-- Task 179 final-step loop escalation pause — ruled (b); (c) via `resume_after` is its own future ruling.
-- #624 shape 2 · retired gemini ids · shell lint / H1 check / PR-title gate / searcher eval harness /
-  `Blocked by:` field / DECISIONS index split / agent-file fact checker — triggers unchanged.
-- Task 111 default-3 batch limit — WITHDRAWN (breaks the review fan-out and a shipped test); opt-in only, `then`.
+- **#665** (`save --force` data loss) — reopens when saved-library use becomes real.
+- Task 179 final-step loop escalation pause — ruled (b). #624 shape 2 · retired gemini ids · shell lint / H1 check /
+  PR-title gate / searcher eval harness / `Blocked by:` field / DECISIONS index split / agent-file fact checker.
+- Task 111 default-3 batch limit — WITHDRAWN. Task 182 (linting) — `then`, no planner yet.
+- #743 (declared OUTPUT types) and #742 (YAML literal re-typing) are OUT of Task 120 by default — reopen only if
+  the user rules them in.
 
 ## Regime facts (dated — re-measure, never inherit)
 
-- 2026-10-06: `make test-all-local` ~10.4k on main; Task-159 baseline = 12 pre-existing drifts (#680, re-record
-  pending); a dogfood pass costs ~$0.00004 (8 calls, gemini flash-lite); 143→145 open issues.
+- 2026-10-08: `make test-all-local` 10736 passed (Task 180's merged result); Task-159 baseline 76 pass / 11 drift
+  (#680 — re-record after 183's trace bump); open issues 166.
+- 2026-10-07/08: two distinct `tests-windows` timing flakes (`test_stdin_no_hang_integration` on a main push;
+  `test_cache.py::test_concurrent_access` on PR #726) — each green on one re-run.
 
 ## Watch list (non-obvious, easy to miss)
 
-- **Resume fidelity is strict per EVENT** (179): a `datetime` beside the data a step reads blocks failure-resume
-  and stops a later gate from pausing; remedy printed. Revisit only on an observed complaint. `--only` still
-  seeds lossy values (ADR-0002's limit) — not covered.
-- Task 118 changes what `${…}` means in a shell body (ADR-0016) — the guide's `$VAR`-not-`${VAR}` rule and every
-  inline-templated shell example flip; the `env:` limits (strings, ~128 KiB, Windows case) go in the guide.
+- **Task 118 Part 2 is breaking**: old-form shell/code bodies (`${…}` in a body) fail validation with the fix shown —
+  including the user's saved library (`~/.pflow/workflows/`) and skill symlinks; converting is THEIR call. A
+  paused/failed run of an old-form workflow resumes only after conversion, with `--force`.
+- Resume is now per-step (trace 2.9.0); pre-2.9.0 traces keep the whole-workflow compare, and PR #719's `workflow`-type
+  carve-out applies only to traces without `step_identity`.
+- The web resume panel renders the server's `errors[0]` verbatim (PR #744) — refusal wording changes need no web edit.
 - MCP stdio shims + `anyio>=4.5` exist only for Task 178 to delete — never port them.
-- Screenshot suite fails loudly on no-settle (`allow_empty` opt-in) — a red run is signal. `chrome-devtools` pinned `@1.10.1`.
-- `stash@{0}` (Task 125 WIP) is the user's — lanes never `git stash`.
-- Agent defs/skills in the MAIN checkout are read live by agents launched from the session (ORCHESTRATION
-  "Collision analysis") — committed or not.
+- `stash@{0}` (Task 125 WIP) is the user's — no agent ever runs `git stash`.
+- Agent defs/skills in the MAIN checkout are read live by agents launched from the session — committed or not.
+- User's HOME holds tonight's leftovers (theirs to delete, never an agent's): `~/.pflow/workflows/dogfood-s12-*` (3),
+  ~120+ traces in `~/.pflow/debug`, `~/.pflow/reports/{stdin-surrogate,v8-fail,f10-dunder}`.

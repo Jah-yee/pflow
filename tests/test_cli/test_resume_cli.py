@@ -63,10 +63,12 @@ echo "upstream-value"
 Fails unless mode=ok.
 
 - type: shell
+- env:
+    MODE: ${mode}
 - next: step3
 
 ```shell command
-test "${mode}" = "ok" && echo "step2-ran"
+test "$MODE" = "ok" && echo "step2-ran"
 ```
 
 ### step3
@@ -74,9 +76,12 @@ test "${mode}" = "ok" && echo "step2-ran"
 Final step, reads step2 and step1.
 
 - type: shell
+- env:
+    STEP1_STDOUT: ${step1.stdout}
+    STEP2_STDOUT: ${step2.stdout}
 
 ```shell command
-echo "done ${step1.stdout} ${step2.stdout}"
+echo "done $STEP1_STDOUT $STEP2_STDOUT"
 ```
 """
 
@@ -231,7 +236,11 @@ def _write_llm_wf(tmp_path: Path) -> Path:
         "nodes": [
             {"id": "prep", "type": "shell", "params": {"command": "echo ready"}},
             {"id": "gen", "type": "llm", "params": {"model": "test/resume", "prompt": "refine ${prep.stdout}"}},
-            {"id": "tail", "type": "shell", "params": {"command": "echo '${gen.response}'"}},
+            {
+                "id": "tail",
+                "type": "shell",
+                "params": {"command": 'echo "$GEN_RESPONSE"', "env": {"GEN_RESPONSE": "${gen.response}"}},
+            },
         ],
     }
     wf = tmp_path / "llm_wf.pflow.md"
@@ -274,31 +283,504 @@ def _run_to_failure_llm(wf: Path) -> str:
     return match.group(1)
 
 
+# --- A side-effecting K that never started (#690) -----------------------------
+
+# `produce`'s result shape is dynamic, so the `markdwn` typo passes validation and `save`
+# fails template resolution — before its node.start, so it never ran.
+_TYPO_WF = """# Typo Demo
+
+A side-effecting step with a template typo.
+
+## Steps
+
+### produce
+
+Produce markdown.
+
+- type: code
+
+```python code
+result: dict = {{"markdown": "# hi"}}
+```
+
+### save
+
+Save it.
+
+- type: write-file
+- file_path: {out}
+- content: ${{produce.result.markdwn}}
+"""
+
+
+def _run_hint(args: list[str]) -> tuple[Any, str]:
+    result = _runner().invoke(cli, args)
+    assert result.exit_code == 1, result.stderr
+    match = _HINT_RE.search(result.stderr)
+    assert match, result.stderr
+    return result, match.group(1)
+
+
+def test_fix_then_resume_of_a_step_that_never_started(home, tmp_path):
+    """The issue's loop end to end: no side-effect confirmation for a K that never began, and —
+    since only K was edited (Task 180) — no --force either: the fix resumes and completes."""
+    out = tmp_path / "out.txt"
+    wf = tmp_path / "typo.pflow.md"
+    wf.write_text(_TYPO_WF.format(out=out), encoding="utf-8")
+    _, exec_id = _run_hint([str(wf)])
+
+    # Unedited, non-TTY, no --force: K re-runs (and fails again on the same typo).
+    rerun, newer_id = _run_hint(["resume", exec_id])
+    assert "Resume needs confirmation" not in rerun.stdout + rerun.stderr
+    assert "Template Resolution Failed" in rerun.stderr
+    assert newer_id != exec_id
+
+    wf.write_text(wf.read_text(encoding="utf-8").replace("markdwn", "markdown"), encoding="utf-8")
+    fixed = _runner().invoke(cli, ["resume", newer_id])
+    assert fixed.exit_code == 0, fixed.stdout + fixed.stderr
+    assert "Workflow changed" not in fixed.stdout + fixed.stderr
+    assert out.read_text(encoding="utf-8").strip() == "# hi"
+
+
+# A batch K resolves each ITEM's templates inside the batch, after K's node.start — item [1]
+# fails template resolution after item [0]'s side effect fired.
+_BATCH_TYPO_WF = """# Batch Typo Demo
+
+A batch whose second item fails template resolution.
+
+## Steps
+
+### produce
+
+Items.
+
+- type: code
+
+```python code
+result: list = [{{"v": "a"}}, {{"w": "b"}}]
+```
+
+### each
+
+Append each item's value.
+
+- type: shell
+- batch:
+    items: ${{produce.result}}
+    error_handling: fail_fast
+- env:
+    ITEM_V: ${{item.v}}
+
+```shell command
+echo "$ITEM_V" >> {out}
+```
+"""
+
+
+def test_batch_step_failing_template_resolution_still_needs_confirmation(home, tmp_path):
+    """The template-failure error text is no proof K never ran: a batch item's template failure
+    lands after earlier items fired. Only the missing node.start is — and a batch K has one."""
+    out = tmp_path / "items.txt"
+    wf = tmp_path / "batch.pflow.md"
+    wf.write_text(_BATCH_TYPO_WF.format(out=out), encoding="utf-8")
+    first, exec_id = _run_hint([str(wf)])
+    assert "Template Resolution Failed" in first.stderr
+    assert out.read_text(encoding="utf-8").split() == ["a"]  # item [0] fired
+
+    result = _runner().invoke(cli, ["resume", exec_id])
+    assert result.exit_code == 1
+    assert "Resume needs confirmation" in result.stdout + result.stderr
+    assert out.read_text(encoding="utf-8").split() == ["a"]  # nothing re-fired
+
+
+# `save` fires and fails on visit 1; its on-error back edge re-runs `router`, which now yields
+# nothing, so visit 2 fails resolving its template before starting. Resume re-runs `save` from its
+# FIRST visit (visit 1's upstream state is what gets restored), so it began.
+_BACK_EDGE_WF = """# Back Edge Demo
+
+A side-effecting step re-entered by an on-error back edge.
+
+## Steps
+
+### router
+
+Visit 1 yields a value; later visits yield nothing.
+
+- type: code
+- cache: false
+- next: save
+
+```python code
+import os
+first = not os.path.exists({marker!r})
+open({marker!r}, "a", encoding="utf-8").close()
+result: dict = {{"p": "x"}} if first else {{}}
+```
+
+### save
+
+Append to the ledger, then fail.
+
+- type: shell
+- on-error: router
+- env:
+    ROUTER_RESULT_P: ${{router.result.p}}
+
+```shell command
+echo "fired $ROUTER_RESULT_P" >> {out}; exit 1
+```
+"""
+
+
+def test_step_that_began_on_an_earlier_visit_still_needs_confirmation(home, tmp_path):
+    out = tmp_path / "ledger.txt"
+    wf = tmp_path / "back-edge.pflow.md"
+    wf.write_text(_BACK_EDGE_WF.format(marker=str(tmp_path / "marker"), out=out), encoding="utf-8")
+    first, exec_id = _run_hint([str(wf)])
+    assert "Template Resolution Failed" in first.stderr  # the LAST visit failed before starting
+    assert out.read_text(encoding="utf-8").splitlines() == ["fired x"]  # visit 1 fired
+
+    result = _runner().invoke(cli, ["resume", exec_id])
+    assert result.exit_code == 1
+    assert "Resuming re-runs step 'save' (a shell step)" in result.stdout + result.stderr
+    assert out.read_text(encoding="utf-8").splitlines() == ["fired x"]  # nothing re-fired
+
+
+# `k` fires in the first run; `m` (gated) fails and its back edge re-runs `x`, which now yields
+# nothing, so `k` fails before starting. In the approved attempt `k` was RESTORED (a re-record with
+# no node.start, standing for the first run's execution) — resuming that attempt re-runs `k` from
+# the restored visit, so it began.
+_RESTORED_ENTRY_WF = """# Restored Entry Demo
+
+A side-effecting step restored by a resumed attempt, then re-entered by a back edge.
+
+## Steps
+
+### x
+
+The first run yields a value; later runs yield nothing.
+
+- type: code
+- cache: false
+- next: k
+
+```python code
+import os
+first = not os.path.exists({marker!r})
+open({marker!r}, "a", encoding="utf-8").close()
+result: dict = {{"p": "a"}} if first else {{}}
+```
+
+### k
+
+Fire the side effect.
+
+- type: shell
+- env:
+    X_RESULT_P: ${{x.result.p}}
+
+```shell command
+echo "K fired $X_RESULT_P" >> {out}
+```
+
+### m
+
+A gated step that fails and retries via x.
+
+- type: shell
+- approval: required
+- on-error: x
+
+```shell command
+exit 1
+```
+"""
+
+
+def test_entry_restored_by_a_resumed_attempt_still_needs_confirmation(home, tmp_path):
+    out = tmp_path / "ledger.txt"
+    wf = tmp_path / "restored.pflow.md"
+    wf.write_text(_RESTORED_ENTRY_WF.format(marker=str(tmp_path / "marker"), out=out), encoding="utf-8")
+    paused = _runner().invoke(cli, [str(wf)])
+    assert paused.exit_code == 4, paused.stderr
+    token = re.search(r"Resume token: (\S+)", paused.stdout + paused.stderr)
+    assert token, paused.stdout + paused.stderr
+    _, attempt_id = _run_hint(["resume", token.group(1), "--approve", "yes"])
+    assert out.read_text(encoding="utf-8").splitlines() == ["K fired a"]  # k fired once, in the first run
+
+    result = _runner().invoke(cli, ["resume", attempt_id])
+    assert result.exit_code == 1
+    assert "Resuming re-runs step 'k' (a shell step)" in result.stdout + result.stderr
+    assert out.read_text(encoding="utf-8").splitlines() == ["K fired a"]  # nothing re-fired
+
+
+# A batched sub-workflow host whose item fired a side effect. Since Task 180 its node.start is
+# written (and paired with its failed event), so the trace itself proves it began; traces that
+# predate that never wrote it, which is what resume_preflight's `workflow`-type carve-out covers.
+_BATCH_CHILD_WF = """# Ledger Child
+
+Append the tag to a ledger.
+
+## Inputs
+
+### tag
+
+The tag.
+
+- type: string
+
+## Outputs
+
+### out
+
+The output.
+
+- source: ${{fire.stdout}}
+
+## Steps
+
+### fire
+
+Append.
+
+- type: shell
+- env:
+    TAG: ${{tag}}
+
+```shell command
+echo "fired $TAG" >> {out}
+```
+"""
+
+_BATCH_HOST_WF = """# Batched Host
+
+A batched sub-workflow host; item [1] fails template resolution after item [0] fired.
+
+## Steps
+
+### produce
+
+Items.
+
+- type: code
+
+```python code
+result: list = [{{"t": "a"}}, {{"x": "b"}}]
+```
+
+### host
+
+Run the child per item.
+
+- type: workflow
+- workflow: {child}
+- inputs:
+    tag: ${{item.t}}
+- batch:
+    items: ${{produce.result}}
+    error_handling: fail_fast
+"""
+
+
+def test_batched_sub_workflow_host_still_needs_confirmation(home, tmp_path):
+    out = tmp_path / "ledger.txt"
+    child = tmp_path / "child.pflow.md"
+    child.write_text(_BATCH_CHILD_WF.format(out=out), encoding="utf-8")
+    wf = tmp_path / "host.pflow.md"
+    wf.write_text(_BATCH_HOST_WF.format(child=child.as_posix()), encoding="utf-8")
+    _, exec_id = _run_hint([str(wf)])
+    assert out.read_text(encoding="utf-8").splitlines() == ["fired a"]  # item [0]'s child fired
+
+    result = _runner().invoke(cli, ["resume", exec_id])
+    assert result.exit_code == 1
+    assert "Resuming re-runs step 'host' (a workflow step)" in result.stdout + result.stderr
+    assert out.read_text(encoding="utf-8").splitlines() == ["fired a"]  # nothing re-fired
+
+
+_MODE_CHILD_WF = """# Mode Child
+
+Append the tag to a ledger, but only in mode ok.
+
+## Inputs
+
+### tag
+
+The tag.
+
+- type: string
+
+### mode
+
+Must be ok.
+
+- type: string
+
+## Steps
+
+### fire
+
+Append.
+
+- type: shell
+- env:
+    TAG: ${{tag}}
+    MODE: ${{mode}}
+
+```shell command
+test "$MODE" = ok && echo "fired $TAG" >> {out}
+```
+"""
+
+_MODE_HOST_WF = """# Batched Mode Host
+
+A batched sub-workflow host after one upstream step.
+
+## Inputs
+
+### mode
+
+Passed to every item.
+
+- type: string
+- required: true
+
+## Steps
+
+### produce
+
+Items.
+
+- type: code
+
+```python code
+result: list = ["a", "b"]
+```
+
+### host
+
+Run the child per item.
+
+- type: workflow
+- workflow: {child}
+- inputs:
+    tag: ${{item}}
+    mode: ${{mode}}
+- batch:
+    items: ${{produce.result}}
+    error_handling: fail_fast
+"""
+
+
+def _write_mode_host(tmp_path: Path) -> tuple[Path, Path]:
+    out = tmp_path / "ledger.txt"
+    child = tmp_path / "mode-child.pflow.md"
+    child.write_text(_MODE_CHILD_WF.format(out=out.as_posix()), encoding="utf-8")
+    wf = tmp_path / "mode-host.pflow.md"
+    wf.write_text(_MODE_HOST_WF.format(child=child.as_posix()), encoding="utf-8")
+    return wf, out
+
+
+def _kill_before_host_completes(trace: Path) -> list[dict[str, Any]]:
+    """Cut a real trace where a kill mid-``host`` would: drop the host's terminal event and all after."""
+    lines = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
+    cut = next(i for i, line in enumerate(lines) if line["kind"] == "event" and line["node_id"] == "host")
+    trace.write_text("".join(json.dumps(line) + "\n" for line in lines[:cut]), encoding="utf-8")
+    return lines[:cut]
+
+
+def test_run_killed_inside_a_batched_host_resumes_at_the_host(home, tmp_path):
+    """The batched host's node.start is the only on-disk sign it began; killed there, the run resolves
+    the host as the step it was killed in (not "between produce and host") and asks to confirm it."""
+    from pflow.runtime.resume_source import load_resume_source
+
+    wf, out = _write_mode_host(tmp_path)
+    full = _runner().invoke(cli, [str(wf), "mode=ok"])
+    assert full.exit_code == 0, full.stderr
+    [trace] = (home / ".pflow" / "debug").glob("workflow-trace-*.json")
+    kept = _kill_before_host_completes(trace)
+    assert [(line["kind"], line["node_id"]) for line in kept[1:]] == [
+        ("node.start", "produce"),
+        ("event", "produce"),
+        ("node.start", "host"),
+    ]
+    exec_id = kept[0]["execution_id"]
+
+    source = load_resume_source(execution_id=exec_id, debug_dir=home / ".pflow" / "debug")
+    assert (source.entry_node_id, source.last_completed_node_id) == ("host", None)
+    refused = _runner().invoke(cli, ["resume", exec_id])
+    assert refused.exit_code == 1
+    assert "Resuming re-runs step 'host' (a workflow step)" in refused.stdout + refused.stderr
+    assert out.read_text(encoding="utf-8").splitlines() == ["fired a", "fired b"]  # nothing re-fired
+
+
+def test_attempt_killed_inside_a_batched_host_supersedes_its_source(home, tmp_path):
+    """A resume attempt killed inside the batched host may have fired its items: it consumed the chain,
+    so its source can no longer be resumed (it would re-run what the attempt started)."""
+    from pflow.core.exceptions import ResumeSupersededError
+    from pflow.runtime.resume_source import load_resume_source
+
+    wf, _ = _write_mode_host(tmp_path)
+    _, source_id = _run_hint([str(wf), "mode=bad"])
+    resumed = _runner().invoke(cli, ["resume", source_id, "mode=ok", "--force"])
+    assert resumed.exit_code == 0, resumed.stderr
+    debug = home / ".pflow" / "debug"
+    [attempt] = [
+        path
+        for path in debug.glob("workflow-trace-*.json")
+        if json.loads(path.read_text(encoding="utf-8").splitlines()[0]).get("resumed_from") == source_id
+    ]
+    kept = _kill_before_host_completes(attempt)
+    assert [(line["kind"], line["node_id"], line.get("restored")) for line in kept[1:]] == [
+        ("event", "produce", True),
+        ("node.start", "host", None),
+    ]
+
+    with pytest.raises(ResumeSupersededError) as excinfo:
+        load_resume_source(execution_id=source_id, debug_dir=debug)
+    assert excinfo.value.newer_execution_id == kept[0]["execution_id"]
+
+
 # --- Stale-workflow gate (§E step 3) -----------------------------------------
 
 
-def test_stale_hash_refusal_after_edit(home, shell_wf):
+_STEP1_EDIT = ('echo "upstream-value"', 'echo "upstream-value-2"')
+
+
+def test_stale_refusal_names_the_edited_restored_step(home, shell_wf):
     exec_id = _run_to_failure(shell_wf)
-    shell_wf.write_text(shell_wf.read_text(encoding="utf-8") + "\n<!-- edited -->\n", encoding="utf-8")
+    shell_wf.write_text(shell_wf.read_text(encoding="utf-8").replace(*_STEP1_EDIT), encoding="utf-8")
     result = _runner().invoke(cli, ["resume", exec_id, "mode=ok"])
     assert result.exit_code == 1
     combined = result.stdout + result.stderr
-    assert "edited since the original run" in combined
-    assert "--force" in combined
+    assert "'step1' was edited. Resume re-runs nothing before 'step2'" in combined
+    # step2 (shell) started in the source run, and --force also waives its side-effect
+    # confirmation — the stale refusal is the only place the agent can learn that (#690).
+    assert "--force also re-runs 'step2' (a shell step that already started" in combined
 
 
-def test_stale_hash_force_override_runs(home, shell_wf):
+def test_an_edit_after_the_resume_point_passes_the_identity_gate(home, shell_wf):
+    """Downstream of K is free to change; what remains is K's own side-effect confirmation."""
     exec_id = _run_to_failure(shell_wf)
-    shell_wf.write_text(shell_wf.read_text(encoding="utf-8") + "\n<!-- edited -->\n", encoding="utf-8")
+    shell_wf.write_text(shell_wf.read_text(encoding="utf-8").replace('echo "done', 'echo "finished'), "utf-8")
+    result = _runner().invoke(cli, ["resume", exec_id, "mode=ok"])
+    assert result.exit_code == 1
+    assert "Resuming re-runs step 'step2' (a shell step)" in result.stdout + result.stderr
+    assert "Workflow changed" not in result.stdout + result.stderr
+
+
+def test_stale_force_override_runs(home, shell_wf):
+    exec_id = _run_to_failure(shell_wf)
+    shell_wf.write_text(shell_wf.read_text(encoding="utf-8").replace(*_STEP1_EDIT), encoding="utf-8")
     result = _runner().invoke(cli, ["resume", exec_id, "mode=ok", "--force"])
     assert result.exit_code == 0, result.stderr
+    assert "done upstream-value step2-ran" in result.stdout  # step1's restored output, not the edit's
 
 
 def test_stale_unverifiable_message_when_hash_absent(tmp_path):
     """A source predating hash tracking (content_hash=None) says so, never claims an edit."""
     from pflow.core.exceptions import ResumeStaleWorkflowError
     from pflow.execution.result import ResolvedWorkflow
-    from pflow.execution.resume_preflight import _check_content_hash
+    from pflow.execution.resume_preflight import _check_workflow_identity
     from pflow.runtime.resume_source import ResumeSource
 
     resolved = ResolvedWorkflow(
@@ -315,10 +797,11 @@ def test_stale_unverifiable_message_when_hash_absent(tmp_path):
         content_hash=None,
     )
     with pytest.raises(ResumeStaleWorkflowError) as exc:
-        _check_content_hash(resolved, source, force=False)
+        _check_workflow_identity(resolved, source, force=False)
     assert "predates" in str(exc.value)
+    assert exc.value.hash_known is False
     # --force bypasses even the unverifiable case.
-    _check_content_hash(resolved, source, force=True)
+    _check_workflow_identity(resolved, source, force=True)
 
 
 # --- Disambiguation (existence precedence, §E step 2) ------------------------
@@ -556,12 +1039,12 @@ def test_dry_run_json_carries_resume_block(home, shell_wf):
 
 
 def test_dry_run_still_refuses_stale_workflow(home, shell_wf):
-    """Preview mirrors the real resume: a stale workflow refuses without --force even for --dry-run."""
+    """Preview mirrors the real resume: an edited restored step refuses without --force even for --dry-run."""
     exec_id = _run_to_failure(shell_wf)
-    shell_wf.write_text(shell_wf.read_text(encoding="utf-8") + "\n<!-- edited -->\n", encoding="utf-8")
+    shell_wf.write_text(shell_wf.read_text(encoding="utf-8").replace(*_STEP1_EDIT), encoding="utf-8")
     result = _runner().invoke(cli, ["resume", exec_id, "mode=ok", "--dry-run"])
     assert result.exit_code == 1
-    assert "edited since the original run" in (result.stdout + result.stderr)
+    assert "'step1' was edited." in (result.stdout + result.stderr)
 
 
 # --- Incomplete-run between-nodes resolution (Decision 7 / §E step 4) ---------
@@ -853,8 +1336,8 @@ def test_resume_honors_pflow_execution_id_env(home, shell_wf, monkeypatch):
 
 
 def _write_looping_host(tmp_path: Path) -> tuple[Path, Path]:
-    """A ``workflow`` host looping over a child that drops one contender per round (4 rounds),
-    logging each round's carried input. Returns ``(workflow, rounds log)``."""
+    """A ``seed`` step, then a ``workflow`` host looping over a child that drops one contender per
+    round (4 rounds), logging each round's carried input. Returns ``(workflow, rounds log)``."""
     log = tmp_path / "rounds.jsonl"
     child = tmp_path / "round.pflow.md"
     child.write_text(
@@ -870,31 +1353,29 @@ def _write_looping_host(tmp_path: Path) -> tuple[Path, Path]:
     )
     wf = tmp_path / "rounds.pflow.md"
     wf.write_text(
-        "# Rounds\n\nElimination rounds over a looping sub-workflow.\n\n## Steps\n\n### rounds\n\nRun the rounds.\n\n"
+        "# Rounds\n\nElimination rounds over a looping sub-workflow.\n\n## Steps\n\n"
+        "### seed\n\nList the contenders.\n\n- type: code\n\n"
+        '```python code\nresult: list = ["a", "b", "c", "d", "e"]\n```\n\n'
+        "### rounds\n\nRun the rounds.\n\n"
         f"- type: workflow\n- workflow: {child.as_posix()}\n"
-        '- inputs:\n    contenders: ["a", "b", "c", "d", "e"]\n'
+        "- inputs:\n    contenders: ${seed.result}\n"
         "- loop:\n    carry:\n      contenders: ${rounds.survivors}\n    while: ${rounds.more}\n    max_iterations: 10\n"
-        "- next: winner\n\n### winner\n\nAnnounce the survivor.\n\n- type: shell\n\n"
-        "```shell command\nprintf 'winner %s' '${rounds.survivors[0]}'\n```\n",
+        "- next: winner\n\n### winner\n\nAnnounce the survivor.\n\n- type: shell\n"
+        "- env:\n    ROUNDS_SURVIVORS_0: ${rounds.survivors[0]}\n\n"
+        "```shell command\nprintf 'winner %s' \"$ROUNDS_SURVIVORS_0\"\n```\n\n"
+        "## Outputs\n\n### message\n\nThe winner line.\n\n- source: ${winner.stdout}\n",
         encoding="utf-8",
     )
     return wf, log
 
 
-def test_killed_between_loop_iterations_continues_with_the_engine_decision_e2e(home, tmp_path):
-    """Task 179 D3 + review-fold W1, through the real CLI: a run killed after a looping
-    ``workflow`` host's iteration 2 (the host emits no ``node.start``, so a kill inside an
-    iteration looks the same) loads as ``(None, host)`` at iteration 3. The preflight passes it
-    through but still asks to confirm the side-effecting step that may re-run (the host, by
-    its registry type); ``--force`` resumes, and the engine re-enters at iteration 3 with
-    iteration 2's carried survivors — rounds 1-2 never re-run."""
-    wf, log = _write_looping_host(tmp_path)
+def _kill_looping_host_after_iteration_2(home: Path, wf: Path, log: Path) -> tuple[str, list[Any]]:
+    """Run the looping host to completion, then cut its real trace right after the host's
+    iteration-2 event (no trailer → incomplete) and the log to match. Returns ``(exec id, all rounds)``."""
     full = _runner().invoke(cli, [str(wf)])
     assert full.exit_code == 0, full.stderr
     rounds = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert len(rounds) == 4
-
-    # Cut the real trace right after the host's iteration-2 event (no trailer → incomplete).
     [trace] = (home / ".pflow" / "debug").glob("workflow-trace-*.json")
     lines = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
     cut = next(
@@ -904,7 +1385,47 @@ def test_killed_between_loop_iterations_continues_with_the_engine_decision_e2e(h
     )
     trace.write_text("\n".join(json.dumps(line) for line in lines[: cut + 1]) + "\n", encoding="utf-8")
     log.write_text("".join(json.dumps(r) + "\n" for r in rounds[:2]), encoding="utf-8")
-    exec_id = lines[0]["execution_id"]
+    return str(lines[0]["execution_id"]), rounds
+
+
+def test_stale_refusal_names_a_between_iterations_loop_step_as_the_resume_point(home, tmp_path):
+    """#690: killed between iterations, the loop step CONTINUES (its next iteration) — an edit
+    upstream of it refuses naming the loop step as the resume point, and says --force re-fires it."""
+    wf, log = _write_looping_host(tmp_path)
+    exec_id, _ = _kill_looping_host_after_iteration_2(home, wf, log)
+    wf.write_text(wf.read_text(encoding="utf-8").replace('"e"]', '"e", "f"]'), "utf-8")
+
+    refused = _runner().invoke(cli, ["resume", exec_id])
+    assert refused.exit_code == 1
+    combined = refused.stdout + refused.stderr
+    assert "'seed' was edited. Resume re-runs nothing before 'rounds' (iteration 3)" in combined
+    assert "Its iterations before 3 are restored too, so an edit to 'rounds' applies from iteration 3 on." in combined
+    assert "--force also re-runs 'rounds' (a workflow step that already started" in combined
+
+
+def test_editing_the_loop_step_resumed_mid_loop_applies_from_that_iteration(home, tmp_path, monkeypatch):
+    """Row 11: the loop step is the resume point, so editing it passes the identity gate; its
+    iterations before 3 stay restored and the edit (a lower cap) applies from iteration 3 on."""
+    wf, log = _write_looping_host(tmp_path)
+    exec_id, rounds = _kill_looping_host_after_iteration_2(home, wf, log)
+    wf.write_text(wf.read_text(encoding="utf-8").replace("max_iterations: 10", "max_iterations: 3"), "utf-8")
+    # `rounds` already started, so its side-effect confirmation still applies — answer it on a "TTY".
+    monkeypatch.setattr("pflow.execution.gate_prompt.can_prompt", lambda oc: True)
+    monkeypatch.setattr("pflow.cli.commands.resume.click.confirm", lambda *a, **k: True)
+    resumed = _runner().invoke(cli, ["resume", exec_id])
+    assert resumed.exit_code == 0, resumed.stdout + resumed.stderr
+    assert [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] == rounds[:3]
+    assert "winner d" in resumed.stdout  # capped at 3: the uncapped run's round 4 never ran
+
+
+def test_killed_between_loop_iterations_continues_with_the_engine_decision_e2e(home, tmp_path):
+    """Task 179 D3 + review-fold W1, through the real CLI: a run killed after a looping
+    ``workflow`` host's iteration 2 (before iteration 3's ``node.start``) loads as ``(None, host)``
+    at iteration 3. The preflight passes it through but still asks to confirm the side-effecting
+    step that may re-run (the host, by its registry type); ``--force`` resumes, and the engine
+    re-enters at iteration 3 with iteration 2's carried survivors — rounds 1-2 never re-run."""
+    wf, log = _write_looping_host(tmp_path)
+    exec_id, rounds = _kill_looping_host_after_iteration_2(home, wf, log)
 
     refused = _runner().invoke(cli, ["resume", exec_id])
     assert refused.exit_code == 1

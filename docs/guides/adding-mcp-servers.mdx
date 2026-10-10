@@ -52,13 +52,16 @@ Add multiple servers from separate files:
 pflow mcp add ./github.mcp.json ./slack.mcp.json ./notion.mcp.json
 ```
 
-## Tools are auto-discovered
+## Tools are discovered when you add
 
-You don't need to manually sync after adding a server. When your agent runs a workflow, pflow automatically discovers tools from any new or changed servers.
+`pflow mcp add` connects to each server it adds and registers its tools, so they are ready for your agent straight away. If a server can't be reached (missing token, server not running), the server is still added and pflow prints the error with the command to retry:
 
-<Tip>
-If you want to test the connection immediately after adding a server, run `pflow mcp sync <server-name>` to force discovery.
-</Tip>
+```
+  ✗ github: Authentication failed
+  → Run 'pflow mcp sync github' when the server is reachable.
+```
+
+Running a workflow never re-discovers tools. If a workflow uses a tool from a server that hasn't been synced, validation fails with `Run 'pflow mcp sync <server>'`.
 
 ## Managing servers
 

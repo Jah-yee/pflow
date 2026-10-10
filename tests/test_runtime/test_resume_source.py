@@ -33,11 +33,14 @@ from pflow.core.exceptions import (
     ResumeStaleWorkflowError,
     ResumeStillRunningError,
     ResumeSupersededError,
+    StepIdentityChanges,
 )
 from pflow.runtime.resume_source import (
     ResumeSource,
     _iter_raw_trace_lines,
+    entry_never_started,
     load_resume_source,
+    restored_node_ids,
     seed_snapshot_into_shared,
 )
 from pflow.runtime.workflow_trace import format_trace_filename
@@ -79,6 +82,7 @@ def _write_trace(
     paused_node_id: str | None = None,
     gate_request: dict[str, Any] | None = None,
     format_version: str = "2.5.0",
+    step_identity: Any = None,
 ) -> Path:
     """Write a synthetic resume-source trace the loader can discover, returning its path."""
     debug_dir.mkdir(parents=True, exist_ok=True)
@@ -99,6 +103,8 @@ def _write_trace(
         data["warnings"] = warnings
     if resumed_from is not None:
         data["resumed_from"] = resumed_from
+    if step_identity is not None:
+        data["step_identity"] = step_identity
     # Task 171: the pause record rides the run.complete trailer; the fixture
     # builder routes non-META keys there, matching the producer.
     if paused_node_id is not None:
@@ -783,6 +789,46 @@ def test_missing_content_hash_returned_as_none(tmp_path: Path) -> None:
     assert source.content_hash is None
 
 
+_IDENTITY = {
+    "start": "clone",
+    "steps": {
+        "clone": {"hash": "a" * 32, "next": [["default", "build"]]},
+        "build": {"hash": "b" * 32, "next": []},
+    },
+}
+
+
+def test_step_identity_round_trips_from_the_meta_line(tmp_path: Path) -> None:
+    path = _write_trace(
+        tmp_path, execution_id="ident", timestamp="20260101-000000", format_version="2.9.0", step_identity=_IDENTITY
+    )
+    assert json.loads(path.read_text(encoding="utf-8").splitlines()[0])["step_identity"] == _IDENTITY
+    assert load_resume_source(workflow_path=WF, debug_dir=tmp_path).step_identity == _IDENTITY
+
+
+@pytest.mark.parametrize(
+    "recorded",
+    [None, "not-a-map", {"start": "clone"}, {"start": 3, "steps": {}}, {"start": "clone", "steps": ["clone"]}],
+    ids=["absent", "string", "no-steps", "start-not-a-step-id", "steps-not-a-map"],
+)
+def test_absent_or_malformed_step_identity_loads_as_none(tmp_path: Path, recorded: Any) -> None:
+    """A 2.8.0 trace has no map; a malformed one must not reach the preflight as half a check — both load
+    as ``None``, which keeps the whole-workflow hash compare."""
+    _write_trace(
+        tmp_path, execution_id="old", timestamp="20260101-000000", format_version="2.8.0", step_identity=recorded
+    )
+    assert load_resume_source(workflow_path=WF, debug_dir=tmp_path).step_identity is None
+
+
+@pytest.mark.parametrize(
+    ("version", "predates"), [("2.7.0", True), ("2.8.0", False), ("2.9.0", False), ("2.10.0", False)]
+)
+def test_lossy_marker_era_reads_later_minors_correctly(version: str, predates: bool) -> None:
+    from pflow.runtime.resume_source import _predates_lossy_marker
+
+    assert _predates_lossy_marker({"format_version": version}) is predates
+
+
 # ── Paused arm + answer fold (Task 171, Phase 2) ──────────────────────────────
 # Real-collector keystones live beside the producers: approval in
 # test_resume_engine.py (WorkflowRunner e2e), escalation in test_gate_pause.py
@@ -1031,13 +1077,335 @@ def test_side_effect_confirmation_error_is_agent_first() -> None:
     assert diag.context.get("execution_id") == "e1"
 
 
-def test_stale_workflow_error_has_two_messages() -> None:
-    edited = ResumeStaleWorkflowError(hash_known=True)
-    unverifiable = ResumeStaleWorkflowError(hash_known=False)
-    assert "edited" in str(edited)
-    assert "predates" in str(unverifiable) and "edited" not in str(unverifiable)
-    for err in (edited, unverifiable):
-        assert any("--force" in s for s in err.suggestions)
+def _stale(
+    *,
+    entry_node_id: str | None = "save",
+    entry_iteration: int | None = None,
+    after_node_id: str | None = None,
+    rerun_node_type: str | None = None,
+    **changes: Any,
+) -> ResumeStaleWorkflowError:
+    """The error for the given ``StepIdentityChanges`` fields (none = the no-identity fallback)."""
+    return ResumeStaleWorkflowError(
+        hash_known=True,
+        entry_node_id=entry_node_id,
+        entry_iteration=entry_iteration,
+        after_node_id=after_node_id,
+        rerun_node_type=rerun_node_type,
+        changes=StepIdentityChanges(**changes) if changes else None,
+    )
+
+
+def _to(*targets: str) -> list[tuple[str, str]]:
+    return [("default", target) for target in targets]
+
+
+def test_stale_workflow_error_names_the_edited_step_and_what_force_accepts() -> None:
+    """The ruled text (show-before-code, row 3): the lead names the edited step; the body says what
+    resume re-runs; re-running is the first remedy and --force the second, saying what it keeps —
+    with no "(… is skipped)" claim when nothing was inserted."""
+    err = _stale(edited=["produce"])
+    assert str(err) == (
+        "'produce' was edited. Resume re-runs nothing before 'save' — it restores the saved outputs of the "
+        "steps that ran — so that edit would not take effect."
+    )
+    assert err.suggestions == [
+        "Re-run the workflow from the start so the edit takes effect.",
+        "Pass --force to resume anyway: steps before 'save' keep their saved outputs and are not re-run.",
+    ]
+
+
+def test_stale_workflow_error_names_each_skipped_step_in_the_force_line() -> None:
+    err = _stale(rerouted={"shape": (_to("prepare"), _to("save"))}, skipped=frozenset({"prepare"}))
+    assert err.suggestions[1] == (
+        "Pass --force to resume anyway: steps before 'save' keep their saved outputs and are not re-run "
+        "('prepare' is skipped)."
+    )
+    two = _stale(
+        new_start=("banner", "produce"),
+        rerouted={"shape": (_to("prep"), _to("save"))},
+        skipped=frozenset({"banner", "prep"}),
+    )
+    assert "('prep', 'banner' are skipped)." in two.suggestions[1]
+
+
+def test_stale_workflow_error_leads_come_in_the_ruled_order() -> None:
+    err = _stale(
+        new_start=("banner", "produce"),
+        rerouted={"shape": (_to("prepare"), _to("save"))},
+        approved_edited="save",
+        edited=["shape"],
+        removed=["old"],
+        skipped=frozenset({"banner", "prepare"}),
+    )
+    assert str(err).startswith(
+        "'old' is no longer in the workflow (resume would still restore its saved output). 'shape' was edited. "
+        "'save' was edited after it was approved — the approval covered the earlier version. 'shape' now "
+        "continues to 'prepare', which never ran — resume would skip it. The workflow now starts at 'banner', "
+        "which never ran — resume would skip it. Resume re-runs nothing before 'save'"
+    )
+    assert "so those edits would not take effect." in str(err)
+
+
+def test_stale_workflow_error_reroute_says_never_ran_only_for_a_skipped_step() -> None:
+    skipped = _stale(rerouted={"shape": (_to("prepare"), _to("save"))}, skipped=frozenset({"prepare"}))
+    instead = _stale(rerouted={"produce": (_to("save"), _to("shape"))})
+    ends = _stale(rerouted={"produce": ([], _to("shape"))})
+    assert str(skipped).startswith("'shape' now continues to 'prepare', which never ran — resume would skip it.")
+    assert str(instead).startswith("'produce' now continues to 'save' instead of 'shape'.")
+    assert str(ends).startswith("'produce' now ends the workflow instead of continuing to 'shape'.")
+    restart = _stale(new_start=("shape", "produce"))
+    assert str(restart).startswith("The workflow now starts at 'shape' instead of 'produce'.")
+
+
+def test_stale_workflow_error_reroute_names_the_routes_action() -> None:
+    """An added error route to the same target must not read "continues to 'shape' instead of 'shape'"."""
+    err = _stale(rerouted={"produce": ([("default", "shape"), ("error", "shape")], _to("shape"))})
+    assert str(err).startswith("'produce' now continues to 'shape', 'shape' on error instead of 'shape'.")
+    # The skipped form names the action too: a router's named route is not its main flow.
+    named = _stale(rerouted={"route": ([("x", "b")], _to("a"))}, skipped=frozenset({"b"}))
+    assert str(named).startswith("'route' now continues to 'b' on 'x', which never ran — resume would skip it.")
+
+
+def test_stale_workflow_error_for_a_missing_resume_point_offers_no_force() -> None:
+    """--force cannot resume at a step that is gone (the engine refuses K-removed) — never offer it."""
+    err = _stale(resume_point_missing=True)
+    assert str(err) == "The resume point 'save' is no longer in the workflow."
+    assert err.suggestions == ["Re-run the workflow from the start.", "Or restore the step 'save' and resume again."]
+    assert err.node_id == "save"
+
+
+def test_stale_workflow_error_between_nodes_and_loop_scopes() -> None:
+    between = _stale(entry_node_id=None, after_node_id="esc", edited=["esc"])
+    assert "Resume re-runs nothing up to and including 'esc' — it restores" in str(between)
+    assert between.suggestions[1].startswith("Pass --force to resume anyway: steps up to and including 'esc' keep")
+    loop = _stale(entry_node_id="count", entry_iteration=3, edited=["prep"])
+    assert "Resume re-runs nothing before 'count' (iteration 3) — it restores" in str(loop)
+    assert "Its iterations before 3 are restored too, so an edit to 'count' applies from iteration 3 on." in str(loop)
+    first = _stale(entry_node_id="count", entry_iteration=1, edited=["prep"])
+    assert "iteration" not in str(first)
+
+
+def test_stale_workflow_error_between_nodes_new_route_says_resume_would_run_it() -> None:
+    """A plain between-nodes source continues at its last step's CURRENT route — the new step runs, so
+    neither "would skip it" nor "would not take effect" may appear."""
+    err = _stale(entry_node_id=None, after_node_id="esc", rerouted={"esc": (_to("check"), _to("after"))})
+    assert str(err) == (
+        "'esc' now continues to 'check' instead of 'after'. Resume would continue at 'check' with the saved "
+        "outputs up to and including 'esc'."
+    )
+    assert err.suggestions[0] == "Re-run the workflow from the start."
+    assert "skipped" not in err.suggestions[1]
+
+
+def test_stale_workflow_error_for_an_approval_says_the_edited_step_would_run() -> None:
+    """The approval step is the resume point: --force RUNS its edited version — never "would not take effect"."""
+    err = _stale(entry_node_id="deploy", approved_edited="deploy")
+    assert str(err) == (
+        "'deploy' was edited after it was approved — the approval covered the earlier version. Resuming would "
+        "run the edited 'deploy' under that earlier approval."
+    )
+    assert err.suggestions == [
+        "Re-run the workflow from the start so 'deploy' asks for approval again.",
+        "Pass --force to resume anyway: steps before 'deploy' keep their saved outputs and are not re-run, and "
+        "the edited 'deploy' runs under the earlier approval.",
+    ]
+
+
+def test_stale_workflow_error_says_force_also_refires_a_started_side_effecting_entry() -> None:
+    """--force waives the side-effect confirmation too — the stale refusal is the only place the
+    agent learns that, so it must say so when the entry already started."""
+    err = _stale(entry_node_id="append", edited=["a"], rerun_node_type="shell")
+    assert err.suggestions[1].endswith(
+        "--force also re-runs 'append' (a shell step that already started in the original run), so its side "
+        "effects may fire again — if you are an AI agent, confirm that with your human first."
+    )
+    assert "fire again" not in " ".join(_stale(edited=["a"]).suggestions)
+
+
+def test_stale_workflow_error_fallback_texts_never_name_a_change() -> None:
+    """No per-step identity on the trace: an older pflow (hash known) vs. pre-hash tracking (unknown)."""
+    older = _stale()
+    unverifiable = ResumeStaleWorkflowError(hash_known=False, entry_node_id="save")
+    assert str(older).startswith(
+        "This run was recorded by an older pflow version that did not record each step's definition, so resume "
+        "cannot tell which step changed. Resume re-runs nothing before 'save'"
+    )
+    assert str(older).endswith("so an edit to them would not take effect.")
+    assert older.suggestions[0] == "Re-run the workflow from the start so the edit takes effect."
+    assert str(unverifiable).startswith("Cannot verify the workflow is unchanged — this run predates")
+    assert str(unverifiable).endswith("so an edit to them, if any, would not take effect.")
+    assert unverifiable.suggestions[0] == "Re-run the workflow from the start."  # no definite "edit"
+    for err in (older, unverifiable):
+        assert err.suggestions[1].endswith("(a step inserted among them is skipped).")
+        assert err.to_diagnostics()[0].context["changed_steps"] is None  # unknown, never "nothing changed"
+
+
+def test_stale_workflow_error_carries_structured_fields_for_agents() -> None:
+    err = _stale(edited=["produce"], new_start=("banner", "produce"), skipped=frozenset({"banner"}))
+    context = err.to_diagnostics()[0].context
+    assert context is not None
+    assert (context["changed_steps"], context["new_start"], context["resume_point"]) == (["produce"], "banner", "save")
+    assert context["resume_point_missing"] is False
+    assert context["category"] == "execution_failure"
+    assert err.to_diagnostics()[0].node_id == "produce"
+    two = _stale(edited=["a"], rerouted={"b": (_to("c"), _to("d"))}).to_diagnostics()[0]
+    assert (two.context or {})["changed_steps"] == ["a", "b"] and two.node_id is None
+    start_only = _stale(new_start=("banner", "produce"), skipped=frozenset({"banner"})).to_diagnostics()[0]
+    assert (start_only.context or {})["changed_steps"] == []  # known: no step changed, only the start
+
+
+# ── entry_never_started / restored_node_ids (#690) ─────────────────────────────
+# `node.start` is a disk-only line, so these write the raw JSONL a streamed run produces: a leaf's
+# `node.start` and its terminal `event` share one `id`; a failure raised before `begin_node`
+# (template resolution, loop carry) has an `event` and no `node.start`.
+
+
+def _start(node_id: str, line_id: int, parent_id: int | None = None) -> dict[str, Any]:
+    return {"kind": "node.start", "node_id": node_id, "id": line_id, "parent_id": parent_id, "status": "running"}
+
+
+def _event(node_id: str, line_id: int, status: str, parent_id: int | None = None, **extra: Any) -> dict[str, Any]:
+    return {"kind": "event", "node_id": node_id, "id": line_id, "parent_id": parent_id, "status": status, **extra}
+
+
+def _raw_source(
+    tmp_path: Path,
+    lines: list[dict[str, Any]],
+    entry: str | None = "save",
+    *,
+    entry_iteration: int | None = 1,
+    content_hash: str | None = "h",
+) -> ResumeSource:
+    path = tmp_path / "trace.json"
+    meta = {"kind": "meta", "pflow_trace": "jsonl/1", "format_version": "2.8.0", "execution_id": "e1"}
+    path.write_text("\n".join(json.dumps(line) for line in [meta, *lines]) + "\n", encoding="utf-8")
+    return ResumeSource(
+        path=path,
+        workflow_path="/x/wf.pflow.md",
+        execution_id="e1",
+        entry_node_id=entry,
+        last_completed_node_id=None,
+        events=[],
+        inputs=None,
+        content_hash=content_hash,
+        entry_iteration=entry_iteration,
+    )
+
+
+def test_entry_failed_before_its_start_marker_never_started(tmp_path: Path) -> None:
+    lines = [_start("produce", 0), _event("produce", 0, "success"), _event("save", 1, "failed")]
+    assert entry_never_started(_raw_source(tmp_path, lines)) is True
+
+
+def test_entry_with_a_paired_start_marker_started(tmp_path: Path) -> None:
+    lines = [_start("produce", 0), _event("produce", 0, "success"), _start("save", 1), _event("save", 1, "failed")]
+    assert entry_never_started(_raw_source(tmp_path, lines)) is False
+
+
+def test_a_later_dangling_start_defeats_an_earlier_pre_exec_failure(tmp_path: Path) -> None:
+    """K failed before starting, an on-error back edge re-entered it, and it was killed mid-step:
+    the interrupted attempt (the loader's entry) began, whatever the earlier event says."""
+    lines = [_event("save", 1, "failed"), _start("fix", 2), _event("fix", 2, "success"), _start("save", 3)]
+    assert entry_never_started(_raw_source(tmp_path, lines)) is False
+
+
+def test_a_loop_entry_is_judged_from_the_iteration_resume_re_runs(tmp_path: Path) -> None:
+    """Iteration 1 started (and fired); iteration 2 failed resolving its carry. Resume re-runs
+    iteration 2 only, which never began. With no recorded position (a pre-2.8.0 trace: no
+    `iteration` keys, entry_iteration None) resume restarts at iteration 1, which DID begin."""
+    lines = [
+        _start("count", 0),
+        _event("count", 0, "success", iteration=1),
+        _event("count", 1, "failed", iteration=2),
+    ]
+    assert entry_never_started(_raw_source(tmp_path, lines, entry="count", entry_iteration=2)) is True
+    keyless = [_start("count", 0), _event("count", 0, "success"), _event("count", 1, "failed")]
+    assert entry_never_started(_raw_source(tmp_path, keyless, entry="count", entry_iteration=None)) is False
+
+
+def test_an_earlier_visit_that_began_is_re_run_too(tmp_path: Path) -> None:
+    """Falsifier C1: an on-error back edge re-entered K — visit 1 started (and fired), visit 2
+    failed before starting. A non-loop resume re-runs from K's FIRST event, so K began."""
+    lines = [
+        _start("save", 1),
+        _event("save", 1, "failed"),
+        _start("router", 2),
+        _event("router", 2, "success"),
+        _event("save", 3, "failed"),
+    ]
+    assert entry_never_started(_raw_source(tmp_path, lines)) is False
+
+
+def test_a_restored_visit_of_the_entry_is_no_proof(tmp_path: Path) -> None:
+    """Re-falsification: in a resumed attempt the entry's restored re-record (it ran and fired in
+    the earlier attempt) has no node.start either. A back edge then fails the entry again before
+    starting; the next resume re-runs from the restored visit, so the entry began."""
+    lines = [
+        _event("x", 0, "cached", restored=True),
+        _event("k", 1, "cached", restored=True),
+        _start("m", 2),
+        _event("m", 2, "failed"),
+        _start("x", 3),
+        _event("x", 3, "success"),
+        _event("k", 4, "failed"),
+    ]
+    assert entry_never_started(_raw_source(tmp_path, lines, entry="k")) is False
+
+
+def test_a_trace_predating_node_start_proves_nothing(tmp_path: Path) -> None:
+    """`node.start` and the meta `content_hash` arrived together (Task 173): no hash, no markers."""
+    assert entry_never_started(_raw_source(tmp_path, [_event("save", 1, "failed")], content_hash=None)) is False
+
+
+def test_a_child_start_with_the_same_id_never_pairs_with_a_top_level_event(tmp_path: Path) -> None:
+    lines = [_start("inner", 1, parent_id=0), _event("save", 1, "failed")]
+    assert entry_never_started(_raw_source(tmp_path, lines)) is True
+
+
+@pytest.mark.parametrize(
+    "lines, entry",
+    [
+        ([_event("save", 1, "failed")], None),  # between-nodes source: no entry to prove anything about
+        ([_start("produce", 0), _event("produce", 0, "success")], "save"),  # entry never recorded
+        ([{"kind": "event", "node_id": "save", "parent_id": None, "status": "failed"}], "save"),  # no id
+        ([_event("save", 1, "cached")], "save"),  # a cache hit stands for an earlier execution
+    ],
+)
+def test_anything_short_of_proof_reads_as_started(
+    tmp_path: Path, lines: list[dict[str, Any]], entry: str | None
+) -> None:
+    assert entry_never_started(_raw_source(tmp_path, lines, entry=entry)) is False
+
+
+def test_unreadable_trace_reads_as_started(tmp_path: Path) -> None:
+    source = _raw_source(tmp_path, [_event("save", 1, "failed")])
+    source.path.unlink()
+    assert entry_never_started(source) is False
+
+
+def test_restored_node_ids_is_the_seed_set_minus_the_entry() -> None:
+    """Same derivation the loader guards and the engine seeds: completed steps before the entry,
+    a failed (recovered) step excluded, and a loop entry's own earlier iteration not listed."""
+    events = [
+        {"node_id": "fetch", "status": "success"},
+        {"node_id": "flaky", "status": "failed"},
+        {"node_id": "count", "status": "success", "iteration": 1},
+        {"node_id": "count", "status": "failed", "iteration": 2},
+        {"node_id": "later", "status": "success"},
+    ]
+    source = ResumeSource(
+        path=Path("t.json"),
+        workflow_path=None,
+        execution_id="e1",
+        entry_node_id="count",
+        last_completed_node_id=None,
+        events=events,
+        inputs=None,
+        content_hash=None,
+        entry_iteration=2,
+    )
+    assert restored_node_ids(source) == ["fetch"]
 
 
 # ── Keystone: a REAL failed run, not a synthetic fixture ──────────────────────
@@ -1088,6 +1456,12 @@ def test_real_failed_run_is_resumable_end_to_end(tmp_path: Path) -> None:
     # and this trace predates nothing — inputs are an (empty) dict, never a crash.
     assert source.content_hash
     assert source.inputs in ({}, None)
+    # Task 180: the per-step identity the preflight checks is the resolved IR's, recorded at run start.
+    from pflow.core.workflow_id import step_identity
+    from pflow.execution.workflow_resolver import resolve_workflow
+
+    assert source.step_identity == step_identity(resolve_workflow(str(wf)).ir)
+    assert list(source.step_identity["steps"]) == ["prep", "boom"]
 
 
 # --- Task 179: the resume entry is a (step, iteration) pair ----------------------

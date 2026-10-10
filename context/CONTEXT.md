@@ -37,7 +37,17 @@ a carried input's ordinary input value *is* its Seed. _Avoid_: initial, default,
 
 **Template** — a string in a Step's params containing `${…}` expressions, resolved against the
 shared store at runtime and checked against declared output structure at validation — one parse
-serves both surfaces. _Avoid_: placeholder, interpolation, substitution.
+serves both surfaces. A Code body is never a Template. _Avoid_: placeholder, interpolation,
+substitution.
+
+**Code body** — the program text of a shell step's `command` or a code step's `code`: plain sh /
+plain Python, never a Template — a `${…}` in it belongs to that language. Values reach it only
+through a Binding. _Avoid_: script, snippet, inline code, template body.
+
+**Binding** — a named value pflow hands to a Code body as a variable of its language: an `env:`
+entry on a shell step (an environment variable, always text), an `inputs:` entry on a code step
+(a Python variable, typed). The entry's value is a Template; the body reads the name. _Avoid_:
+injection, interpolation, variable (unqualified — a Reference is not one).
 
 **Reference** — a path inside a template expression — a root (step, input, or batch alias) plus
 field/index segments — naming data in the shared store. _Avoid_: variable, pointer, path
@@ -48,7 +58,8 @@ Reference, unresolved unless the inner Reference resolves to an in-range integer
 nested template, computed index.
 
 **Issue** — an unescaped `${` in a Template that opens no valid expression; always a validator
-error, carried verbatim at run time. _Avoid_: malformed template, parse error (unqualified).
+error, carried verbatim at run time. A Code body has no Issues. _Avoid_: malformed template,
+parse error (unqualified).
 
 **Coalesce** — the `??` operator in a template expression: Operands tried left to right, the
 first present one wins; an absent root *or* an absent field falls through. _Avoid_: fallback,
@@ -94,7 +105,9 @@ failed step, or at the Gate (an Approval's gated step now runs; an answered Esca
 after its already-completed step) — and continues to the end. A loop step re-enters at the
 Iteration where it stopped, never at 1. The re-entered step runs at-least-once — its side effects
 may re-fire; a Restore the Trace could not make faithfully (a value it coerced or dropped) refuses
-instead of continuing.
+instead of continuing. A Resume refuses when a Restored step was edited (its definition minus
+prose), removed, or now leads elsewhere, when the workflow now starts at a different step, or when an
+approved step was edited after its approval; edits at or after the re-entry point never need `--force`.
 _Avoid_: retry (in-Run, same step), replay, restart (from scratch).
 
 **Attempt** — one Run in a resume chain: the original Run plus each Resume of it. Attempts are
@@ -184,6 +197,11 @@ server *observes* by tailing a Run's trace file and joining each event onto a gr
 or replays a *finished* one. _Avoid_: watch, monitor, live-view, animation.
 
 ## Ambiguity
+
+**Binding vs Reference** — both connect a step to data. A Reference names data in the shared
+store inside a Template (`${fetch.stdout}`); a Binding gives that data a name inside a Code body
+(`"$BODY"`). A shell step that uses an upstream value has both: the Reference in `env:`, the
+Binding in the command.
 
 **Batch vs Loop** — both repeat a step. Discriminator: can you write the list of runs
 before starting (Batch), or only know you're done by inspecting what just happened (Loop).

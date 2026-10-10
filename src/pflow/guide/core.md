@@ -297,7 +297,7 @@ Parsed record array from the fetch response.
 
 **Input fields**: `type` (string|number|integer|boolean|array|object|any), `required` (true|false), `default` (only when required: false), `stdin` (true|false — only one input can have this), description as prose.
 
-**Output fields**: `source` (required — template expression like `${node.key}`), `type` (optional hint), `stdout` (true|false — at most one output may set this; marks the output that streams to stdout in text mode), description as prose.
+**Output fields**: `source` (required — template expression like `${node.key}`), `type` (optional hint), `stdout` (true|false — at most one output may set this; marks the output that streams to stdout in text mode), description as prose. A `source` that cannot resolve fails the run (exit 1) — for a field that may be absent write `${node.field ?? null}` (a `??` chain whose nodes all never ran omits the output instead); the outputs that did resolve stay in the `--output-format json` failure document's `result`.
 
 **Node fields**: `type` (required), top-level controls like `batch`, `loop`, `retry`, `cache`, `prompt_cache`, `prewarm`, and `approval` (pause for a human before the step runs — see `pflow guide approval`), then node params as `- key: value`. Code/prompts/batch go in tagged code blocks.
 
@@ -577,12 +577,12 @@ result: float = sum(i['pricing']['amount'] for i in items)
 
 #### All Template Patterns
 
-Templates work in any param value — inline `- key:` or code blocks:
+Templates work in any param value — inline `- key:` or code blocks — except a shell `command` and a `python code` block: those are plain code, and values reach them through `env:` (shell) or `inputs:` (code):
 
 ```markdown
 ### example-node
 
-Demonstrates the template forms that work in any parameter value.
+Demonstrates the template forms a param value can hold.
 
 - basic_input: ${username}
 - basic_output: ${fetch.response}
@@ -640,7 +640,7 @@ filters:
 
 **Guideline**: Inline `- key: value` for flat params and simple nesting. `yaml param_name` code block for deep nesting, multiline values (`|`), or batch config. Both produce identical results.
 
-**`- inputs:` works on ANY node type** (not just code nodes). It maps named variables into the template context so other params (prompt, command, etc.) can reference them by name. This is especially useful for reusing external prompt files with different data sources:
+**`- inputs:` works on ANY node type** (not just code nodes). It maps named variables into the template context so other params (a prompt, a shell step's `env:`, etc.) can reference them by name. This is especially useful for reusing external prompt files with different data sources:
 
 ````markdown
 ### review

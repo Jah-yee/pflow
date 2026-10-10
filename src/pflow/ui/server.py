@@ -64,6 +64,8 @@ from pflow.core.exceptions import (
     ResumeSupersededError,
 )
 from pflow.core.gate import masked_gate_dict
+from pflow.core.node_type_display import node_type_tag
+from pflow.core.trace_io import load_trace_file
 from pflow.core.tts import wav_duration
 from pflow.core.workflow.graph import render_react_flow
 from pflow.core.workflow.manager import WorkflowManager
@@ -74,7 +76,7 @@ from pflow.execution.graph_service import (
 from pflow.execution.workflow_resolver import resolve_workflow
 from pflow.registry import Registry
 from pflow.ui.run_node import read_run_inputs, run_node_detail
-from pflow.ui.run_tailer import RunTailer, TraceCandidate, is_trace_locked, read_run_trailer, scan_traces
+from pflow.ui.run_tailer import RunTailer, TraceCandidate, is_trace_locked, scan_traces
 from pflow.ui.targets import resolve_target
 
 logger = logging.getLogger(__name__)
@@ -1001,22 +1003,20 @@ async def visibility(request: Request) -> Response:
 
 
 def _preflight(workflow_key: str, tokens: tuple[str, ...]) -> None:
-    """Compile EXACTLY what the spawn will run — off the event loop (run via ``asyncio.to_thread``).
+    """Run EXACTLY the pre-trace steps the spawn will — off the event loop (run via ``asyncio.to_thread``).
 
     The whole point: convert the silent *pre-trace-failure class* (a run that dies before it writes its
-    ``meta`` line shows nothing on the overlay) into a clean ``400`` at the endpoint. ``compile_workflow``
-    runs ``prepare_inputs`` internally (the same 5-tier input resolution + missing-required check the real
-    run does) AND instantiates every node, so a missing required input, an unknown node type, or a bad
-    param all surface here. We don't reuse the displayed tab's graph — an auto-update may have edited the
-    file, or an agent may POST directly — so we re-resolve from disk. A fresh ``Registry`` per compile is
-    the project rule (``runner`` does the same). Raises ``PflowError`` on any pre-trace failure; the
-    handler maps it to ``400`` with diagnostics."""
+    ``meta`` line shows nothing on the overlay) into a clean ``400`` at the endpoint. ``WorkflowRunner.preflight``
+    is the run's own pre-trace step (full validator, input defaults, compile), so a validator error, a
+    missing required input, an unknown node type, or a bad param all surface here. We don't reuse the
+    displayed tab's graph — an auto-update may have edited the file, or an agent may POST directly — so we
+    re-resolve from disk. Raises ``PflowError`` on any pre-trace failure; the handler maps it to ``400``
+    with diagnostics."""
     from pflow.cli.param_parsing import parse_workflow_params
-    from pflow.runtime import compile_workflow
+    from pflow.execution.runner import WorkflowRunner
 
-    resolved = resolve_workflow(workflow_key)
     typed_params = parse_workflow_params(tokens)  # infer_type per token — channel A (form == CLI)
-    compile_workflow(resolved.ir, Registry(), initial_params=typed_params)
+    WorkflowRunner().preflight(resolve_workflow(workflow_key), typed_params)
 
 
 async def run(request: Request) -> Response:
@@ -1132,8 +1132,10 @@ _RESUME_REFUSALS: dict[type[PflowError], str] = {
 def _resume_refusal_response(exc: PflowError) -> Response:
     """Map a pre-flight refusal to its 4xx: 404 missing source · 409 every other ResumeSourceError
     (the resume is well-formed but refused) · 400 any other PflowError (parity with `/api/run`'s
-    pre-flight arm). Diagnostics plus the `refusal` discriminator, plus kind-specific extras the
-    panel acts on (`newer_execution_id` / `node_id`+`node_type` / `hash_known`)."""
+    pre-flight arm). Diagnostics plus the `refusal` discriminator, plus kind-specific machine-readable
+    extras (`newer_execution_id` / `node_id`+`node_type` / `hash_known`). The browser's ack panel
+    renders the diagnostics' own message + suggestions (the CLI's text); only `newer_execution_id`
+    drives a browser action — the other extras are for programmatic callers."""
     if isinstance(exc, ResumeSourceMissingError):
         status = 404
     elif isinstance(exc, ResumeSourceError):
@@ -1154,14 +1156,27 @@ def _resume_refusal_response(exc: PflowError) -> Response:
     return _json(body, status_code=status)
 
 
-def _parse_resume_body(body: dict[str, object]) -> tuple[str, str | None, str | None, bool] | Response:
-    """Shape-validate a `/api/resume` body → ``(run, approve, choose, force)`` or a 400 Response.
+_RESUME_BODY_FIELDS = ("run", "approve", "choose", "force", "auto_approve")
 
-    All 400s fire BEFORE any I/O. Two intentional server-stricter asymmetries vs. the CLI (not
-    drift): ``approve`` accepts lowercase only (the CLI's click.Choice is case-insensitive — the
-    typed frontend never sends otherwise; a raw caller gets a 400, still a loud refusal), and an
-    empty/whitespace ``choose`` 400s here (the CLI routes it to the loader's ``missing_answer``
-    refusal — both refuse, only the status differs)."""
+
+def _parse_resume_body(body: dict[str, object]) -> tuple[str, str | None, str | None, bool, bool] | Response:
+    """Shape-validate a `/api/resume` body → ``(run, approve, choose, force, auto_approve)`` or a 400.
+
+    All 400s fire BEFORE any I/O. An unknown field is a 400 (a raw caller's ``autoApprove`` must
+    not silently become a one-iteration approve). Three intentional server-stricter asymmetries vs.
+    the CLI (not drift): ``approve`` accepts lowercase only (the CLI's click.Choice is
+    case-insensitive — the typed frontend never sends otherwise; a raw caller gets a 400, still a
+    loud refusal); an empty/whitespace ``choose`` 400s here (the CLI routes it to the loader's
+    ``missing_answer`` refusal — both refuse, only the status differs); and ``auto_approve: true``
+    requires ``approve: "yes"`` (the CLI accepts ``--auto-approve`` beside ``--choose`` or no
+    answer — there it pre-approves later gates; here it means "this step's remaining iterations",
+    so any other answer is a contradiction)."""
+    unknown = sorted(key for key in body if key not in _RESUME_BODY_FIELDS)
+    if unknown:
+        return _json(
+            {"error": f"Unknown field(s): {', '.join(unknown)} — expected {', '.join(_RESUME_BODY_FIELDS)}."},
+            status_code=400,
+        )
     run_target = _string_field(body, "run")
     if run_target is None:
         return _json(
@@ -1214,42 +1229,65 @@ def _parse_resume_body(body: dict[str, object]) -> tuple[str, str | None, str | 
     force = body.get("force", False)
     if not isinstance(force, bool):
         return _json({"error": "Field 'force' must be a boolean."}, status_code=400)
-    return run_target, approve, choose, force
+    auto_approve = _parse_auto_approve(body.get("auto_approve", False), approve, choose)
+    if isinstance(auto_approve, Response):
+        return auto_approve
+    return run_target, approve, choose, force, auto_approve
+
+
+def _parse_auto_approve(raw: object, approve: str | None, choose: str | None) -> bool | Response:
+    """``auto_approve`` → a bool, or the 400 when it is not one or contradicts the answer."""
+    if not isinstance(raw, bool):
+        return _json({"error": "Field 'auto_approve' must be a boolean."}, status_code=400)
+    if raw and approve != "yes":
+        return _json({"error": _auto_approve_contradiction(approve, choose)}, status_code=400)
+    return raw
+
+
+def _auto_approve_contradiction(approve: str | None, choose: str | None) -> str:
+    """Why ``auto_approve: true`` is refused beside any answer other than ``approve: "yes"``."""
+    if approve == "no":
+        return (
+            "Field 'auto_approve' requires approve: \"yes\" — it pre-approves this step's remaining "
+            "iterations, which contradicts denying it."
+        )
+    if choose is not None:
+        return "Field 'auto_approve' applies to approval gates only — escalations cannot be pre-answered."
+    return "Field 'auto_approve' requires approve: \"yes\"."
 
 
 async def resume(request: Request) -> Response:
     """Answer a paused gate — or resume a failed/interrupted run — by spawning `pflow resume` (Task 176).
 
-    Body: ``{"run": str, "approve"?: "yes"|"no", "choose"?: str, "force"?: bool}`` — one endpoint
-    mirroring the CLI verb (ledger #4). The server stays a pure observer (ADR-0008): after an
+    Body: ``{"run": str, "approve"?: "yes"|"no", "choose"?: str, "force"?: bool, "auto_approve"?: bool}``
+    — one endpoint mirroring the CLI verb (ledger #4). ``auto_approve: true`` (with ``approve: "yes"``)
+    becomes ``--approve yes --auto-approve <paused step>`` — the step id comes from the pre-flight's
+    source, never the client (Task 183: the panel's "Approve all remaining"). The server stays a pure observer (ADR-0008): after an
     IN-PROCESS pre-flight it spawns the normal CLI detached and the browser pins the minted run id,
     exactly like ``/api/run``.
 
     **No silent no-ops** (the task's hard rule): the spawn is detached with every stream DEVNULL'd, so
     every refusal a spawned non-TTY resume could hit MUST be caught here first — ``preflight_resume``
-    (the CLI's exact refusal gates, `execution/resume_preflight.py`) plus the very compile the child
-    will run (mirroring ``/api/run``'s ``_preflight``: without it, a force-resume of an edited-broken
-    workflow dies BEFORE writing its meta line and the pinned id never materializes — a misleading
-    `run-not-found` instead of a clean 400). Known residual (deep-review 2026-07-12, shared with
-    ``/api/run``'s compile-only ``_preflight`` by the same Task-175 decision): the child also runs the
-    full ``WorkflowValidator`` pre-meta, so a ``--force`` resume of a workflow edited to carry a
-    validator-only ERROR (one ``compile_workflow`` doesn't raise) still dies silently; without
-    ``force`` the content-hash gate makes this unreachable. A side-effecting entry's verdict is RAISED here — the
+    (the CLI's exact refusal gates, `execution/resume_preflight.py`) plus the child's own pre-trace
+    steps (``WorkflowRunner.preflight``, as ``/api/run``'s ``_preflight``: without it, a resume of an
+    edited-broken workflow dies BEFORE writing its meta line and the pinned id never materializes — a
+    misleading `run-not-found` instead of a clean 400). A side-effecting entry's verdict is RAISED here — the
     non-TTY spawn would refuse, so we do; the client retries with ``force: true`` only after an
-    explicit ack dialog (the server NEVER adds ``--force`` itself). Shape rules + the two deliberate
+    explicit ack dialog (the server NEVER adds ``--force`` itself). Shape rules + the three deliberate
     server-stricter asymmetries: see ``_parse_resume_body``.
 
     TOCTOU (edge ledger #1): two viewers answering concurrently can both pass pre-flight and both
-    spawn; the loser's CLI refuses on the loader's superseded check (the ONE consumption policy — no
-    double-fire) and its browser pins an id that never materializes → the existing `run-not-found`
-    state. Tolerated (local single-user; same posture as #546)."""
+    spawn. The loader's superseded check (``resume_source._find_consuming_attempt``) sees only an
+    attempt whose trace already exists, so two children that load before either writes one BOTH run
+    the answered step — with ``auto_approve``, every remaining iteration twice. A later answer is
+    refused. Tolerated (local single-user; same posture as #546); the atomic token claim is #763."""
     body = await _json_body(request)
     if isinstance(body, Response):
         return body
     parsed = _parse_resume_body(body)
     if isinstance(parsed, Response):
         return parsed
-    run_target, approve, choose, force = parsed
+    run_target, approve, choose, force, auto_approve = parsed
 
     # The CLI's exact answer shapes (resume.py::_build_gate_answer) — the loader validates kind-match.
     gate_answer: dict[str, Any] | None = None
@@ -1258,32 +1296,51 @@ async def resume(request: Request) -> Response:
     elif choose is not None:
         gate_answer = {"chosen": choose, "notes": None}
 
-    def _resume_preflight() -> None:
+    def _resume_preflight() -> str | None:
+        """Run the CLI's refusal gates; return the paused step id (``--auto-approve``'s target)."""
         from pflow.execution.resume_preflight import preflight_resume
-        from pflow.runtime import compile_workflow
+        from pflow.execution.runner import WorkflowRunner
 
         pf = preflight_resume(run_target, gate_answer=gate_answer, force=force)
         if pf.side_effect_refusal is not None:
             raise pf.side_effect_refusal  # a non-TTY spawn would refuse — so we do
-        # The exact compile the spawned child will do (CompilationError → the 400 arm).
-        compile_workflow(pf.resolved.ir, Registry(), initial_params=dict(pf.source.inputs or {}))
+        # The spawned child's own pre-trace steps (validation/compile errors → the 400 arm).
+        WorkflowRunner().preflight(pf.resolved, dict(pf.source.inputs or {}))
+        return pf.source.paused_node_id
 
     try:
-        await asyncio.to_thread(_resume_preflight)  # blocking trace read + compile — off the hub loop
+        # blocking trace read + validate/compile — off the hub loop
+        paused_node_id = await asyncio.to_thread(_resume_preflight)
     except PflowError as exc:
         return _resume_refusal_response(exc)
 
+    auto_approve_step: str | None = None
+    if auto_approve:
+        # Unreachable after a passing approve pre-flight (it refuses a non-paused source) — but a
+        # spawn without the step id would silently approve ONE iteration, so refuse loudly instead.
+        if not isinstance(paused_node_id, str):
+            return _json(
+                {"error": "Field 'auto_approve' needs a run paused at an approval gate — this run is not."},
+                status_code=400,
+            )
+        auto_approve_step = paused_node_id
+
     run_id = str(uuid.uuid4())
-    _spawn_detached_cli(_resume_cli_args(run_target, approve, choose, force), execution_id=run_id)
+    _spawn_detached_cli(_resume_cli_args(run_target, approve, choose, force, auto_approve_step), execution_id=run_id)
     return _json({"status": "spawned", "run_id": run_id})
 
 
-def _resume_cli_args(run_target: str, approve: str | None, choose: str | None, force: bool) -> list[str]:
+def _resume_cli_args(
+    run_target: str, approve: str | None, choose: str | None, force: bool, auto_approve_step: str | None
+) -> list[str]:
     """The exact `pflow resume` argv the validated answer maps to — `--force` appears ONLY when the
-    client sent `force: true` after an explicit ack dialog; the server never adds it itself."""
+    client sent `force: true` after an explicit ack dialog; the server never adds it itself.
+    ``auto_approve_step`` (the paused step, from pre-flight) adds ``--auto-approve <step>``."""
     args = ["resume", run_target, "--output-format", "json"]
     if approve is not None:
         args += ["--approve", approve]
+    if auto_approve_step is not None:
+        args += ["--auto-approve", auto_approve_step]
     if choose is not None:
         args += ["--choose", choose]
     if force:
@@ -1467,7 +1524,8 @@ def gate(request: Request) -> Response:
 
     ``GET /api/gate?run=<execution_id>`` → ``{paused_node_id, gate_kind, gate_request}`` with the
     ``gate_request`` secret-masked via ``masked_gate_dict`` — masking is display-surface policy and
-    the browser is a display surface (ADR-0009); the on-disk trailer stays unmasked. The bulky
+    the browser is a display surface (ADR-0009); the on-disk trailer stays unmasked. Its
+    ``node_type`` is projected to the ``node_type_tag`` (as ``/api/run-node`` does). The bulky
     payload is served ON DEMAND here precisely so it never rides the SSE wire or the ``/api/runs``
     listing (their allowlists exist to keep it off — PR #543).
 
@@ -1486,14 +1544,17 @@ def gate(request: Request) -> Response:
     candidate = next((c for c in scan_traces() if c["meta"].get("execution_id") == run_id), None)
     if candidate is None:
         return _json({"error": f"No run {run_id!r} was found."}, status_code=404)
-    # Re-read the trailer fresh (not the scan-cache fact): this is the one consumer of the bulky
-    # gate_request, which is deliberately never cached or carried on a wire.
-    trailer = read_run_trailer(candidate["path"])
-    gate_request = trailer.get("gate_request") if trailer is not None else None
-    paused_node_id = trailer.get("paused_node_id") if trailer is not None else None
+    # Read the pause record through the resume loader's own reader (not the scan-cache fact, never the
+    # raw trailer line): the trace interns strings >= 1 KB as `$pflow_blob` refs whose bodies sit on
+    # earlier lines, so only the full read gives the panel the text `pflow resume` will act on (#720).
+    try:
+        trace: dict[str, Any] = load_trace_file(candidate["path"])
+    except (json.JSONDecodeError, OSError):
+        trace = {}
+    gate_request = trace.get("gate_request")
+    paused_node_id = trace.get("paused_node_id")
     if (
-        trailer is None
-        or trailer.get("final_status") != "paused"
+        trace.get("final_status") != "paused"
         or not isinstance(gate_request, dict)
         or not isinstance(paused_node_id, str)
         # `kind` is a required GateRequest field (every real producer writes it); a hand-corrupted
@@ -1505,7 +1566,10 @@ def gate(request: Request) -> Response:
     return _json({
         "paused_node_id": paused_node_id,
         "gate_kind": gate_request["kind"],
-        "gate_request": masked_gate_dict(gate_request),
+        "gate_request": {
+            **masked_gate_dict(gate_request),
+            "node_type": node_type_tag(str(gate_request.get("node_type", ""))),
+        },
     })
 
 

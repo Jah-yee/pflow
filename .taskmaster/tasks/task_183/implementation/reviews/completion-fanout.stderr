@@ -1,0 +1,22 @@
+Executing workflow (6 nodes):
+  resolve-cwd... ✓ 0.1s
+  load-lenses... ✓ 0.0s
+  run-codex... 8/8 474.9s
+  run-claude... 0/0 0.0s
+  collect... ✓ 0.0s
+  merge... ✓ 57.9s
+
+✓ Workflow completed in 533.041s
+
+💰 Cost: subscription (9 agent calls) · API-equivalent: $72.3932
+   Total LLM calls: 9
+
+ℹ️ Advisories:
+  ℹ [run-claude] Batch 'run-claude' ran with 0 items (input list was empty).
+    → Expected when iterating a drained queue or a filter that matched nothing. If items were expected, check the node that produces this batch's list.
+
+Workflow trace saved: /Users/andfal/.pflow/debug/workflow-trace-c1f91d1d-run-review-lenses-20261010-235511-620932.json
+
+Workflow output (The consolidated review report — the workflow's product. The caller (the gate-runner / deep-review flow) verifies and adjudicates from here.):
+
+EXIT 0

@@ -40,6 +40,9 @@ META_KEYS = (
     "start_time",
     "only_node",
     "content_hash",
+    # Task 180 (2.9.0): each top-level step's definition hash + next steps, and the start step — what
+    # resume checks before restoring a step's saved output (`core/workflow_id.step_identity`).
+    "step_identity",
     "inputs",
     # Task 164 (2.6.0): attempt-chain lineage — the source run's execution_id when this run
     # resumed a prior failed attempt, else null. Knowable at run start; the resume loader's
@@ -113,7 +116,10 @@ def intern_event_leaves(  # noqa: C901 — a recursive container walk; one branc
         if isinstance(value, list):
             return [walk(child) for child in value]
         if isinstance(value, str):
-            encoded = value.encode("utf-8")
+            # `surrogatepass`: these bytes only size and name the blob — the line itself is ASCII JSON, so a
+            # lone surrogate (a truncated JSON escape upstream) is written as `\udXXX` and reads back unchanged
+            # (JSON's own limit: a high one directly followed by a low one reads back as the pair they spell).
+            encoded = value.encode("utf-8", "surrogatepass")
             if len(encoded) >= INTERN_MIN_BYTES:
                 digest = hashlib.md5(encoded, usedforsecurity=False).hexdigest()
                 if digest not in declared:

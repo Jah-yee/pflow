@@ -33,7 +33,12 @@ def _gated_ir() -> dict[str, Any]:
         "ir_version": "0.1.0",
         "nodes": [
             {"id": "a", "type": "shell", "params": {"command": "echo hello"}},
-            {"id": "b", "type": "shell", "params": {"command": "echo from-${a.stdout}"}, "approval": "required"},
+            {
+                "id": "b",
+                "type": "shell",
+                "params": {"command": 'echo from-"$A_STDOUT"', "env": {"A_STDOUT": "${a.stdout}"}},
+                "approval": "required",
+            },
         ],
         "edges": [{"from": "a", "to": "b"}],
     }
@@ -78,7 +83,7 @@ class TestGateTraceEvents:
         # The pause line IS the serialization test for the payload (Task 171).
         assert pause["request"]["node_id"] == "b"
         assert pause["request"]["kind"] == "action_approval"
-        assert pause["request"]["preview"] == {"command": "echo from-hello"}
+        assert pause["request"]["preview"] == {"command": 'echo from-"$A_STDOUT"', "env": {"A_STDOUT": "hello"}}
         assert resolution["resolution"] == "approved"
         assert resolution["resolved_via"] == "prompt"
 
@@ -142,7 +147,8 @@ class TestGateTraceEvents:
         assert trace["final_status"] == "paused"
         assert trace["paused_node_id"] == "b"
         assert trace["gate_request"]["kind"] == "action_approval"
-        assert trace["gate_request"]["preview"] == {"command": "echo from-hello"}
+        assert (trace["gate_request"]["iteration"], trace["gate_request"]["max_iterations"]) == (None, None)
+        assert trace["gate_request"]["preview"] == {"command": 'echo from-"$A_STDOUT"', "env": {"A_STDOUT": "hello"}}
         resolution = next(
             ln for ln in _read_lines(collector._stream_path) if ln["kind"] == "gate" and ln["phase"] == "resolution"
         )
@@ -505,6 +511,7 @@ class TestGateIterationRecorded:
         # The payload states it explicitly (JSON-native null), beside its other fields.
         assert lines[0]["request"]["node_id"] == "b"
         assert lines[0]["request"]["iteration"] is None
+        assert lines[0]["request"]["max_iterations"] is None  # Task 183: present and null, never absent
 
     def test_loop_escalation_lines_carry_the_iteration(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -540,3 +547,149 @@ class TestGateIterationRecorded:
             ("q1?", 1),
             ("q2?", 2),
         ]
+
+
+def _loop_step(node_id: str, code: str, loop: dict[str, Any], *, approval: bool, marker: Path | None = None) -> dict:
+    inputs: dict[str, Any] = {"i": "${__iteration__}"}
+    if marker is not None:
+        inputs["marker"] = str(marker)
+        code = "marker: str\nwith open(marker, 'a', encoding='utf-8') as fh:\n    fh.write('effect\\n')\n" + code
+    step: dict[str, Any] = {"id": node_id, "type": "code", "params": {"code": "i: int\n" + code, "inputs": inputs}}
+    step["loop"] = loop
+    if approval:
+        step["approval"] = "required"
+    return step
+
+
+def _pause_requests(collector: WorkflowTraceCollector) -> list[tuple[Any, Any]]:
+    """``(iteration, max_iterations)`` of every gate PAUSE line's payload, in order (subscripts:
+    a payload that omits either key fails here)."""
+    return [
+        (ln["request"]["iteration"], ln["request"]["max_iterations"])
+        for ln in _read_lines(collector._stream_path)
+        if ln["kind"] == "gate" and ln["phase"] == "pause"
+    ]
+
+
+def _chooser(request, *, allow_prompt):
+    return GateResolution(approved=True, resolved_via="prompt", chosen="a")
+
+
+@pytest.mark.trace_files
+class TestGateLoopCap:
+    """Task 183: a loop step's gate carries the author's cap (``max_iterations``) as known
+    at the gate — derived from the step's config and the store (``declared_loop_cap``), never
+    from the walk's lazily-memoized ``loop_caps`` (empty at iteration 1 and on resume)."""
+
+    def test_iteration_one_approval_carries_the_literal_cap_on_the_line_and_the_trailer(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        step = _loop_step(
+            "tick", "result: bool = int(i) < 3", {"while": "${tick.result}", "max_iterations": 3}, approval=True
+        )
+        ir = {"ir_version": "0.1.0", "nodes": [step], "edges": []}
+        collector = _run_streamed_until_gate_stop(ir, {}, tmp_path)  # pre-exec: nothing has run yet
+
+        assert _pause_requests(collector) == [(1, 3)]
+        trace = load_trace_file(collector._stream_path)
+        assert trace["final_status"] == "paused"
+        assert (trace["gate_request"]["iteration"], trace["gate_request"]["max_iterations"]) == (1, 3)
+
+    @pytest.mark.parametrize(
+        "escalation",
+        ["{'question': f'q{i}?', 'options': [{'label': 'a'}]}", "f'q{i}?'"],
+        ids=["dict-marker", "string-marker"],
+    )
+    def test_loop_escalation_carries_the_cap(self, tmp_path, monkeypatch, escalation):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        step = _loop_step(
+            "agent",
+            f"result: dict = {{'escalation': {escalation}, 'go': int(i) < 2}}",
+            {"while": "${agent.result.go}", "max_iterations": 3},
+            approval=False,
+        )
+        collector, _ = _run_streamed({"ir_version": "0.1.0", "nodes": [step], "edges": []}, _chooser, tmp_path)
+        assert _pause_requests(collector) == [(1, 3), (2, 3)]
+
+    def test_uncapped_loop_carries_null_beside_its_iteration(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        step = _loop_step("tick", "result: bool = int(i) < 3", {"while": "${tick.result}"}, approval=True)
+        collector = _run_streamed_until_gate_stop({"ir_version": "0.1.0", "nodes": [step], "edges": []}, {}, tmp_path)
+        assert _pause_requests(collector) == [(1, None)]  # never the engine's visit guard (100)
+
+    def test_template_cap_from_a_workflow_input_resolves_at_iteration_one(self, tmp_path, monkeypatch):
+        from pflow.core.exceptions import GateNotInteractiveError
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        step = _loop_step(
+            "tick",
+            "result: bool = int(i) < 9",
+            {"while": "${tick.result}", "max_iterations": "${rounds}"},
+            approval=True,
+        )
+        ir = {
+            "ir_version": "0.1.0",
+            "inputs": {"rounds": {"type": "number", "required": True, "description": "Loop cap"}},
+            "nodes": [step],
+            "edges": [],
+        }
+        collector = WorkflowTraceCollector(
+            "gated", workflow_path=str(tmp_path / "gated.pflow.md"), is_run_scoped=True, stream_to_disk=True
+        )
+        compiled = compile_workflow(ir, Registry(), initial_params={"rounds": 3})
+        with pytest.raises(GateNotInteractiveError):
+            WorkflowEngine(trace_collector=collector, workflow_path="gated.pflow.md").run(compiled, {"rounds": 3})
+        collector.finalize()
+        assert _pause_requests(collector) == [(1, 3)]
+
+    def test_cap_reading_the_steps_own_output_is_unknown_once_that_output_exists(self, tmp_path, monkeypatch):
+        """Iteration 2's approval runs with iteration 1's output in the store — a gate that
+        resolved the template would show 5 there (iteration 1 alone would pass by accident)."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        step = _loop_step(
+            "tick",
+            "result: dict = {'n': 5, 'more': int(i) < 3}",
+            {"while": "${tick.result.more}", "max_iterations": "${tick.result.n}"},
+            approval=True,
+        )
+        collector, _ = _run_streamed({"ir_version": "0.1.0", "nodes": [step], "edges": []}, _approver, tmp_path)
+        assert _pause_requests(collector) == [(1, None), (2, None), (3, None)]
+
+    def test_escalation_cap_reading_the_steps_own_output_is_unknown_post_exec(self, tmp_path, monkeypatch):
+        """The escalation gate is post-exec: iteration 1's own output is already in the store."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        step = _loop_step(
+            "agent",
+            "result: dict = {'escalation': 'which?', 'n': 5, 'go': False}",
+            {"while": "${agent.result.go}", "max_iterations": "${agent.result.n}"},
+            approval=False,
+        )
+        collector, _ = _run_streamed({"ir_version": "0.1.0", "nodes": [step], "edges": []}, _chooser, tmp_path)
+        assert _pause_requests(collector) == [(1, None)]
+
+    def test_coalesce_over_the_steps_own_output_is_unknown_and_never_changes_the_loop(self, tmp_path, monkeypatch):
+        """``??`` falls through to its fallback while the own key is absent (iteration 1 would
+        show 2), then resolves to 5 — the engine memoizes 5 and runs 5 iterations either way."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        effects = tmp_path / "effects.txt"
+        step = _loop_step(
+            "tick",
+            "result: dict = {'n': 5, 'more': True}",
+            {"while": "${tick.result.more}", "max_iterations": "${tick.result.n ?? 2}"},
+            approval=True,
+            marker=effects,
+        )
+        collector, shared = _run_streamed({"ir_version": "0.1.0", "nodes": [step], "edges": []}, _approver, tmp_path)
+        assert _pause_requests(collector) == [(i, None) for i in range(1, 6)]
+        assert len(effects.read_text(encoding="utf-8").splitlines()) == 5
+        assert shared["tick"]["loop_stopped"] == "max_iterations"
+
+    def test_coalesce_over_the_iteration_is_unknown(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        step = _loop_step(
+            "tick",
+            "result: bool = True",
+            {"while": "${tick.result}", "max_iterations": "${__iteration__ ?? 3}"},
+            approval=True,
+        )
+        collector, _ = _run_streamed({"ir_version": "0.1.0", "nodes": [step], "edges": []}, _approver, tmp_path)
+        assert _pause_requests(collector) == [(1, None)]  # a resolving gate would show 1 (or 3)
