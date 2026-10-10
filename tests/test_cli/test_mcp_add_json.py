@@ -11,7 +11,7 @@ from pflow.cli.commands.mcp import (
     _validate_timeout_flags,
     mcp,
 )
-from pflow.mcp import MCPServerManager
+from pflow.mcp import MCPDiscovery, MCPServerManager
 
 
 class TestJsonDetection:
@@ -156,6 +156,11 @@ class TestMcpAddCliTimeoutFlags:
     @pytest.fixture
     def runner(self):
         return click.testing.CliRunner()
+
+    @pytest.fixture(autouse=True)
+    def no_server_contact(self, monkeypatch):
+        """`add` discovers the servers it saves; these configs point at nothing real."""
+        monkeypatch.setattr(MCPDiscovery, "discover_tools", lambda *_args, **_kwargs: [])
 
     def test_add_http_server_with_timeout_flag(self, runner):
         """pflow mcp add '...' --timeout 60 should apply timeout to HTTP server."""

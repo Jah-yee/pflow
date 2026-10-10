@@ -156,7 +156,7 @@ These are search surprises — where a thing lives can differ from where you'd e
 | Why `${…}` in a shell command / code block is not resolved | `core/workflow/template_surfaces.py::param_mode`; the leftover/`$${` check is `core/workflow/data_flow.py` section "Code bodies" |
 | Registry "user node" CLI command | Removed in Task 151 — `Registry.scan_user_nodes()` is Python-only now |
 | `pflow probe` implementation | `cli/commands/probe.py` + `cli/commands/_probe_impl.py` (formerly `registry_run`) |
-| Auto-discover MCP servers at startup | `cli/mcp_sync.py`, invoked from `cli/commands/run.py` (NOT `cli/main.py`) |
+| When MCP tools get discovered | Only `pflow mcp add` (the servers it saved) and `pflow mcp sync`, both in `cli/commands/mcp.py` — workflow runs never sync |
 | Two-tier exception hierarchy | `core/exceptions.py` (internal `PflowError` tree) + `core/user_errors.py` (`UserFriendlyError` branch) |
 | Output routing files | `core/output_controller.py`, `cli/workflow_output.py` (largest), `cli/error_output.py`, `runtime/output_resolver.py`, `cli/rerun_display.py` |
 | LLM seam | `core/llm_client.py` (LiteLLM adapter, `complete()`) + `core/llm_config.py` (model resolution). Replaced Simon Willison's `llm` library in Task 158. |

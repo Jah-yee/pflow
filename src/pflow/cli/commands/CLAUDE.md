@@ -21,8 +21,8 @@ a startup import cycle. Resume refusal decisions are shared with the UI through
 `preflight_resume`; interactive confirmation stays in the CLI.
 
 `find.py` and `mcp.py`'s find command share
-`cli/find_errors.py:handle_discovery_error`. Execution-start MCP auto-sync is in
-`cli/mcp_sync.py`, not the MCP command handler.
+`cli/find_errors.py:handle_discovery_error`. MCP tool discovery runs only in
+`mcp.py` (`add` syncs the servers it saved; `sync`); workflow runs never sync.
 
 UI narration ordering lives in `ui.py:_resolve_narration` and
 `_await_narration_turn`: synthesize first, then wait for the previous clip before
