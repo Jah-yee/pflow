@@ -9,6 +9,7 @@ import pytest
 
 from pflow.core.diagnostic import exception_to_diagnostics
 from pflow.core.diagnostic_render import format_diagnostic
+from pflow.core.templates import Resolution
 from pflow.core.user_errors import OutputResolutionError
 from pflow.runtime.output_resolver import populate_declared_outputs, resolve_output_source
 
@@ -20,57 +21,49 @@ class TestResolveOutputSource:
         """Test that ${node.key} format resolves correctly."""
         shared = {"node1": {"output": "value1"}, "node2": {"result": "value2"}}
 
-        result = resolve_output_source("${node1.output}", shared)
-        assert result == "value1"
+        assert resolve_output_source("${node1.output}", shared) == Resolution("value1")
 
-        result = resolve_output_source("${node2.result}", shared)
-        assert result == "value2"
+        assert resolve_output_source("${node2.result}", shared) == Resolution("value2")
 
     def test_dollar_format_is_not_a_source(self):
         """The runtime-only ``$node.key`` form is removed (Task 170 R4): the validator
         always rejected it, so the runtime rejects it too instead of resolving it."""
         shared = {"node1": {"output": "value1"}}
 
-        assert resolve_output_source("$node1.output", shared) is None
-        assert resolve_output_source("${node1.output}", shared) == "value1"
+        assert not resolve_output_source("$node1.output", shared).ok
+        assert resolve_output_source("${node1.output}", shared) == Resolution("value1")
 
     def test_resolves_plain_format(self):
         """Test that plain node.key format resolves correctly."""
         shared = {"node1": {"output": "value1"}}
 
-        result = resolve_output_source("node1.output", shared)
-        assert result == "value1"
+        assert resolve_output_source("node1.output", shared) == Resolution("value1")
 
-    def test_returns_none_for_missing_keys(self):
-        """Test that missing keys return None."""
+    def test_missing_keys_do_not_resolve(self):
+        """A missing node or key is a miss (``not .ok``), never a found ``None``."""
         shared = {"node1": {"output": "value1"}}
 
         # Missing node
-        result = resolve_output_source("${node2.output}", shared)
-        assert result is None
+        assert not resolve_output_source("${node2.output}", shared).ok
 
         # Missing key in existing node
-        result = resolve_output_source("${node1.missing}", shared)
-        assert result is None
+        assert not resolve_output_source("${node1.missing}", shared).ok
 
     def test_handles_nested_paths(self):
         """Test resolution of nested paths like node.key.subkey."""
         shared = {"node1": {"data": {"nested": {"value": "deep_value"}}}}
 
-        result = resolve_output_source("${node1.data.nested.value}", shared)
-        assert result == "deep_value"
+        assert resolve_output_source("${node1.data.nested.value}", shared) == Resolution("deep_value")
 
     def test_resolves_root_level_values(self):
         """Test that root level values can be resolved."""
         shared = {"cli_input": "from_cli", "node1": {"output": "from_node"}}
 
         # Root level value
-        result = resolve_output_source("${cli_input}", shared)
-        assert result == "from_cli"
+        assert resolve_output_source("${cli_input}", shared) == Resolution("from_cli")
 
         # Namespaced value
-        result = resolve_output_source("${node1.output}", shared)
-        assert result == "from_node"
+        assert resolve_output_source("${node1.output}", shared) == Resolution("from_node")
 
     def test_handles_different_value_types(self):
         """Test that different value types are resolved correctly."""
@@ -85,12 +78,12 @@ class TestResolveOutputSource:
             }
         }
 
-        assert resolve_output_source("${node1.string}", shared) == "text"
-        assert resolve_output_source("${node1.number}", shared) == 42
-        assert resolve_output_source("${node1.boolean}", shared) is True
-        assert resolve_output_source("${node1.list}", shared) == [1, 2, 3]
-        assert resolve_output_source("${node1.dict}", shared) == {"key": "value"}
-        assert resolve_output_source("${node1.none}", shared) is None
+        assert resolve_output_source("${node1.string}", shared) == Resolution("text")
+        assert resolve_output_source("${node1.number}", shared) == Resolution(42)
+        assert resolve_output_source("${node1.boolean}", shared) == Resolution(True)
+        assert resolve_output_source("${node1.list}", shared) == Resolution([1, 2, 3])
+        assert resolve_output_source("${node1.dict}", shared) == Resolution({"key": "value"})
+        assert resolve_output_source("${node1.none}", shared) == Resolution(None)  # found null, not a miss
 
 
 class TestPopulateDeclaredOutputs:
@@ -215,36 +208,33 @@ class TestCoalesceInOutputSource:
         """When first branch executed, coalesce returns its value."""
         shared = {"branch_a": {"stdout": "hello from A"}}
 
-        result = resolve_output_source("${branch_a.stdout ?? branch_b.stdout}", shared)
-        assert result == "hello from A"
+        assert resolve_output_source("${branch_a.stdout ?? branch_b.stdout}", shared) == Resolution("hello from A")
 
     def test_coalesce_resolves_second_when_first_absent(self):
         """When first branch absent, coalesce falls through to second."""
         shared = {"branch_b": {"stdout": "hello from B"}}
 
-        result = resolve_output_source("${branch_b.stdout ?? branch_a.stdout}", shared)
-        assert result == "hello from B"
+        assert resolve_output_source("${branch_b.stdout ?? branch_a.stdout}", shared) == Resolution("hello from B")
 
-    def test_coalesce_returns_none_when_all_absent(self):
-        """When no branch executed, coalesce returns None."""
+    def test_coalesce_does_not_resolve_when_all_absent(self):
+        """When no branch executed, the coalesce does not resolve."""
         shared = {}
 
-        result = resolve_output_source("${branch_a.stdout ?? branch_b.stdout}", shared)
-        assert result is None
+        assert not resolve_output_source("${branch_a.stdout ?? branch_b.stdout}", shared).ok
 
     def test_coalesce_three_operands(self):
         """Three-way coalesce resolves to whichever branch ran."""
         shared = {"branch_c": {"result": "from C"}}
 
-        result = resolve_output_source("${branch_a.result ?? branch_b.result ?? branch_c.result}", shared)
-        assert result == "from C"
+        assert resolve_output_source("${branch_a.result ?? branch_b.result ?? branch_c.result}", shared) == Resolution(
+            "from C"
+        )
 
     def test_coalesce_preserves_type(self):
         """Coalesce preserves non-string types (list, dict, int)."""
         shared = {"node": {"data": [1, 2, 3]}}
 
-        result = resolve_output_source("${node.data ?? other.data}", shared)
-        assert result == [1, 2, 3]
+        assert resolve_output_source("${node.data ?? other.data}", shared) == Resolution([1, 2, 3])
 
     def test_coalesce_in_populate_declared_outputs(self):
         """End-to-end: coalesce in output source populates shared storage."""
@@ -283,47 +273,36 @@ class TestEdgeCases:
         shared = {"node1": {"output": "value"}}
 
         # Empty string
-        result = resolve_output_source("", shared)
-        assert result is None
+        assert not resolve_output_source("", shared).ok
 
         # Just brackets
-        result = resolve_output_source("${}", shared)
-        assert result is None
+        assert not resolve_output_source("${}", shared).ok
 
     def test_malformed_paths(self):
         """Test handling of malformed path expressions."""
         shared = {"node1": {"output": "value"}}
 
         # Double dots
-        result = resolve_output_source("${node1..output}", shared)
-        assert result is None
+        assert not resolve_output_source("${node1..output}", shared).ok
 
         # Leading dot
-        result = resolve_output_source("${.node1.output}", shared)
-        assert result is None
+        assert not resolve_output_source("${.node1.output}", shared).ok
 
         # Trailing dot
-        result = resolve_output_source("${node1.output.}", shared)
-        assert result is None
+        assert not resolve_output_source("${node1.output.}", shared).ok
 
     def test_special_characters_in_names(self):
         """Test handling of special characters in node/key names."""
         shared = {"node-with-dash": {"output-key": "value1"}, "node_with_underscore": {"output_key": "value2"}}
 
         # Dashes should work
-        result = resolve_output_source("${node-with-dash.output-key}", shared)
-        assert result == "value1"
+        assert resolve_output_source("${node-with-dash.output-key}", shared) == Resolution("value1")
 
         # Underscores should work
-        result = resolve_output_source("${node_with_underscore.output_key}", shared)
-        assert result == "value2"
+        assert resolve_output_source("${node_with_underscore.output_key}", shared) == Resolution("value2")
 
     def test_null_and_false_values(self):
-        """Test that null and false values are handled correctly.
-
-        NOTE: Current implementation skips None values (if value is not None check).
-        This test reflects current behavior.
-        """
+        """A source that resolves to null or any falsy value is written as that value (#753)."""
         shared = {
             "node1": {
                 "null_value": None,
@@ -348,10 +327,9 @@ class TestEdgeCases:
 
         populate_declared_outputs(shared, workflow_ir)
 
-        # Current behavior: None values are NOT populated
-        assert "null_out" not in shared  # None values are skipped
-
-        # Other falsy values should be populated
+        # A found null is a value: present, and None (not skipped like a miss)
+        assert "null_out" in shared
+        assert shared["null_out"] is None
         assert shared["false_out"] is False
         assert shared["zero_out"] == 0
         assert shared["empty_str_out"] == ""

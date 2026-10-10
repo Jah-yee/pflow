@@ -15,21 +15,14 @@ from pflow.core.templates import Reference, Resolution, parse, resolve
 from pflow.runtime.node_state import NodeStatus, get_node_status
 
 
-def resolve_output_source(source_expr: str, shared_storage: dict[str, Any]) -> Any | None:
+def resolve_output_source(source_expr: str, shared_storage: dict[str, Any]) -> Resolution:
     """Resolve an output source: a bare path or ``??`` chain (``n.out``, ``a.x[${i}]``)
     resolves as one reference, anything else as the template it is (``prefix ${n.out}``).
 
-    Args:
-        source_expr: Template expression like "${node.output}" or "node.output"
-        shared_storage: The shared storage dictionary
-
-    Returns:
-        The resolved value or None if not found
+    Returns the full ``Resolution``: ``.ok`` separates a found ``None`` (a value the
+    output carries as ``null``) from a source that did not resolve.
     """
-    source_expr = normalize_output_source(source_expr)
-
-    resolution = resolve(source_expr, shared_storage)
-    return resolution.value if resolution.ok else None
+    return resolve(normalize_output_source(source_expr), shared_storage)
 
 
 def normalize_output_source(source_expr: str) -> str:
@@ -148,9 +141,7 @@ def populate_declared_outputs(
 
         resolution = resolve(normalized, shared_storage)
         if resolution.ok:
-            # Resolved (a found None is resolved, but writes nothing)
-            if resolution.value is not None:
-                shared_storage[output_name] = resolution.value
+            shared_storage[output_name] = resolution.value  # a found None is a value (#753)
             continue
 
         # Unresolved — silently skip only if this is a legitimate all-absent
