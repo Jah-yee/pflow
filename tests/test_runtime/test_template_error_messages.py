@@ -392,6 +392,41 @@ class TestWarning10OutputResolutionStructured:
         assert diags[0].suggestions is None
 
 
+class TestOutputResolutionOptionalFieldSuggestion:
+    """#754: a path miss on a value that exists suggests the `?? null` opt-out — the
+    strict contract's explicit escape for an optional field. Absent/failed roots and
+    typos (``did_you_mean``) get no such hint; those are pinned above and below."""
+
+    @staticmethod
+    def _suggestions(source: str) -> list[str] | None:
+        from pflow.core.user_errors import OutputResolutionError
+        from pflow.runtime.output_resolver import populate_declared_outputs
+
+        shared = {"node1": {"data": {"verdict": "hang"}, "stdout": "x"}}
+        with pytest.raises(OutputResolutionError) as exc_info:
+            populate_declared_outputs(shared, {"outputs": {"video": {"source": source}}})
+        return exc_info.value.to_diagnostics()[0].suggestions
+
+    def test_path_miss_on_existing_value_suggests_null_fallback(self):
+        suggestions = self._suggestions("${node1.data.video_path}")
+
+        assert suggestions is not None
+        assert len(suggestions) == 1
+        assert "${node1.data.video_path ?? null}" in suggestions[0]
+        assert "'video'" in suggestions[0]
+
+    def test_coalesce_of_path_misses_appends_null_to_the_whole_chain_once(self):
+        suggestions = self._suggestions("${node1.data.video_path ?? node1.data.clip_path}")
+
+        assert suggestions is not None
+        assert len(suggestions) == 1
+        assert "${node1.data.video_path ?? node1.data.clip_path ?? null}" in suggestions[0]
+
+    def test_typo_with_did_you_mean_gets_no_null_fallback(self):
+        # A near-miss name is a typo; `?? null` would silence it for good.
+        assert self._suggestions("${node1.stddout}") is None
+
+
 class TestPermissiveModeWarningRendering:
     """Permissive-mode template errors pass through as WARNING-severity
     Diagnostics (via Fix #6 in ``runner._extract_runtime_warnings``). The

@@ -100,7 +100,9 @@ class OutputResolutionError(UserFriendlyError):
     template error path in ``runtime/engine/template_errors.py``. Fix
     guidance, peer-node suggestions, typo hints, and category-aware
     failure detail all live on the structured ``unresolved_references``
-    list — not in the text ``message`` or ``suggestions`` fields.
+    list. The one exception is the output-only ``?? null`` opt-out for an
+    optional field, which goes in ``suggestions`` so it reaches the JSON
+    channel too (the per-ref fix blocks are text-only renderings).
     """
 
     def __init__(
@@ -162,7 +164,7 @@ class OutputResolutionError(UserFriendlyError):
                 severity=Severity.ERROR,
                 message=self.explanation,
                 title="Template Resolution Failed",
-                suggestions=None,
+                suggestions=_optional_field_suggestions(output_blocks) or None,
                 node_id=None,
                 source="runtime",
                 context={
@@ -175,6 +177,28 @@ class OutputResolutionError(UserFriendlyError):
                 },
             )
         ]
+
+
+def _optional_field_suggestions(output_blocks: list[dict[str, Any]]) -> list[str]:
+    """Name the ``?? null`` opt-out for each path miss on a value that exists.
+
+    Only ``path_error`` qualifies: an absent or failed node is not an optional
+    field, and a near-miss name (``did_you_mean``) is a typo that ``?? null``
+    would silence for good. Inside a ``??`` chain the fallback extends the chain.
+    """
+    suggestions: list[str] = []
+    for block in output_blocks:
+        for ref in block["unresolved_references"]:
+            if ref.get("status") != "path_error" or ref.get("did_you_mean"):
+                continue
+            expr = ref["coalesce_expr"] if ref.get("in_coalesce") else ref["var"]
+            suggestion = (
+                f"If {expr} is optional, write ${{{expr} ?? null}} in output '{block['output_name']}'"
+                " — a missing field then resolves to null instead of failing the run"
+            )
+            if suggestion not in suggestions:
+                suggestions.append(suggestion)
+    return suggestions
 
 
 def _build_output_error_summary(failures: list[dict[str, Any]]) -> str:

@@ -350,3 +350,69 @@ class TestCoreRegression:
         )
         # Must not be a dict (the old shape)
         assert not isinstance(output["error"], dict)
+
+
+# ---------------------------------------------------------------------------
+# TestOutputResolutionFailure (#754)
+# ---------------------------------------------------------------------------
+
+# `facts` resolves; `video` reads a field the node's result does not have.
+_PARTIAL_OUTPUTS_IR: dict[str, Any] = {
+    "nodes": [{"id": "run", "type": "code", "params": {"code": 'result: dict = {"verdict": "hang"}'}}],
+    "edges": [],
+    "outputs": {
+        "facts": {"source": "${run.result}"},
+        "video": {"source": "${run.result.video_path}"},
+    },
+}
+
+_OPTIONAL_HINT = "${run.result.video_path ?? null}"
+
+
+class TestOutputResolutionFailure:
+    """One unresolvable declared output still fails the run (strict contract), but the
+    outputs that resolved survive in the failure document and the error names `?? null`."""
+
+    def test_json_failure_keeps_resolved_outputs_and_names_null_fallback(self, tmp_path: Path) -> None:
+        workflow_path = tmp_path / "partial.pflow.md"
+        write_workflow_file(_PARTIAL_OUTPUTS_IR, workflow_path)
+
+        result = CliRunner(mix_stderr=False).invoke(main, ["--output-format", "json", str(workflow_path)])
+
+        assert result.exit_code == 1
+        output = _parse_json_output(result)
+        _assert_unified_shape(output)
+        assert output["result"] == {"facts": {"verdict": "hang"}}
+        assert output["errors"][0]["context"]["output_failures"][0]["output_name"] == "video"
+        assert any(_OPTIONAL_HINT in s for s in output["errors"][0]["suggestions"])
+
+    def test_text_failure_prints_nothing_on_stdout_and_names_null_fallback(self, tmp_path: Path) -> None:
+        workflow_path = tmp_path / "partial.pflow.md"
+        write_workflow_file(_PARTIAL_OUTPUTS_IR, workflow_path)
+
+        result = CliRunner(mix_stderr=False).invoke(main, ["-p", "-o", "facts", str(workflow_path)])
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert _OPTIONAL_HINT in result.stderr
+
+    def test_node_failure_has_no_result_even_when_a_node_shares_an_output_name(self, tmp_path: Path) -> None:
+        """Outputs are only populated once every step ran; before that a declared name in the
+        shared store is a node namespace, not an output — it must not surface as `result`."""
+        workflow = {
+            "nodes": [
+                {"id": "summary", "type": "code", "params": {"code": 'result: str = "hi"'}},
+                {"id": "boom", "type": "code", "params": {"code": 'raise RuntimeError("boom")\nresult: str = ""'}},
+            ],
+            "edges": [{"from": "summary", "to": "boom"}],
+            "outputs": {"summary": {"source": "${summary.result}"}},
+        }
+        workflow_path = tmp_path / "node-fails.pflow.md"
+        write_workflow_file(workflow, workflow_path)
+
+        result = CliRunner(mix_stderr=False).invoke(main, ["--output-format", "json", str(workflow_path)])
+
+        assert result.exit_code == 1
+        output = _parse_json_output(result)
+        assert output["errors"][0]["node_id"] == "boom"
+        assert "result" not in output

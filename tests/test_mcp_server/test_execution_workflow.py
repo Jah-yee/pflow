@@ -51,6 +51,16 @@ FAILING_COMMAND_IR = {
 }
 
 
+# `facts` resolves; `video` reads a field the node's result does not have (#754).
+PARTIAL_OUTPUTS_IR = {
+    "nodes": [{"id": "run", "type": "code", "params": {"code": 'result: dict = {"verdict": "hang"}'}}],
+    "outputs": {
+        "facts": {"source": "${run.result}"},
+        "video": {"source": "${run.result.video_path}"},
+    },
+}
+
+
 def _large_batch_failure_ir() -> dict:
     payload = "PAYLOAD-START " + " ".join(f"token{i}" for i in range(200)) + " PAYLOAD-END"
     return {
@@ -189,6 +199,31 @@ class TestExecuteWorkflowErrors:
         assert "Advisories:" in text
         assert "## Input" in text
         assert "## Inputs" in text
+
+    def test_output_resolution_failure_text_keeps_resolved_outputs(self, tmp_path):
+        """#754: MCP's failure response is text, so the outputs that resolved before
+        one declared output failed are listed there, beside the `?? null` hint."""
+        workflow_path = tmp_path / "partial.pflow.md"
+        write_workflow_file(PARTIAL_OUTPUTS_IR, workflow_path)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            ExecutionService.execute_workflow(str(workflow_path))
+
+        text = str(exc_info.value)
+        resolved_section = text.split("Outputs that resolved before the failure:", 1)[1]
+        assert '"facts"' in resolved_section
+        assert '"verdict": "hang"' in resolved_section
+        assert '"video"' not in resolved_section
+        assert "${run.result.video_path ?? null}" in text
+
+    def test_node_failure_text_lists_no_resolved_outputs(self, tmp_path):
+        workflow_path = tmp_path / "fail.pflow.md"
+        write_workflow_file({**FAILING_COMMAND_IR, "outputs": {"fail": {"source": "${fail.stdout}"}}}, workflow_path)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            ExecutionService.execute_workflow(str(workflow_path))
+
+        assert "Outputs that resolved" not in str(exc_info.value)
 
     def test_large_batch_failure_text_uses_compact_item_summary(self, tmp_path):
         workflow_path = tmp_path / "large-batch-fail.pflow.md"
