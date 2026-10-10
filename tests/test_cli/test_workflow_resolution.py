@@ -7,14 +7,19 @@ This module tests the unified workflow resolution mechanism that allows users to
 4. Get helpful errors with suggestions
 """
 
+import json
+import os
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import click.testing
+import pytest
 
 from pflow.cli.main import main
-from pflow.core.exceptions import WorkflowNotFoundError
+from pflow.core.exceptions import WorkflowFileNotFoundError, WorkflowNotFoundError
+from pflow.core.workflow.manager import WorkflowManager
 from pflow.execution.workflow_resolver import resolve_workflow
 from tests.shared.markdown_utils import ir_to_markdown, write_workflow_file
 
@@ -34,20 +39,6 @@ class TestResolveWorkflowFunction:
         assert resolved.ir == {"nodes": [], "edges": [], "ir_version": "1.0"}
         assert resolved.source == "library"
         mock_wm.exists.assert_called_with("my-workflow")
-        mock_wm.load_ir.assert_called_once_with("my-workflow")
-
-    def test_resolve_saved_workflow_with_pflow_md_extension(self):
-        """Test resolution strips .pflow.md extension and finds saved workflow."""
-        mock_wm = MagicMock()
-        mock_wm.exists.side_effect = lambda name: name == "my-workflow"
-        mock_wm.load_ir.return_value = {"nodes": [], "edges": [], "ir_version": "1.0"}
-        mock_wm.get_path.return_value = "/fake/path/my-workflow.pflow.md"
-        mock_wm.list_all.return_value = []
-
-        resolved = resolve_workflow("my-workflow.pflow.md", mock_wm)
-
-        assert resolved.ir == {"nodes": [], "edges": [], "ir_version": "1.0"}
-        assert resolved.source == "library"
         mock_wm.load_ir.assert_called_once_with("my-workflow")
 
     def test_resolve_file_path_with_slash(self):
@@ -90,10 +81,56 @@ class TestResolveWorkflowFunction:
         mock_wm.exists.return_value = False
         mock_wm.list_all.return_value = []
 
-        import pytest
-
         with pytest.raises(WorkflowNotFoundError):
             resolve_workflow("nonexistent", mock_wm)
+
+    def test_bare_pflow_md_name_falls_back_to_saved_workflow(self, tmp_path, monkeypatch):
+        """`my-flow.pflow.md` with no file in the cwd still runs the saved `my-flow`."""
+        monkeypatch.chdir(tmp_path)
+        wm = WorkflowManager(tmp_path / "library")
+        wm.save("my-flow", ir_to_markdown({"nodes": [{"id": "a", "type": "shell", "params": {"command": "echo"}}]}))
+
+        resolved = resolve_workflow("my-flow.pflow.md", wm)
+
+        assert resolved.source == "library"
+        assert resolved.file_path == wm.get_path("my-flow")
+        assert resolved.ir["nodes"][0]["id"] == "a"
+
+    @pytest.mark.parametrize("arg", ["./my-flow.pflow.md", "sub/my-flow.pflow.md"])
+    def test_path_with_directory_never_falls_back_to_saved_workflow(self, tmp_path, monkeypatch, arg):
+        """Only a bare `name.pflow.md` aliases a saved name — a path with a directory part is a file error."""
+        monkeypatch.chdir(tmp_path)
+        wm = WorkflowManager(tmp_path / "library")
+        wm.save("my-flow", ir_to_markdown({"nodes": [{"id": "a", "type": "shell", "params": {"command": "echo"}}]}))
+
+        with pytest.raises(WorkflowFileNotFoundError):
+            resolve_workflow(arg, wm)
+
+    def test_file_in_cwd_wins_over_saved_name(self, tmp_path, monkeypatch):
+        """A path-like argument that names an existing file always loads that file."""
+        monkeypatch.chdir(tmp_path)
+        wm = WorkflowManager(tmp_path / "library")
+        wm.save("my-flow", ir_to_markdown({"nodes": [{"id": "a", "type": "shell", "params": {"command": "echo"}}]}))
+        write_workflow_file(
+            {"nodes": [{"id": "b", "type": "shell", "params": {"command": "echo"}}]}, tmp_path / "my-flow.pflow.md"
+        )
+
+        resolved = resolve_workflow("my-flow.pflow.md", wm)
+
+        assert resolved.source == "file"
+        assert resolved.file_path == str((tmp_path / "my-flow.pflow.md").resolve())
+
+    @pytest.mark.parametrize("arg", ["missing.pflow.md", "sub/missing.pflow.md"])
+    def test_missing_path_raises_file_error_naming_path_and_cwd(self, tmp_path, monkeypatch, arg):
+        """The exception text (what MCP `workflow_execute` relays) names the path and cwd."""
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(WorkflowFileNotFoundError) as exc_info:
+            resolve_workflow(arg, WorkflowManager(tmp_path / "library"))
+
+        assert str(exc_info.value) == (
+            f"No file at: {(tmp_path / arg).resolve()} (resolved relative to cwd: {Path.cwd()})"
+        )
 
     def test_resolve_with_home_expansion(self):
         """Test resolution expands ~ in file paths."""
@@ -521,14 +558,57 @@ class TestEdgeCases:
         assert result.exit_code != 0
         assert "not a known workflow" in result.output
 
-    def test_workflow_file_not_found(self):
-        """Test helpful error when workflow file doesn't exist."""
-        runner = click.testing.CliRunner()
+    @pytest.mark.parametrize("arg", ["sub/dir/x.pflow.md", "./x.pflow.md", "x.pflow.md", "sub/dir/x"])
+    def test_missing_relative_path_names_the_file_and_cwd(self, tmp_path, monkeypatch, arg):
+        """GH #553: a path-like argument is a file — its not-found error names the
+        resolved path and the cwd, and never sends the agent to `pflow list`."""
+        monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(main, ["./nonexistent.pflow.md"])
+        result = click.testing.CliRunner().invoke(main, [arg])
 
         assert result.exit_code == 1
-        assert "not found" in result.output.lower()
+        assert "Workflow File Not Found" in result.output
+        assert f"No file at: {(tmp_path / arg).resolve()}" in result.output
+        assert f"resolved relative to cwd: {Path.cwd()}" in result.output
+        assert "pflow list" not in result.output
+
+    def test_missing_path_json_error_carries_file_path_and_cwd(self, tmp_path, monkeypatch):
+        """The agent-facing JSON envelope carries the resolved path and cwd as fields."""
+        monkeypatch.chdir(tmp_path)
+
+        result = click.testing.CliRunner().invoke(main, ["--output-format", "json", "sub/x.pflow.md"])
+
+        assert result.exit_code == 1
+        error = json.loads(result.output)["errors"][0]
+        assert error["title"] == "Workflow File Not Found"
+        assert error["context"]["file_path"] == str((tmp_path / "sub/x.pflow.md").resolve())
+        assert error["context"]["cwd"] == str(Path.cwd())
+        assert error["suggestions"] == ["Check your working directory, or pass an absolute path."]
+
+    def test_missing_absolute_path_omits_cwd(self, tmp_path):
+        """An absolute path does not depend on the cwd, so the error does not mention it."""
+        missing = tmp_path / "nope" / "x.pflow.md"
+
+        result = click.testing.CliRunner().invoke(main, [str(missing)])
+
+        assert result.exit_code == 1
+        assert f"No file at: {missing.resolve()}" in result.output
+        assert "resolved relative to cwd" not in result.output
+        assert "pflow list" not in result.output
+
+    def test_relative_path_from_the_right_cwd_runs(self, tmp_path, monkeypatch):
+        """The same relative path that fails from the wrong cwd runs from the right one."""
+        (tmp_path / "sub").mkdir()
+        write_workflow_file(
+            {"nodes": [{"id": "say", "type": "shell", "params": {"command": "echo from-file"}}], "edges": []},
+            tmp_path / "sub" / "x.pflow.md",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        result = click.testing.CliRunner().invoke(main, ["sub/x.pflow.md"])
+
+        assert result.exit_code == 0, result.output
+        assert "from-file" in result.output
 
     def test_spaced_workflow_path_help_has_copyable_example(self, tmp_path):
         """Per-workflow help quotes the full typed path in its usage example."""
@@ -576,6 +656,25 @@ class TestEdgeCases:
             result = runner.invoke(main, [str(wf)])
             assert result.exit_code != 0
             assert "Permission" in result.output or "permission" in result.output
+
+    @pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="needs POSIX permissions, non-root")
+    def test_unreadable_directory_is_a_permission_error_not_a_missing_file(self, tmp_path):
+        """A file behind an unreadable directory exists — it must not be reported as "No file at"
+        (Python 3.14's ``Path.exists`` reads EACCES as missing)."""
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        write_workflow_file(
+            {"nodes": [{"id": "a", "type": "shell", "params": {"command": "echo"}}]}, locked / "x.pflow.md"
+        )
+        locked.chmod(0)
+        try:
+            result = click.testing.CliRunner().invoke(main, [str(locked / "x.pflow.md")])
+        finally:
+            locked.chmod(0o755)
+
+        assert result.exit_code == 1
+        assert "Permission" in result.output
+        assert "No file at" not in result.output
 
     def test_unicode_decode_error_on_file(self, tmp_path):
         """Test decode error yields helpful message."""
