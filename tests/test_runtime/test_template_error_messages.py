@@ -402,7 +402,7 @@ class TestOutputResolutionOptionalFieldSuggestion:
         from pflow.core.user_errors import OutputResolutionError
         from pflow.runtime.output_resolver import populate_declared_outputs
 
-        shared = {"node1": {"data": {"verdict": "hang"}, "stdout": "x"}}
+        shared = {"node1": {"data": {"verdict": "hang", "items": ["a", "b"]}, "stdout": "x"}}
         with pytest.raises(OutputResolutionError) as exc_info:
             populate_declared_outputs(shared, {"outputs": {"video": {"source": source}}})
         return exc_info.value.to_diagnostics()[0].suggestions
@@ -421,6 +421,11 @@ class TestOutputResolutionOptionalFieldSuggestion:
         assert suggestions is not None
         assert len(suggestions) == 1
         assert "${node1.data.video_path ?? node1.data.clip_path ?? null}" in suggestions[0]
+
+    def test_path_miss_inside_a_dynamic_index_gets_no_null_fallback(self):
+        # The miss is the index source, not the expression's value: `${node1.data.items[${node1.data.i} ?? null]}`
+        # is not a template, and `${node1.data.i ?? null}` would yield the index, not the item.
+        assert self._suggestions("${node1.data.items[${node1.data.i}]}") is None
 
     def test_typo_with_did_you_mean_gets_no_null_fallback(self):
         # A near-miss name is a typo; `?? null` would silence it for good.
