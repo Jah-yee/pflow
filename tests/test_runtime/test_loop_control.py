@@ -13,11 +13,12 @@ from pflow.runtime.engine import instrumentation
 from pflow.runtime.engine.loop_control import (
     _coerce_runtime_cap,
     apply_carry_overrides,
+    declared_loop_cap,
     evaluate_loop_condition,
     loop_runtime_scope,
     resolve_loop_cap,
 )
-from pflow.runtime.engine.types import LoopConfig, TemplateConfig
+from pflow.runtime.engine.types import LoopConfig, NodeConfig, TemplateConfig
 
 # --- evaluate_loop_condition ------------------------------------------------
 
@@ -188,11 +189,67 @@ def test_runtime_cap_float_truncates() -> None:
     assert _coerce_runtime_cap(3.9, "n", "${cap}") == 3
 
 
+@pytest.mark.parametrize("raw", [float("nan"), float("inf"), float("-inf")], ids=["nan", "inf", "-inf"])
+def test_runtime_cap_non_finite_float_raises_structured(raw: float) -> None:
+    # A bare int(raw) raised ValueError (nan) / OverflowError (inf) past every caller's
+    # LoopConditionError handling (JSON `Infinity` parses to inf).
+    with pytest.raises(LoopConditionError, match="not a positive integer"):
+        _coerce_runtime_cap(raw, "n", "${cap}")
+
+
 def test_runtime_cap_respects_lowered_env(monkeypatch) -> None:
     monkeypatch.setattr(instrumentation, "MAX_NODE_VISITS", 3)
     assert _coerce_runtime_cap(3, "n", "${cap}") == 3
     with pytest.raises(LoopConditionError, match="exceeding the hard visit"):
         _coerce_runtime_cap(4, "n", "${cap}")
+
+
+# --- declared_loop_cap: the cap a gate shows (display-only) -------------------
+
+
+def _templated(template: str) -> NodeConfig:
+    return NodeConfig(
+        node_id="n",
+        node_type_name="PythonCodeNode",
+        template_config=None,
+        batch_config=None,
+        namespaced=True,
+        interface_metadata=None,
+        loop_config=LoopConfig("${n.more}", max_iterations_template=template),
+    )
+
+
+# Literal / uncapped / non-loop: pinned through real runs in test_gate_trace.py::TestGateLoopCap.
+
+
+def test_declared_cap_resolves_a_template_over_upstream_values() -> None:
+    assert declared_loop_cap(_templated("${rounds}"), {"rounds": 4}) == 4
+    assert declared_loop_cap(_templated("${cfg.limit}"), {"cfg": {"limit": "6"}}) == 6
+
+
+@pytest.mark.parametrize(
+    ("template", "shared"),
+    [
+        # Each store holds a value a resolving implementation would show instead of None.
+        ("${n.result.n}", {"n": {"result": {"n": 5}}}),
+        ("${n.result.n ?? 2}", {}),  # own key absent: `??` falls through to the fallback
+        ("${__iteration__}", {"__iteration__": 1}),
+        ("${__iteration__ ?? 3}", {}),
+        ("${cfg[${n.k}].x}", {"cfg": [{"x": 7}], "n": {"k": 0}}),  # own output as a dynamic index
+        ("${rounds ?? n.result.n}", {"rounds": 4}),  # own output in a later operand
+    ],
+    ids=["own-output", "own-coalesce", "iteration", "iteration-coalesce", "own-index", "own-fallback"],
+)
+def test_declared_cap_is_unknown_when_the_template_depends_on_the_loop_body(template: str, shared: dict) -> None:
+    assert declared_loop_cap(_templated(template), shared) is None
+
+
+@pytest.mark.parametrize(
+    "value", [None, "abc", 0, float("nan"), float("inf"), instrumentation.MAX_NODE_VISITS + 1], ids=repr
+)
+def test_declared_cap_is_unknown_when_the_template_cannot_be_a_cap(value: object) -> None:
+    shared = {} if value is None else {"rounds": value}  # None: the reference is absent
+    assert declared_loop_cap(_templated("${rounds}"), shared) is None
 
 
 # --- loop_runtime_scope: the clear_iteration_on_exit asymmetry ---------------

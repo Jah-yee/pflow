@@ -53,6 +53,8 @@ included, whose completed items' batch trace is drained there — but only for a
 from its child (`not originating`): a gate at the host's own level fired before this
 visit reserved a frame, or after step 16 consumed it (#659). Resolver bugs are errors,
 not pauses. The escalation gate runs after trace/completion and before loop re-entry.
+The payload's `max_iterations` is display-only; `loop_control.declared_loop_cap` owns
+its rules.
 
 Pause eligibility is deliberately narrow; `_execute_node` and `_gate_pausable`
 are the authorities. It requires the originating `GateNotInteractiveError`, a

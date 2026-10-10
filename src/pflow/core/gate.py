@@ -51,6 +51,10 @@ class GateRequest:
     # The 1-based loop iteration that raised this gate; ``None`` for a non-loop step.
     # Display-only — resume derives its position from the trace events, never from here.
     iteration: int | None = None
+    # The loop's author cap as known at the gate (``runtime/engine/loop_control.declared_loop_cap``);
+    # ``None`` for a non-loop step, an uncapped loop, or a cap not knowable outside the loop body.
+    # Display-only — resume never reads it.
+    max_iterations: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -69,7 +73,9 @@ class GateResolution:
     notes: str | None = None
 
 
-def build_approval_request(node_id: str, node_type: str, params: Any, *, iteration: int | None = None) -> GateRequest:
+def build_approval_request(
+    node_id: str, node_type: str, params: Any, *, iteration: int | None = None, max_iterations: int | None = None
+) -> GateRequest:
     """Approval payload from the node's (resolved) params.
 
     ``_``-prefixed keys are parser/engine bookkeeping (``_source_line``, ...), not
@@ -77,14 +83,27 @@ def build_approval_request(node_id: str, node_type: str, params: Any, *, iterati
     (node_output_formatter / trace_report convention).
     """
     if not isinstance(params, dict):
-        return GateRequest(node_id=node_id, node_type=node_type, kind=GATE_KIND_APPROVAL, iteration=iteration)
+        return GateRequest(
+            node_id=node_id,
+            node_type=node_type,
+            kind=GATE_KIND_APPROVAL,
+            iteration=iteration,
+            max_iterations=max_iterations,
+        )
     preview = {key: json_safe(value) for key, value in params.items() if not key.startswith("_")}
     return GateRequest(
-        node_id=node_id, node_type=node_type, kind=GATE_KIND_APPROVAL, preview=preview, iteration=iteration
+        node_id=node_id,
+        node_type=node_type,
+        kind=GATE_KIND_APPROVAL,
+        preview=preview,
+        iteration=iteration,
+        max_iterations=max_iterations,
     )
 
 
-def build_escalation_request(node_id: str, node_type: str, marker: Any, *, iteration: int | None = None) -> GateRequest:
+def build_escalation_request(
+    node_id: str, node_type: str, marker: Any, *, iteration: int | None = None, max_iterations: int | None = None
+) -> GateRequest:
     """Escalation payload from a node's ``result.escalation`` marker.
 
     Lenient by design: a string marker becomes the question; dict fields that are
@@ -92,7 +111,12 @@ def build_escalation_request(node_id: str, node_type: str, marker: Any, *, itera
     """
     if isinstance(marker, str):
         return GateRequest(
-            node_id=node_id, node_type=node_type, kind=GATE_KIND_ESCALATION, question=marker, iteration=iteration
+            node_id=node_id,
+            node_type=node_type,
+            kind=GATE_KIND_ESCALATION,
+            question=marker,
+            iteration=iteration,
+            max_iterations=max_iterations,
         )
     question = marker.get("question")
     raw_options = marker.get("options")
@@ -106,6 +130,7 @@ def build_escalation_request(node_id: str, node_type: str, marker: Any, *, itera
         options=options,
         recommendation=str(recommendation) if recommendation is not None else None,
         iteration=iteration,
+        max_iterations=max_iterations,
     )
 
 
@@ -120,6 +145,23 @@ def option_labels(options: list[dict[str, Any]]) -> list[str]:
     identical across surfaces.
     """
     return [str(option.get("label") or f"option {i}") for i, option in enumerate(options, start=1)]
+
+
+def loop_position(iteration: object, max_iterations: object) -> str | None:
+    """A loop gate's position — THE text every gate renderer shows ("iteration 2 of up to 3").
+
+    Takes raw payload values (a trailer dict may predate either key, or be hand-edited):
+    a non-``int`` iteration means a non-loop gate → ``None``. The cap is shown only as an
+    ``int`` the iteration has not passed — a back edge into the loop continues the count
+    past it (the engine's counter is per run), and "iteration 4 of up to 3" is never
+    printed. ``web/src/components/GateCallout.tsx::loopPosition`` is the TS twin; both are
+    pinned by ``web/src/test/fixtures/loop-position.json``.
+    """
+    if not isinstance(iteration, int):
+        return None
+    if isinstance(max_iterations, int) and iteration <= max_iterations:
+        return f"iteration {iteration} of up to {max_iterations}"
+    return f"iteration {iteration}"
 
 
 def masked_preview(preview: dict[str, Any]) -> dict[str, Any]:
