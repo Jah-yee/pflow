@@ -295,7 +295,7 @@ class TestApprovalPausePromise:
         ir = {
             "ir_version": "0.1.0",
             "nodes": [
-                {"id": "prep", "type": "shell", "params": {"command": "echo ready"}},
+                {"id": "prep", "type": "code", "params": {"code": "result: int = 3"}},
                 {
                     "id": "tick",
                     "type": "code",
@@ -308,7 +308,8 @@ class TestApprovalPausePromise:
                         "inputs": {"i": "${__iteration__}", "marker": str(marker)},
                     },
                     "approval": "required",
-                    "loop": {"while": "${tick.result}", "max_iterations": 3},
+                    # Task 183: an upstream-templated cap — on resume it resolves only from SEEDED output.
+                    "loop": {"while": "${tick.result}", "max_iterations": "${prep.result}"},
                 },
             ],
             "edges": [{"from": "prep", "to": "tick"}],
@@ -344,6 +345,7 @@ class TestApprovalPausePromise:
         assert first.gate_outcome == "paused"
         assert first.pause_request is not None
         assert first.pause_request["gate_request"]["iteration"] == 2
+        assert _pause_line_positions(first) == [(1, 3), (2, 3)]
         assert effects() == ["effect 1"]
 
         source = load_resume_source(execution_id=first.execution_id, debug_dir=debug_dir, gate_answer={"approve": True})
@@ -353,7 +355,8 @@ class TestApprovalPausePromise:
         assert second.pause_request is not None
         assert second.pause_request["gate_request"]["iteration"] == 3
         # Task 183: the resumed attempt's FIRST gate (iteration 2) runs before any re-entry
-        # decision of this run memoized a cap — the cap still rides on every payload.
+        # decision of this run memoized a cap — the cap, read from prep's restored output,
+        # still rides on every payload (a seeding regression would show None here).
         assert _pause_line_positions(second) == [(2, 3), (3, 3)]
         assert effects() == ["effect 1", "effect 2"]
 
@@ -363,6 +366,7 @@ class TestApprovalPausePromise:
         assert (source.entry_node_id, source.entry_iteration) == ("tick", 3)
         third = attempt(_ApproveFirstResolver(approvals=1), source)
         assert third._determine_trace_status() == "success"
+        assert _pause_line_positions(third) == [(3, 3)]
         assert effects() == ["effect 1", "effect 2", "effect 3"]
         # Self-contained: tick's seeded iteration 2 re-recorded (restored), then iteration 3 ran.
         ticks = [(e.get("restored", False), e["iteration"]) for e in third.events if e["node_id"] == "tick"]
