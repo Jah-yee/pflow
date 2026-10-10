@@ -12,7 +12,6 @@ from pflow.registry.constants import MCP_CANONICAL_OUTPUT, MCP_NODE_PARAMS
 from .discovery import DEFAULT_DISCOVERY_TIMEOUT_SECONDS, MCPDiscovery
 from .errors import describe_mcp_error
 from .manager import MCPServerManager
-from .sync_state import MCP_SERVER_FINGERPRINTS_KEY, fingerprint_server_configs, load_server_fingerprints
 
 logger = logging.getLogger(__name__)
 
@@ -176,8 +175,8 @@ class MCPRegistrar:
 
     @staticmethod
     def _configuration_changed(
-        initial: dict[str, str],
-        latest: dict[str, str],
+        initial: dict[str, dict[str, Any]],
+        latest: dict[str, dict[str, Any]],
         targets: list[str],
         *,
         reconcile_all: bool,
@@ -200,8 +199,6 @@ class MCPRegistrar:
         nodes: dict[str, dict[str, Any]],
         results: list[ServerSyncResult],
         discovered_tools: dict[str, list[dict[str, Any]]],
-        fingerprints: dict[str, Any],
-        initial_fingerprints: dict[str, str],
     ) -> list[ServerSyncResult]:
         """Apply successful server replacements to one in-memory snapshot."""
         final_results: list[ServerSyncResult] = []
@@ -225,7 +222,6 @@ class MCPRegistrar:
                     )
                 )
                 continue
-            fingerprints[result.server] = initial_fingerprints[result.server]
             final_results.append(
                 ServerSyncResult(
                     server=result.server,
@@ -249,7 +245,6 @@ class MCPRegistrar:
         if initial_configs is None:
             return SyncBatchResult([], config_missing=True)
         targets = list(initial_configs) if server_names is None else list(server_names)
-        initial_fingerprints = fingerprint_server_configs(initial_configs)
         discovered_tools, results = self._discover_targets(
             targets,
             initial_configs,
@@ -264,10 +259,9 @@ class MCPRegistrar:
                 aborted_reason="MCP configuration was removed during discovery; no registry updates were published.",
                 config_missing=True,
             )
-        latest_fingerprints = fingerprint_server_configs(latest_configs)
         if self._configuration_changed(
-            initial_fingerprints,
-            latest_fingerprints,
+            initial_configs,
+            latest_configs,
             targets,
             reconcile_all=reconcile_all,
         ):
@@ -278,31 +272,14 @@ class MCPRegistrar:
 
         nodes = self.registry.load(include_filtered=True)
         original_nodes = dict(nodes)
-        stored_fingerprints, fingerprints_valid = load_server_fingerprints(self.registry)
-        final_fingerprints = dict(stored_fingerprints)
 
         if reconcile_all:
-            configured_servers = set(latest_configs)
-            self._clean_full_reconciliation(nodes, configured_servers)
-            final_fingerprints = {
-                name: fingerprint for name, fingerprint in final_fingerprints.items() if name in configured_servers
-            }
+            self._clean_full_reconciliation(nodes, set(latest_configs))
 
-        final_results = self._apply_successful_replacements(
-            nodes,
-            results,
-            discovered_tools,
-            final_fingerprints,
-            initial_fingerprints,
-        )
+        final_results = self._apply_successful_replacements(nodes, results, discovered_tools)
 
-        metadata_changed = not fingerprints_valid or final_fingerprints != stored_fingerprints
-        registry_updated = nodes != original_nodes or metadata_changed
-        if registry_updated:
-            self.registry.save(
-                nodes,
-                metadata_updates={MCP_SERVER_FINGERPRINTS_KEY: final_fingerprints},
-            )
+        if nodes != original_nodes:
+            self.registry.save(nodes)
 
         return SyncBatchResult(servers=final_results)
 
@@ -321,13 +298,8 @@ class MCPRegistrar:
             del nodes[node_name]
             logger.debug(f"Removed registry entry: {node_name}")
 
-        fingerprints, _ = load_server_fingerprints(self.registry)
-        fingerprint_removed = server_name in fingerprints
-        fingerprints.pop(server_name, None)
-
-        if to_remove or fingerprint_removed:
-            self.registry.save(nodes, metadata_updates={MCP_SERVER_FINGERPRINTS_KEY: fingerprints})
         if to_remove:
+            self.registry.save(nodes)
             logger.info(f"Removed {len(to_remove)} tools for server '{server_name}'")
 
         return len(to_remove)

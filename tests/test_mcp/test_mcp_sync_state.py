@@ -4,7 +4,6 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from pflow.mcp import MCPRegistrar, MCPServerManager
-from pflow.mcp.sync_state import MCP_SERVER_FINGERPRINTS_KEY, fingerprint_server_config
 from pflow.registry import Registry
 
 
@@ -28,12 +27,6 @@ def _build(tmp_path: Path, configs: dict[str, dict]) -> tuple[MCPServerManager, 
     return manager, registry, discovery, registrar
 
 
-def test_fingerprint_uses_canonical_raw_json_and_sha256() -> None:
-    config = {"env": {"TOKEN": "${TOKEN}"}, "command": "cmd", "args": ["x"]}
-
-    assert fingerprint_server_config(config) == "753d4b739030191da0cdd56a8859f1e0d2723f256b3cd84d0e20a84feb433b64"
-
-
 def test_partial_failure_replaces_success_preserves_failure_and_cleans_removed(tmp_path: Path) -> None:
     configs = {"good": {"command": "good"}, "bad": {"command": "bad"}}
     _, registry, discovery, registrar = _build(tmp_path, configs)
@@ -44,16 +37,7 @@ def test_partial_failure_replaces_success_preserves_failure_and_cleans_removed(t
         "mcp-legacy": {"type": "mcp"},
         "user-node": {"type": "user"},
     }
-    registry.save(
-        nodes,
-        metadata_updates={
-            MCP_SERVER_FINGERPRINTS_KEY: {
-                "good": "old-good",
-                "bad": "old-bad",
-                "removed": "old-removed",
-            }
-        },
-    )
+    registry.save(nodes)
     discovery.discover_tools.side_effect = [[_tool("new")], RuntimeError("temporary outage")]
 
     with patch.object(registry, "save", wraps=registry.save) as save:
@@ -63,31 +47,27 @@ def test_partial_failure_replaces_success_preserves_failure_and_cleans_removed(t
     assert [result.error for result in batch.servers] == [None, "temporary outage"]
     persisted = registry.load(include_filtered=True)
     assert set(persisted) == {"mcp-good-new", "mcp-bad-old", "user-node"}
-    assert registry.get_metadata(MCP_SERVER_FINGERPRINTS_KEY) == {
-        "good": fingerprint_server_config(configs["good"]),
-        "bad": "old-bad",
-    }
 
 
-def test_total_failure_preserves_tools_and_fingerprints(tmp_path: Path) -> None:
+def test_total_failure_preserves_tools_without_writing(tmp_path: Path) -> None:
     configs = {"one": {"command": "one"}, "two": {"command": "two"}}
     _, registry, discovery, registrar = _build(tmp_path, configs)
     nodes = {
         "mcp-one-old": _entry(registrar, "one", "old"),
         "mcp-two-old": _entry(registrar, "two", "old"),
     }
-    old_fingerprints = {"one": "old-one", "two": "old-two"}
-    registry.save(nodes, metadata_updates={MCP_SERVER_FINGERPRINTS_KEY: old_fingerprints})
+    registry.save(nodes)
     discovery.discover_tools.side_effect = [RuntimeError("one down"), RuntimeError("two down")]
 
-    batch = registrar.sync_servers(["one", "two"], reconcile_all=True)
+    with patch.object(registry, "save", wraps=registry.save) as save:
+        batch = registrar.sync_servers(["one", "two"], reconcile_all=True)
 
     assert all(result.error for result in batch.servers)
+    save.assert_not_called()
     assert registry.load(include_filtered=True) == nodes
-    assert registry.get_metadata(MCP_SERVER_FINGERPRINTS_KEY) == old_fingerprints
 
 
-def test_empty_success_removes_owned_tools_and_advances_fingerprint(tmp_path: Path) -> None:
+def test_empty_success_removes_owned_tools(tmp_path: Path) -> None:
     configs = {"empty": {"command": "empty"}}
     _, registry, discovery, registrar = _build(tmp_path, configs)
     registry.save({"mcp-empty-old": _entry(registrar, "empty", "old")})
@@ -97,7 +77,21 @@ def test_empty_success_removes_owned_tools_and_advances_fingerprint(tmp_path: Pa
 
     assert batch.servers[0].tools_discovered == 0
     assert registry.load(include_filtered=True) == {}
-    assert registry.get_metadata(MCP_SERVER_FINGERPRINTS_KEY) == {"empty": fingerprint_server_config(configs["empty"])}
+
+
+def test_explicit_empty_config_full_reconciliation_removes_all_mcp_entries(tmp_path: Path) -> None:
+    _, registry, discovery, registrar = _build(tmp_path, {})
+    registry.save({
+        "mcp-one-old": _entry(registrar, "one", "old"),
+        "mcp-legacy": {"type": "mcp"},
+        "user-node": {"type": "user"},
+    })
+
+    batch = registrar.sync_servers(None, reconcile_all=True)
+
+    assert batch.servers == []
+    discovery.discover_tools.assert_not_called()
+    assert registry.load(include_filtered=True) == {"user-node": {"type": "user"}}
 
 
 def test_exact_owner_replacement_removal_and_listing_isolate_overlapping_names(tmp_path: Path) -> None:
@@ -107,10 +101,7 @@ def test_exact_owner_replacement_removal_and_listing_isolate_overlapping_names(t
         "mcp-foo-old": _entry(registrar, "foo", "old"),
         "mcp-foo-bar-old": _entry(registrar, "foo-bar", "old"),
     }
-    registry.save(
-        nodes,
-        metadata_updates={MCP_SERVER_FINGERPRINTS_KEY: {"foo": "old", "foo-bar": "peer"}},
-    )
+    registry.save(nodes)
     discovery.discover_tools.return_value = [_tool("new")]
 
     registrar.sync_servers(["foo"], reconcile_all=False)
@@ -120,7 +111,6 @@ def test_exact_owner_replacement_removal_and_listing_isolate_overlapping_names(t
     assert registrar.remove_server_tools("foo") == 1
     assert registrar.list_registered_tools("foo") == []
     assert registrar.list_registered_tools("foo-bar") == ["mcp-foo-bar-old"]
-    assert registry.get_metadata(MCP_SERVER_FINGERPRINTS_KEY) == {"foo-bar": "peer"}
 
 
 def test_filtered_replacement_preserves_unrelated_filtered_entries(tmp_path: Path) -> None:
@@ -141,13 +131,10 @@ def test_filtered_replacement_preserves_unrelated_filtered_entries(tmp_path: Pat
 def test_conversion_failure_preserves_server_while_valid_peer_advances(tmp_path: Path) -> None:
     configs = {"bad": {"command": "bad"}, "good": {"command": "good"}}
     _, registry, discovery, registrar = _build(tmp_path, configs)
-    registry.save(
-        {
-            "mcp-bad-old": _entry(registrar, "bad", "old"),
-            "mcp-good-old": _entry(registrar, "good", "old"),
-        },
-        metadata_updates={MCP_SERVER_FINGERPRINTS_KEY: {"bad": "old-bad", "good": "old-good"}},
-    )
+    registry.save({
+        "mcp-bad-old": _entry(registrar, "bad", "old"),
+        "mcp-good-old": _entry(registrar, "good", "old"),
+    })
     discovery.discover_tools.side_effect = [
         [_tool("broken") | {"inputSchema": {"properties": []}}],
         [_tool("new")],
@@ -159,10 +146,6 @@ def test_conversion_failure_preserves_server_while_valid_peer_advances(tmp_path:
     assert batch.servers[0].error == "Could not build registry entries for 'bad': invalid properties"
     assert batch.servers[1].error is None
     assert set(registry.load(include_filtered=True)) == {"mcp-bad-old", "mcp-good-new"}
-    assert registry.get_metadata(MCP_SERVER_FINGERPRINTS_KEY) == {
-        "bad": "old-bad",
-        "good": fingerprint_server_config(configs["good"]),
-    }
 
 
 def test_registry_change_during_discovery_survives_late_snapshot(tmp_path: Path) -> None:

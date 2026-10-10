@@ -13,7 +13,7 @@ import click
 
 from pflow.core.suggestion_utils import find_similar_items, format_did_you_mean
 from pflow.mcp import MCPRegistrar, MCPServerManager
-from pflow.mcp.registrar import SyncBatchResult
+from pflow.mcp.registrar import ServerSyncResult, SyncBatchResult
 
 logger = logging.getLogger(__name__)
 
@@ -220,9 +220,29 @@ def add(config_sources: tuple, timeout: int | None, sse_timeout: int | None) -> 
 
     if total_added:
         click.echo(f"\nSuccessfully configured {len(total_added)} MCP server(s).")
-        click.echo("Run 'pflow mcp sync --all' to discover available tools from all servers.")
+        _sync_added_servers(manager, list(dict.fromkeys(total_added)))
     else:
         click.echo("No servers were added.")
+
+
+def _sync_added_servers(manager: MCPServerManager, server_names: list[str]) -> None:
+    """Discover tools for servers `add` just saved.
+
+    A failed discovery never undoes the add: the config stays saved and each
+    failed server gets a retry command.
+    """
+    click.echo("Discovering tools...")
+    try:
+        batch = MCPRegistrar(manager=manager).sync_servers(server_names, reconcile_all=False)
+    except Exception as e:
+        batch = SyncBatchResult([], aborted_reason=f"Tool discovery failed: {e}")
+    if batch.aborted_reason:
+        click.echo(f"  ✗ {batch.aborted_reason}", err=True)
+        failed = server_names
+    else:
+        failed = _echo_server_results(batch.servers, verbose=False)
+    for name in failed:
+        click.echo(f"  → Run 'pflow mcp sync {name}' when the server is reachable.", err=True)
 
 
 def _format_http_server(config: dict) -> list[str]:
@@ -516,7 +536,7 @@ def remove(name: str, force: bool) -> None:
                 click.echo("Cancelled.")
                 return
 
-        # Remove exact owned tools and the server fingerprint before config removal.
+        # Remove exact owned tools before config removal.
         removed = registrar.remove_server_tools(name)
         if removed:
             click.echo(f"  Removed {removed} tools from registry")
@@ -575,37 +595,34 @@ def _sync_all_servers(registrar: MCPRegistrar, verbose: bool = False) -> None:
         click.echo("No MCP servers configured.")
         return
 
-    total_discovered = 0
-    total_registered = 0
-    has_failures = False
-
-    for result in batch.servers:
-        server = result.server
-        discovered = result.tools_discovered
-        registered = result.tools_registered
-
-        total_discovered += discovered
-        total_registered += registered
-
-        if result.error is not None:
-            has_failures = True
-            click.echo(f"  ✗ {server}: {result.error}", err=True)
-            diagnostic = result.diagnostic
-            if diagnostic:
-                if diagnostic.suggestions:
-                    for suggestion in diagnostic.suggestions:
-                        click.echo(f"    → {suggestion}", err=True)
-                context = diagnostic.context or {}
-                technical = context.get("technical_details")
-                if verbose and technical:
-                    click.echo(f"    Detail: {technical[:200]}", err=True)
-        else:
-            click.echo(f"  ✓ {server}: {discovered} discovered, {registered} registered")
-
+    failed = _echo_server_results(batch.servers, verbose=verbose)
+    total_discovered = sum(result.tools_discovered for result in batch.servers)
+    total_registered = sum(result.tools_registered for result in batch.servers)
     click.echo(f"\nTotal: {total_discovered} tools discovered, {total_registered} registered")
 
-    if has_failures and not verbose:
+    if failed and not verbose:
         click.echo("Run with --verbose for technical error details.", err=True)
+
+
+def _echo_server_results(results: list[ServerSyncResult], *, verbose: bool) -> list[str]:
+    """Print one line per server sync result; return the names that failed."""
+    failed = []
+    for result in results:
+        if result.error is None:
+            click.echo(
+                f"  ✓ {result.server}: {result.tools_discovered} discovered, {result.tools_registered} registered"
+            )
+            continue
+        failed.append(result.server)
+        click.echo(f"  ✗ {result.server}: {result.error}", err=True)
+        diagnostic = result.diagnostic
+        if diagnostic:
+            for suggestion in diagnostic.suggestions or []:
+                click.echo(f"    → {suggestion}", err=True)
+            technical = (diagnostic.context or {}).get("technical_details")
+            if verbose and technical:
+                click.echo(f"    Detail: {technical[:200]}", err=True)
+    return failed
 
 
 def _sync_single_server(name: str, manager: MCPServerManager, registrar: MCPRegistrar, verbose: bool = False) -> None:

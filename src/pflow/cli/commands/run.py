@@ -15,7 +15,6 @@ from typing import Any, cast
 
 import click
 
-from pflow.cli.mcp_sync import _auto_discover_mcp_servers
 from pflow.cli.param_parsing import parse_workflow_params
 from pflow.cli.workflow_output import (
     _create_workflow_metadata,
@@ -1385,11 +1384,8 @@ def run(
         # Only resume's `--approve yes|no` populates this (no answer flag on run).
         ctx.obj["approval_answer"] = None
 
-        print_flag = ctx.obj.get("print_flag", False)
         output_format = ctx.obj.get("output_format", "text")
         verbose = ctx.obj.get("verbose", False)
-        effective_verbose = verbose and not print_flag
-        _auto_discover_mcp_servers(ctx, effective_verbose)
 
         stdin_content, enhanced_stdin = _read_stdin_data()
         stdin_data = enhanced_stdin if enhanced_stdin else stdin_content

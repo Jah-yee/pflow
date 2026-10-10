@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 import click.testing
 
 from pflow.cli.commands.mcp import mcp
-from pflow.mcp import MCPRegistrar, MCPServerManager
-from pflow.mcp.sync_state import MCP_SERVER_FINGERPRINTS_KEY, fingerprint_server_config
+from pflow.cli.main import main
+from pflow.mcp import MCPDiscovery, MCPRegistrar, MCPServerManager
 from pflow.registry import Registry
 from pflow.registry.discovery import ComponentSelection
 
@@ -344,7 +344,7 @@ def _mcp_entry(registrar: MCPRegistrar, server: str, tool: str) -> dict:
     return registrar._create_registry_entry(server, {"name": tool})
 
 
-def test_manual_single_sync_replaces_tools_and_advances_fingerprint(tmp_path: Path) -> None:
+def test_manual_single_sync_replaces_tools(tmp_path: Path) -> None:
     configs = {"one": {"command": "one"}}
     manager, registry, discovery, registrar = _manual_sync_components(tmp_path, configs)
     registry.save({"mcp-one-old": _mcp_entry(registrar, "one", "old")})
@@ -359,14 +359,13 @@ def test_manual_single_sync_replaces_tools_and_advances_fingerprint(tmp_path: Pa
     assert result.exit_code == 0
     assert "mcp-one-new" in registry.load(include_filtered=True)
     assert "mcp-one-old" not in registry.load(include_filtered=True)
-    assert registry.get_metadata(MCP_SERVER_FINGERPRINTS_KEY) == {"one": fingerprint_server_config(configs["one"])}
 
 
-def test_manual_single_sync_failure_preserves_tools_and_fingerprint(tmp_path: Path) -> None:
+def test_manual_single_sync_failure_preserves_tools(tmp_path: Path) -> None:
     configs = {"one": {"command": "one"}}
     manager, registry, discovery, registrar = _manual_sync_components(tmp_path, configs)
     old = {"mcp-one-old": _mcp_entry(registrar, "one", "old")}
-    registry.save(old, metadata_updates={MCP_SERVER_FINGERPRINTS_KEY: {"one": "old"}})
+    registry.save(old)
     discovery.discover_tools.side_effect = RuntimeError("temporarily unavailable")
 
     with (
@@ -377,19 +376,15 @@ def test_manual_single_sync_failure_preserves_tools_and_fingerprint(tmp_path: Pa
 
     assert result.exit_code == 1
     assert registry.load(include_filtered=True) == old
-    assert registry.get_metadata(MCP_SERVER_FINGERPRINTS_KEY) == {"one": "old"}
 
 
-def test_manual_sync_all_advances_success_and_preserves_failure(tmp_path: Path) -> None:
+def test_manual_sync_all_replaces_success_and_preserves_failure(tmp_path: Path) -> None:
     configs = {"good": {"command": "good"}, "bad": {"command": "bad"}}
     manager, registry, discovery, registrar = _manual_sync_components(tmp_path, configs)
-    registry.save(
-        {
-            "mcp-good-old": _mcp_entry(registrar, "good", "old"),
-            "mcp-bad-old": _mcp_entry(registrar, "bad", "old"),
-        },
-        metadata_updates={MCP_SERVER_FINGERPRINTS_KEY: {"good": "old-good", "bad": "old-bad"}},
-    )
+    registry.save({
+        "mcp-good-old": _mcp_entry(registrar, "good", "old"),
+        "mcp-bad-old": _mcp_entry(registrar, "bad", "old"),
+    })
 
     def discover(server_name, **_kwargs):
         if server_name == "bad":
@@ -406,17 +401,13 @@ def test_manual_sync_all_advances_success_and_preserves_failure(tmp_path: Path) 
 
     assert result.exit_code == 0
     assert set(registry.load(include_filtered=True)) == {"mcp-good-new", "mcp-bad-old"}
-    assert registry.get_metadata(MCP_SERVER_FINGERPRINTS_KEY) == {
-        "good": fingerprint_server_config(configs["good"]),
-        "bad": "old-bad",
-    }
 
 
 def test_manual_single_config_change_during_discovery_aborts_without_registry_write(tmp_path: Path) -> None:
     configs = {"one": {"command": "old"}}
     manager, registry, discovery, registrar = _manual_sync_components(tmp_path, configs)
     old_nodes = {"mcp-one-old": _mcp_entry(registrar, "one", "old")}
-    registry.save(old_nodes, metadata_updates={MCP_SERVER_FINGERPRINTS_KEY: {"one": "old"}})
+    registry.save(old_nodes)
 
     def discover(*_args, **_kwargs):
         manager.save({"mcpServers": {"one": {"command": "changed"}}})
@@ -433,7 +424,6 @@ def test_manual_single_config_change_during_discovery_aborts_without_registry_wr
     assert result.exit_code == 1
     save.assert_not_called()
     assert registry.load(include_filtered=True) == old_nodes
-    assert registry.get_metadata(MCP_SERVER_FINGERPRINTS_KEY) == {"one": "old"}
 
 
 def test_manual_single_config_disappears_before_discovery_reports_error(tmp_path: Path) -> None:
@@ -460,7 +450,7 @@ def test_manual_single_config_disappears_before_discovery_reports_error(tmp_path
 def test_manual_sync_all_missing_config_preserves_registry(tmp_path: Path) -> None:
     manager, registry, discovery, registrar = _manual_sync_components(tmp_path, {"old": {"command": "old"}})
     old_nodes = {"mcp-old-tool": _mcp_entry(registrar, "old", "tool")}
-    registry.save(old_nodes, metadata_updates={MCP_SERVER_FINGERPRINTS_KEY: {"old": "old"}})
+    registry.save(old_nodes)
     manager.config_path.unlink()
 
     with (
@@ -473,7 +463,6 @@ def test_manual_sync_all_missing_config_preserves_registry(tmp_path: Path) -> No
     assert "No MCP server configuration found" in result.output
     discovery.discover_tools.assert_not_called()
     assert registry.load(include_filtered=True) == old_nodes
-    assert registry.get_metadata(MCP_SERVER_FINGERPRINTS_KEY) == {"old": "old"}
 
 
 def test_manual_sync_all_explicit_empty_config_reports_no_servers(tmp_path: Path) -> None:
@@ -490,13 +479,10 @@ def test_manual_sync_all_explicit_empty_config_reports_no_servers(tmp_path: Path
     discovery.discover_tools.assert_not_called()
 
 
-def test_remove_uses_exact_owner_and_removes_zero_tool_fingerprint(tmp_path: Path) -> None:
+def test_remove_uses_exact_owner(tmp_path: Path) -> None:
     configs = {"foo": {"command": "foo"}, "foo-bar": {"command": "foo-bar"}}
     manager, registry, _, registrar = _manual_sync_components(tmp_path, configs)
-    registry.save(
-        {"mcp-foo-bar-tool": _mcp_entry(registrar, "foo-bar", "tool")},
-        metadata_updates={MCP_SERVER_FINGERPRINTS_KEY: {"foo": "foo", "foo-bar": "foo-bar"}},
-    )
+    registry.save({"mcp-foo-bar-tool": _mcp_entry(registrar, "foo-bar", "tool")})
 
     with (
         patch("pflow.cli.commands.mcp.MCPServerManager", return_value=manager),
@@ -506,5 +492,55 @@ def test_remove_uses_exact_owner_and_removes_zero_tool_fingerprint(tmp_path: Pat
 
     assert result.exit_code == 0
     assert registrar.list_registered_tools("foo-bar", include_filtered=True) == ["mcp-foo-bar-tool"]
-    assert registry.get_metadata(MCP_SERVER_FINGERPRINTS_KEY) == {"foo-bar": "foo-bar"}
     assert manager.list_servers() == ["foo-bar"]
+
+
+def _discover_good_fail_bad(server_name: str, **_kwargs) -> list[dict]:
+    if server_name == "bad":
+        raise ConnectionError("connection refused")
+    return [{"name": "echo", "description": "echo"}]
+
+
+def test_add_syncs_only_added_servers_and_keeps_a_failed_one_configured() -> None:
+    """Discovery happens where a server enters the config; a failure never undoes the add."""
+    MCPServerManager().save({"mcpServers": {"existing": {"command": "existing"}}})
+
+    with patch.object(MCPDiscovery, "discover_tools", side_effect=_discover_good_fail_bad) as discover:
+        result = click.testing.CliRunner(mix_stderr=False).invoke(
+            mcp, ["add", '{"good": {"command": "good"}, "bad": {"command": "bad"}}']
+        )
+
+    assert result.exit_code == 0, result.stderr
+    assert sorted(call.args[0] for call in discover.call_args_list) == ["bad", "good"]
+    assert sorted(MCPServerManager().list_servers()) == ["bad", "existing", "good"]
+    assert MCPRegistrar().list_registered_tools("good") == ["mcp-good-echo"]
+    assert MCPRegistrar().list_registered_tools("bad") == []
+    assert "✓ good: 1 discovered, 1 registered" in result.stdout
+    assert "✗ bad:" in result.stderr
+    assert "Run 'pflow mcp sync bad' when the server is reachable." in result.stderr
+    assert "pflow mcp sync good" not in result.stderr
+
+
+def test_add_keeps_config_when_tool_discovery_raises() -> None:
+    with patch.object(MCPRegistrar, "sync_servers", side_effect=OSError("registry is read-only")):
+        result = click.testing.CliRunner(mix_stderr=False).invoke(mcp, ["add", '{"one": {"command": "one"}}'])
+
+    assert result.exit_code == 0
+    assert MCPServerManager().list_servers() == ["one"]
+    assert "Tool discovery failed: registry is read-only" in result.stderr
+    assert "Run 'pflow mcp sync one' when the server is reachable." in result.stderr
+
+
+def test_workflow_run_never_contacts_mcp_servers(tmp_path: Path) -> None:
+    """A configured-but-unsynced server costs a workflow run nothing (#751)."""
+    MCPServerManager().save({"mcpServers": {"unsynced": {"command": "unsynced"}}})
+    workflow = tmp_path / "echo.pflow.md"
+    workflow.write_text(
+        "# Echo\n\n## Steps\n\n### hi\n\nSay hi.\n\n- type: shell\n\n```shell command\necho hi\n```\n", encoding="utf-8"
+    )
+
+    with patch.object(MCPDiscovery, "discover_tools") as discover:
+        result = click.testing.CliRunner().invoke(main, [str(workflow)])
+
+    assert result.exit_code == 0, result.output
+    discover.assert_not_called()
