@@ -2057,16 +2057,12 @@ def _resolve_declared_outputs(
 ) -> dict[str, Any]:
     """Resolve each `## Outputs` declaration against the child's scratch shared.
 
-    Delegates to runtime's `resolve_output_source`, which handles:
-    - Source normalization (`node.key` / `$node.key` / `${node.key}` forms
-      all accepted — matches the three formats pflow's output syntax allows).
-    - Unresolved-detection (returns None when the template can't resolve).
-
-    Unresolved sources (and sources that resolve to None) are silently
-    dropped from the resulting dict. Downstream parent nodes that template
-    against a missing key surface a `template_error` plan entry — honest
-    about the fact that the runtime would also fail here via
-    `populate_declared_outputs`.
+    Delegates to runtime's `resolve_output_source` (source normalization +
+    resolution), so the planner keeps exactly what `populate_declared_outputs`
+    writes: a found `None` stays as `None`; an unresolved source is dropped.
+    Downstream parent nodes that template against a dropped key surface a
+    `template_error` plan entry — honest about the fact that the runtime would
+    also fail there.
     """
     from pflow.runtime.output_resolver import resolve_output_source
 
@@ -2077,9 +2073,9 @@ def _resolve_declared_outputs(
         source = decl.get("source")
         if not isinstance(source, str):
             continue
-        value = resolve_output_source(source, child_shared)
-        if value is not None:
-            resolved[output_name] = value
+        resolution = resolve_output_source(source, child_shared)
+        if resolution.ok:
+            resolved[output_name] = resolution.value
     return resolved
 
 

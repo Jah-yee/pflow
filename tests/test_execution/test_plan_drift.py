@@ -1409,6 +1409,71 @@ printf "topic-from-%s" "$SEED"
     )
 
 
+def test_plan_sub_workflow_declared_null_output_matches_execution(tmp_path) -> None:
+    """A child's declared output that resolves to null crosses the boundary as null
+    in the plan exactly as at runtime (#753).
+
+    Runtime writes the found `None` (`populate_declared_outputs`) and the parent's
+    `${analyze.video}` resolves to null. Mutation: restore the `is not None` drop in
+    `_resolve_declared_outputs` → the warm-cache plan reports `combine` as a
+    template error ("'analyze' has no 'video'") while the run succeeds; restore it
+    in `populate_declared_outputs` → the first run fails instead.
+    """
+    child_path = tmp_path / "child.pflow.md"
+    parent_path = tmp_path / "parent.pflow.md"
+    child_path.write_text(
+        """# Child
+
+Emits a verdict whose video path is null.
+
+## Outputs
+
+### video
+
+Video path, null when there is none.
+
+- source: ${pick.stdout.video_path}
+
+## Steps
+
+### pick
+
+Emit the verdict.
+
+- type: shell
+- cache: true
+
+```shell command
+printf '{"verdict":"ok","video_path":null}'
+```
+""",
+        encoding="utf-8",
+    )
+    write_workflow_file(
+        {
+            "nodes": [
+                {"id": "analyze", "type": "workflow", "params": {"workflow": str(child_path), "inputs": {}}},
+                {
+                    "id": "combine",
+                    "type": "shell",
+                    "cache": True,
+                    "params": {"command": 'printf "video=[%s]" "$VIDEO"', "env": {"VIDEO": "${analyze.video}"}},
+                },
+            ],
+            "edges": [{"from": "analyze", "to": "combine"}],
+        },
+        parent_path,
+    )
+
+    first = _runner_run(parent_path)
+    assert first.success
+
+    plan = _runner_plan(parent_path)
+
+    combine = next(e for e in plan.entries if e.node_id == "combine")
+    assert combine.status == "cached", f"got combine status={combine.status} cause={combine.cause}"
+
+
 def test_plan_sub_workflow_undeclared_outputs_fallback(tmp_path) -> None:
     """Sub-workflows without declared `## Outputs` must still expose their
     child node outputs for parent-level template resolution.
