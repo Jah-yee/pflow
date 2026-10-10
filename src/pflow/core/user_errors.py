@@ -100,7 +100,9 @@ class OutputResolutionError(UserFriendlyError):
     template error path in ``runtime/engine/template_errors.py``. Fix
     guidance, peer-node suggestions, typo hints, and category-aware
     failure detail all live on the structured ``unresolved_references``
-    list — not in the text ``message`` or ``suggestions`` fields.
+    list. The one exception is the output-only ``?? null`` opt-out for an
+    optional field, which goes in ``suggestions`` so it reaches the JSON
+    channel too (the per-ref fix blocks are text-only renderings).
     """
 
     def __init__(
@@ -162,7 +164,7 @@ class OutputResolutionError(UserFriendlyError):
                 severity=Severity.ERROR,
                 message=self.explanation,
                 title="Template Resolution Failed",
-                suggestions=None,
+                suggestions=_optional_field_suggestions(output_blocks) or None,
                 node_id=None,
                 source="runtime",
                 context={
@@ -175,6 +177,38 @@ class OutputResolutionError(UserFriendlyError):
                 },
             )
         ]
+
+
+def _optional_field_suggestions(output_blocks: list[dict[str, Any]]) -> list[str]:
+    """Name the ``?? null`` opt-out for each ``${…}`` whose operand misses a field.
+
+    Only a ``path_error`` operand qualifies: an absent or failed node is not an
+    optional field, a near-miss name (``did_you_mean``) is a typo that ``?? null``
+    would silence for good, and a miss inside a dynamic index (``a[${i.x}]``) is
+    not the expression's value. The fallback goes on the whole expression, so it
+    extends a ``??`` chain.
+    """
+    from pflow.core.templates import Reference, parse
+
+    suggestions: list[str] = []
+    for block in output_blocks:
+        misses = {
+            ref["var"]
+            for ref in block["unresolved_references"]
+            if ref.get("status") == "path_error" and not ref.get("did_you_mean")
+        }
+        for expression in parse(block["template"]).expressions:
+            operands = {op.raw for op in expression.operands if isinstance(op, Reference)}
+            if not misses & operands:
+                continue
+            suggestion = (
+                f"If {expression.raw} is optional, write ${{{expression.raw} ?? null}} in output"
+                f" '{block['output_name']}' — a missing field then resolves to null (empty text inside a"
+                " longer string) instead of failing the run"
+            )
+            if suggestion not in suggestions:
+                suggestions.append(suggestion)
+    return suggestions
 
 
 def _build_output_error_summary(failures: list[dict[str, Any]]) -> str:

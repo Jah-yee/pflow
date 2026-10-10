@@ -21,6 +21,7 @@ from pflow.execution.formatters.batch_errors import (
 from pflow.execution.formatters.batch_errors import (
     format_batch_errors_section as _shared_format_batch_errors_section,
 )
+from pflow.execution.result import ExecutionResult
 
 
 def format_execution_success(
@@ -244,9 +245,7 @@ def _collect_outputs(
     elif mode is OutputMode.DECLARED:
         # Collect ALL declared outputs (full-run JSON contract; text mode
         # streams just one). --only is already handled above.
-        for output_name in workflow_ir["outputs"]:
-            if output_name in shared_storage:
-                result[output_name] = compact_batch_output_value(parse_json_or_original(shared_storage[output_name]))
+        result = collect_declared_outputs(shared_storage, workflow_ir)
 
     else:  # OutputMode.AUTO
         # Auto-detect output for full runs without declared outputs.
@@ -255,6 +254,38 @@ def _collect_outputs(
             result[key_found] = compact_batch_output_value(parse_json_or_original(value))
 
     return result
+
+
+def collect_declared_outputs(shared_storage: dict[str, Any], workflow_ir: dict[str, Any]) -> dict[str, Any]:
+    """Every declared output present in shared storage, keyed by output name."""
+    from pflow.core.json_utils import parse_json_or_original
+
+    return {
+        name: compact_batch_output_value(parse_json_or_original(shared_storage[name]))
+        for name in workflow_ir.get("outputs", {})
+        if name in shared_storage
+    }
+
+
+def collect_outputs_resolved_before_failure(
+    result: ExecutionResult, workflow_ir: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The declared outputs that resolved in a run that failed at output resolution.
+
+    ``populate_declared_outputs`` writes each output it can resolve before raising
+    ``OutputResolutionError``, so those values are real. Every other failure stops
+    before outputs are populated — a declared name in shared storage is then a node
+    or input of the same name, not an output — so this returns ``None``.
+    """
+    failed: set[str] = set()
+    for diagnostic in result.errors:
+        context = diagnostic.context or {}
+        if context.get("is_output_resolution"):
+            failed.update(block["output_name"] for block in context["output_failures"])
+    if not failed:
+        return None
+    resolved = collect_declared_outputs(result.shared_after, workflow_ir)
+    return {name: value for name, value in resolved.items() if name not in failed}
 
 
 def partition_surfaced_diagnostics(
