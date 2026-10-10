@@ -1602,8 +1602,13 @@ describe("GraphView — approval bridge (Task 176)", () => {
     // panel open, and re-opening it already clears the dismissal — mutation-checked.)
     const gateFor = (iteration: number): GateInfo => ({
       ...PAUSED_GATE,
-      gate_request: { ...PAUSED_GATE.gate_request, node_type: "code", preview: { iteration }, iteration },
+      gate_request: { ...PAUSED_GATE.gate_request, node_type: "code", preview: { iteration }, iteration, max_iterations: 3 },
     });
+    // The whole eyebrow line (the position is its own span — the own-text matcher can't see it).
+    const eyebrow = async (): Promise<string | null | undefined> => {
+      await screen.findByRole("button", { name: "Approve" });
+      return document.querySelector(".gate-eyebrow")?.textContent;
+    };
     vi.mocked(fetchGraph).mockResolvedValue(GRAPH);
     vi.mocked(fetchGate).mockImplementation(async (run: string) => gateFor(run === "r1" ? 1 : 2));
     window.history.replaceState({}, "", "/?workflow=demo&run=r1");
@@ -1613,14 +1618,14 @@ describe("GraphView — approval bridge (Task 176)", () => {
     act(() => (live.handlers as unknown as RunHandlers).runSnapshot([], pausedBanner, false, false));
 
     // Round 1: the eyebrow names the iteration; the human approves.
-    expect(await screen.findByText("code · greet · iteration 1")).toBeTruthy();
+    expect(await eyebrow()).toBe("code · greet · iteration 1 of up to 3");
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(resumeRun).toHaveBeenCalledWith({ run: "r1", approve: "yes" }));
 
     // The pin: URL + a fresh subscription on the answered attempt; the round-1 panel is gone.
     await waitFor(() => expect(new URLSearchParams(window.location.search).get("run")).toBe("attempt-2"));
     await waitFor(() => expect(vi.mocked(subscribe).mock.lastCall?.[2]).toBe("attempt-2"));
-    expect(screen.queryByText(/iteration 1/)).toBeNull();
+    expect(document.querySelector(".gate-eyebrow")).toBeNull();
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
 
     // Round 2: the new attempt's trailer arrives paused on the same frontier node → the panel
@@ -1628,7 +1633,7 @@ describe("GraphView — approval bridge (Task 176)", () => {
     act(() =>
       (live.handlers as unknown as RunHandlers).runSnapshot([], { ...pausedBanner, execution_id: "attempt-2" }, false, false),
     );
-    expect(await screen.findByText("code · greet · iteration 2")).toBeTruthy();
+    expect(await eyebrow()).toBe("code · greet · iteration 2 of up to 3");
     expect(fetchGate).toHaveBeenLastCalledWith("attempt-2");
     expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy();
     expect(screen.getByLabelText("run status: paused")).toBeTruthy();

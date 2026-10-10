@@ -8,7 +8,10 @@ the loop's limit on every pause surface, and add an opt-in "Approve all remainin
 web UI so a gated loop can be finished from the browser in one click.
 
 ## Status
-not started
+done
+
+## Completed
+2026-10-11
 
 ## Priority
 
@@ -43,21 +46,29 @@ next
   `max_iterations`, the cap is the engine's safety limit (`MAX_NODE_VISITS`, 100, env-overridable,
   `runtime/engine/instrumentation.py:24`) — omit the clause then rather than show "of up to 100".
 - **One field, every surface — and one renderer.** Today the iteration text has four renderers,
-  not one: `format_gate_lines` (`core/gate_prompt.py:216` — non-TTY run output, MCP, resume's
+  not one: `format_gate_lines` (`execution/gate_prompt.py:216` — non-TTY run output, MCP, resume's
   answer-required error), `_iteration_suffix` (`gate_prompt.py:126-128` — TTY prompt and flag
-  echo), `pflow resume list` text and JSON (`cli/commands/resume.py:439, 459` — its JSON
+  echo, and the escalation prompt header), `pflow resume list` text and JSON (`cli/commands/resume.py:439, 459` — its JSON
   `iteration` key is an agent contract, and the cap joins it under the same field name), and the
   web panel (`web/src/components/GateCallout.tsx:105`). One Python helper renders loop position
   and the three Python sites call it; the web copy is pinned by a test against the same fixture.
 - **"Approve all remaining" appears on approval gates raised by a loop step only** (escalation
   gates also carry `iteration`, `runtime/engine/gate.py:163`, but `--auto-approve` covers approval
-  gates only, `core/gate_prompt.py:90`), beside Approve, and maps 1:1 to the
+  gates only, `execution/gate_prompt.py:90`), beside Approve, and maps 1:1 to the
   CLI's existing behaviour: `POST /api/resume` gains `auto_approve: bool` (a 400 when combined with
   `approve: no`), which becomes `--approve yes --auto-approve <paused step>`. The CLI stays the
   single source of behaviour; the server only maps the answer to argv. The label never names a count
   — the engine promises no count, only a ceiling.
 - **The written design is the starting point, not a contract**: Task 179's
   `implementation/implementation-plan.md` §4 P4b (line ~650). Re-verify it against the merged code.
+
+### Ruled 2026-10-07 (user: *"yes go ahead with this but use opus instead of fable"*)
+
+- **CLI/MCP bulk hint line is IN scope**: a loop APPROVAL pause (CLI, MCP, answer-required error) adds one line naming
+  `pflow resume <token> --approve yes --auto-approve <step>` with the "only with your human's OK" clause (plan R1 = yes).
+- **Unknown cap**: "Approve all remaining" is shown with a tooltip naming the bound (plan R2 = (a)).
+- **Web phase tier**: Opus by the user's per-launch word; design bounds and screenshot verification unchanged.
+- The ruled text is `implementation/pause-surfaces-before-after.md`.
 
 ## Constraints
 
@@ -67,25 +78,32 @@ next
   cap (`loop_caps`) is a local of the engine walk (`engine.py:936`), filled lazily in
   `should_reenter` AFTER iteration 1 has run (`loop_control.py:273-276`), and empty again on
   resume; a templated `max_iterations` may reference the node's own output
-  (`loop_control.py:242-243`), so resolving it at iteration 1's gate can fail. The plan states
-  where the cap is written once (at loop entry) and how the gate reads it, with "unknown" a legal
-  value. The field is display-only — never read by resume — mirroring `iteration`'s contract
+  (`loop_control.py:242-243`), so resolving it at iteration 1's gate can fail. The gate therefore
+  derives the cap itself from the step's own `LoopConfig` and the store — nothing new is threaded
+  out of the walk — with "unknown" a legal value (a cap that depends on the loop body's own output,
+  or a template that does not resolve). `loop_control._coerce_runtime_cap` turns a NaN/infinite
+  float into a bare `ValueError`/`OverflowError` (`:188-189`); the gate must never die on a cap it
+  only displays. The field is display-only — never read by resume — mirroring `iteration`'s contract
   (`core/gate.py:51-52`), so Task 179's "one reader of position" stays intact. Plan-mode
   deep-review is mandatory; the build serializes with every other engine change.
-- **It is a trace-format change.** `gate_request` is trace content twice — the trailer
-  (`runtime/workflow_trace.py:1094-1095`) and the gate pause line (`:677-678`) — and 2.8.0 exists
+- **It is a trace-format change.** The gate payload is trace content twice — the trailer's
+  `gate_request` (`runtime/workflow_trace.py:1094-1095`, from `engine.py:1638-1641`) and the gate
+  pause line's `request` key (`:677-678`), both `GateRequest.to_dict()` — and 2.8.0 exists
   because Task 179 added `iteration` there (`:40-41`). Additive minor bump (Task 180 also bumps
   the trace format; the builds serialize, whichever lands second takes the next number), the
   comment block extended, the Task-159 baseline as the outer net. Old records without the field
-  render today's text (every renderer guards with an `int` check — `gate_prompt.py:229`,
-  `GateCallout.tsx:105`, `resume.py:459`); pin that with a test on a trace that lacks it.
+  render today's text (every renderer guards the value — `isinstance(int)` at `gate_prompt.py:229`,
+  `is not None` at `gate_prompt.py:128` and `resume.py:459`, `typeof … === "number"` at
+  `GateCallout.tsx:105`); pin that with a test on a trace that lacks it.
 - **Field shape (orchestrator's default, 2/5 — the planner may argue otherwise at hand-back):** a
-  flat sibling of `iteration`, named after the authoring key (`max_iterations: int | None`, absent
-  for non-loop gates). Rejected: a nested `loop: {iteration, cap}` object — it would move Task 179's
+  flat sibling of `iteration`, named after the authoring key (`max_iterations: int | None`, `null`
+  — not absent, not 0 — for a non-loop gate, exactly like `iteration`'s `null`). Rejected: a nested `loop: {iteration, cap}` object — it would move Task 179's
   top-level `iteration`, already in 2.8.0 traces, the gate lines and resume-list JSON.
 - **A new field on the pause payload is an agent-facing contract** (CLI JSON, MCP response,
   `/api/gate`): name it once, state what it is for a `while:` loop and for a non-loop gate
-  (absent, not zero), and whether a paused-run record written before this task still renders.
+  (`null`, not zero; on a loop gate `null` also covers an uncapped loop and a cap not knowable at
+  the gate), and that a paused-run record written before this task — where the key is absent —
+  still renders today's text (every reader treats absent as `null`).
 - **UI/taste phase — show-before-code.** The panel change is a design-bearing UI phase: the plan
   states the look/feel intent and acceptance criteria, the `screenshot-pflow-web-ui` skill
   verifies it, and the user sees before/after screenshots before merge. Builds on #714 (the
@@ -94,11 +112,14 @@ next
 - **Pre-flight parity.** `/api/resume` already mirrors the CLI verb with strict body validation
   and "no silent no-ops"; the combined answer is refused or accepted exactly as the CLI does.
 - **`/api/resume` contract** (planner-level; state it): `auto_approve: true` requires
-  `approve: "yes"` and is a 400 otherwise, including with `choose`; on a non-loop approval gate it
-  is accepted as the CLI accepts it ("loop gates only" is a UI rule). The CLI's `--approve no` +
+  `approve: "yes"` and is a 400 otherwise, including with `choose` or with no answer; on a
+  non-loop approval gate it is accepted as the CLI accepts it ("loop gates only" is a UI rule). The
+  400s are server-stricter than the CLI, which accepts `--auto-approve` beside `--choose` — the
+  same kind of deliberate asymmetry `_parse_resume_body`'s docstring already records. The CLI's `--approve no` +
   `--auto-approve` contradiction lives in `resume.py::_approval_answer` (`:122-123`), not in
   `preflight_resume`, so the server needs its own check; `_resume_cli_args` (`ui/server.py:1281`)
-  needs the paused step id from pre-flight to build `--auto-approve <step>`.
+  needs the paused step id from pre-flight (`ResumeSource.paused_node_id`; the server's
+  pre-flight closure currently discards the `ResumePreflight` it gets) to build `--auto-approve <step>`.
 - **#720** (gate strings ≥1 KB reach `/api/gate` as unresolved blob references): verification
   fixtures keep gate previews under 1 KB, or this task sequences after #720.
 

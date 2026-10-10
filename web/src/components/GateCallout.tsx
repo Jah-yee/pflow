@@ -13,6 +13,12 @@
 // pinned while everything above it scrolls (index.css). Escalation option cards stay above it:
 // they only select, and a long option list must be able to scroll.
 //
+// A LOOP approval gate (Task 183) also offers "Approve all remaining" — the browser's
+// `pflow resume <token> --approve yes --auto-approve <paused step>` (the server maps
+// `auto_approve: true` to that argv). Approve stays the one accent fill; the label never names a
+// count (the engine promises a ceiling, not a count); escalations never get it (`--auto-approve`
+// pre-answers approval gates only).
+//
 // The answer delivery + refusal machine (superseded / ack-then-force / inline diagnostics —
 // "refusals are the UX, never silence") is the shared useResumeAnswer/RefusalNotice seam in
 // resumeAnswer.tsx; this file owns only the gate CONTENT.
@@ -29,6 +35,31 @@ import type { ApiErrorEntry, GateInfo } from "../types";
 // loader's numeric mapping is a terminal convenience; labels are unambiguous).
 function optionLabel(option: Record<string, unknown>, index: number): string {
   return option.label ? String(option.label) : `option ${index + 1}`;
+}
+
+// The cap a loop gate SHOWS: a number the iteration has not passed (a back edge into the loop
+// continues the per-run count past it — "iteration 4 of up to 3" is never shown), else null.
+function shownCap(iteration: number, maxIterations: unknown): number | null {
+  return typeof maxIterations === "number" && iteration <= maxIterations ? maxIterations : null;
+}
+
+// A loop gate's position — the TS twin of core/gate.py::loop_position; both are pinned by
+// test/fixtures/loop-position.json, so the eyebrow and every Python pause surface agree.
+export function loopPosition(iteration: unknown, maxIterations: unknown): string | null {
+  if (typeof iteration !== "number") return null;
+  const cap = shownCap(iteration, maxIterations);
+  return cap === null ? `iteration ${iteration}` : `iteration ${iteration} of up to ${cap}`;
+}
+
+// "Approve all remaining"'s tooltip: the TRUE scope of `--auto-approve <step>` — it matches by
+// step id across the whole run, sub-workflows and later visits included — then the loop's bound
+// exactly as the eyebrow shows it.
+function approveAllTitle(nodeId: string, iteration: number, maxIterations: unknown): string {
+  const scope = `Approve this and every later approval of a step named '${nodeId}' in this run, including inside sub-workflows.`;
+  const cap = shownCap(iteration, maxIterations);
+  return cap === null
+    ? `${scope} No limit is known for this loop — it runs until its condition stops it.`
+    : `${scope} This loop runs at most ${cap} iterations.`;
 }
 
 // A gate value as display text: strings verbatim, everything else as readable JSON
@@ -98,13 +129,21 @@ export function GateCallout({
   // A recommendation that IS one of the options marks that option instead of repeating as text.
   const recommendedIndex = req.recommendation !== null ? labels.indexOf(req.recommendation) : -1;
   const submitting = answer.submitting;
+  const position = loopPosition(req.iteration, req.max_iterations);
+  // "Approve all remaining" shows on any loop gate's APPROVAL branch below — capped or not (an
+  // unknown cap still has a bound, the loop's condition; the tooltip says so).
+  const loopIteration = typeof req.iteration === "number" ? req.iteration : null;
 
   return (
     <div className="gate">
       <p className="gate-eyebrow">
         {req.node_type} · {req.node_id}
-        {/* No-break space: a wrapping eyebrow never strands the number on its own line. */}
-        {typeof req.iteration === "number" && ` · iteration ${req.iteration}`}
+        {position !== null && (
+          <>
+            {" "}
+            <span className="gate-eyebrow-position">· {position}</span>
+          </>
+        )}
       </p>
       {req.kind === "action_approval" ? (
         <>
@@ -122,7 +161,7 @@ export function GateCallout({
           {req.recommendation != null && <p className="gate-recommendation">{formatValue(req.recommendation)}</p>}
           <div className="gate-foot">
             <GateErrors errors={answer.errors} />
-            <div className="gate-actions">
+            <div className={loopIteration !== null ? "gate-actions gate-actions-loop" : "gate-actions"}>
               <button
                 type="button"
                 className="gate-btn gate-deny"
@@ -139,6 +178,17 @@ export function GateCallout({
               >
                 Approve
               </button>
+              {loopIteration !== null && (
+                <button
+                  type="button"
+                  className="gate-btn gate-approve-all"
+                  title={approveAllTitle(req.node_id, loopIteration, req.max_iterations)}
+                  disabled={submitting}
+                  onClick={() => answer.submit({ approve: "yes", auto_approve: true })}
+                >
+                  Approve all remaining
+                </button>
+              )}
             </div>
           </div>
         </>

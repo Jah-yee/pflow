@@ -296,15 +296,16 @@ class TestPausedGateRendering:
     surfaces render the SAME content shape as the blocking prompt, from the
     GateRequest.to_dict() payload (what the trace trailer carries)."""
 
-    def test_loop_gate_leads_with_its_iteration(self):
-        """Task 179: one rule serves every pause surface (CLI stderr, MCP ``Gate:`` block,
-        the answer-required error) — a loop step's gate leads with ``Loop iteration N``."""
+    def test_loop_gate_leads_with_its_position(self):
+        """Task 179/183: one rule serves every pause surface (CLI stderr, MCP ``Gate:`` block,
+        the answer-required error) — a loop step's gate leads with ``Loop iteration N of up
+        to M`` (the clause only when the cap is known)."""
         from dataclasses import replace
 
         from pflow.execution.gate_prompt import format_gate_lines
 
-        approval = replace(_approval(command="deploy"), iteration=2).to_dict()
-        assert format_gate_lines(approval)[:2] == ["Loop iteration 2", "command:  deploy"]
+        approval = replace(_approval(command="deploy"), iteration=2, max_iterations=3).to_dict()
+        assert format_gate_lines(approval)[:2] == ["Loop iteration 2 of up to 3", "command:  deploy"]
         escalation = replace(_escalation(question="which?"), iteration=3).to_dict()
         assert format_gate_lines(escalation)[:2] == ["Loop iteration 3", "which?"]
         # A non-loop gate (iteration None) has no such line.
@@ -338,6 +339,36 @@ class TestPausedGateRendering:
         assert lines[1] == "1. merge — simpler — breaks overrides"
         assert lines[2] == "2. split (rec)"
 
+    def test_loop_position_follows_the_shared_case_table(self):
+        """D8: the Python renderer and the web eyebrow's TS twin read ONE hand-authored table."""
+        import json
+        from pathlib import Path
+
+        from pflow.core.gate import loop_position
+
+        table = Path(__file__).resolve().parents[2] / "web" / "src" / "test" / "fixtures" / "loop-position.json"
+        rows = json.loads(table.read_text(encoding="utf-8"))
+        assert [row["id"] for row in rows] == ["capped", "null-cap", "old-record", "non-loop", "empty", "past-cap"]
+        for row in rows:
+            gate = row["gate"]
+            assert loop_position(gate.get("iteration"), gate.get("max_iterations")) == row["text"], row["id"]
+
+    def test_bulk_approve_hint_only_for_a_loop_approval(self):
+        """R1: one line naming ``--auto-approve <step>`` — never for a non-loop approval (one
+        gate, nothing to bulk-approve) nor an escalation (it cannot be pre-answered)."""
+        from dataclasses import replace
+
+        from pflow.execution.gate_prompt import format_bulk_approve_hint
+
+        loop_approval = replace(_approval("gated"), iteration=2, max_iterations=None).to_dict()
+        assert format_bulk_approve_hint("tok-1", loop_approval) == (
+            "To approve this and every remaining iteration of 'gated' (only with your human's OK): "
+            "pflow resume tok-1 --approve yes --auto-approve gated"
+        )
+        assert format_bulk_approve_hint("tok-1", _approval("gated").to_dict()) is None
+        loop_escalation = replace(_escalation(question="q?"), iteration=2, max_iterations=3).to_dict()
+        assert format_bulk_approve_hint("tok-1", loop_escalation) is None
+
     def test_resume_answer_command_pairs_verb_with_kind(self):
         from pflow.execution.gate_prompt import format_resume_answer_command
 
@@ -355,17 +386,17 @@ class TestLoopIterationInPromptHeaders:
         from dataclasses import replace
 
         monkeypatch.setattr(click, "confirm", lambda *a, **k: True)
-        build_gate_resolver(frozenset(), _FakeOC())(replace(_approval(), iteration=2))
+        build_gate_resolver(frozenset(), _FakeOC())(replace(_approval(), iteration=2, max_iterations=3))
         build_gate_resolver(frozenset({"notify"}), _FakeOC())(replace(_approval(), iteration=3))
         build_gate_resolver(frozenset(), _FakeOC())(_approval())
-        err = capsys.readouterr().err
-        assert "Approval required: notify (ShellNode) — iteration 2" in err
-        assert "Gate 'notify' — iteration 3 pre-approved via --auto-approve=notify" in err
-        assert "Approval required: notify (ShellNode)\n" in err  # the non-loop header, no suffix
+        lines = capsys.readouterr().err.splitlines()
+        assert "⏸  Approval required: notify (ShellNode) — iteration 2 of up to 3" in lines
+        assert "✓ Gate 'notify' — iteration 3 pre-approved via --auto-approve=notify" in lines  # no known cap
+        assert "⏸  Approval required: notify (ShellNode)" in lines  # the non-loop header, no suffix
 
     def test_escalation_prompt_names_the_iteration(self, monkeypatch, capsys):
         from dataclasses import replace
 
         monkeypatch.setattr(click, "prompt", lambda *a, **k: "x")
-        build_gate_resolver(frozenset(), _FakeOC())(replace(_escalation(question="q?"), iteration=2))
-        assert "Escalation from agent-step — iteration 2:" in capsys.readouterr().err
+        build_gate_resolver(frozenset(), _FakeOC())(replace(_escalation(question="q?"), iteration=2, max_iterations=3))
+        assert "⏸  Escalation from agent-step — iteration 2 of up to 3:" in capsys.readouterr().err.splitlines()

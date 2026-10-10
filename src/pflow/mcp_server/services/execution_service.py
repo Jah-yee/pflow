@@ -192,7 +192,7 @@ def _format_paused_text(result: Any) -> str:
     gate content is rendered so the agent (or its human) can compose the answer
     from this response alone; the resume command is the exact next step.
     """
-    from pflow.execution.gate_prompt import format_gate_lines, format_resume_answer_command
+    from pflow.execution.gate_prompt import format_bulk_approve_hint, format_gate_lines, format_resume_answer_command
 
     pause = result.trace.pause_request or {}
     node_id = pause.get("paused_node_id")
@@ -208,9 +208,11 @@ def _format_paused_text(result: Any) -> str:
         f"paused_node_id: {node_id}",
         f"trace_path: {_trace_path_str(result)}",
         f"resume_command: {resume_command}",
-        "",
-        "Gate:",
     ]
+    bulk_hint = format_bulk_approve_hint(execution_id, gate_request)
+    if bulk_hint:
+        lines.append(bulk_hint)
+    lines += ["", "Gate:"]
     lines.extend(f"  {line}" for line in format_gate_lines(gate_request))
     return "\n".join(lines)
 

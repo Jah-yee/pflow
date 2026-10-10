@@ -44,8 +44,11 @@ logger = logging.getLogger(__name__)
 # hash and next steps, plus the start step — ``core/workflow_id.step_identity``; resume checks the steps it
 # restores against it), and writes ``node.start`` for batched sub-workflow hosts too. A change to what
 # ``step_identity`` hashes bumps the minor, and resume must then treat older maps as absent.
+# 2.10.0 (Task 183, additive) adds ``max_iterations`` inside the gate payload (the pause line's
+# ``request`` and the trailer's ``gate_request``): the loop's author cap as known at the gate,
+# display-only; ``null`` for non-loop gates, uncapped loops and caps not knowable outside the loop body.
 # Consumers gate on ``startswith("2.")``; old traces remain readable.
-TRACE_FORMAT_VERSION = "2.9.0"
+TRACE_FORMAT_VERSION = "2.10.0"
 
 # Keys the ENGINE writes into a node's output namespace, which the trace drops on purpose
 # (`_sanitize_for_json`): dropping them loses nothing the author produced, so no `lossy` mark.

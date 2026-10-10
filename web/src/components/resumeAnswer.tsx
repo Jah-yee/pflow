@@ -16,7 +16,7 @@ import { Fragment, useState } from "react";
 import { ApiError, resumeRun } from "../api/client";
 import type { ApiErrorEntry } from "../types";
 
-export type ResumeAnswerPayload = { approve?: "yes" | "no"; choose?: string };
+export type ResumeAnswerPayload = { approve?: "yes" | "no"; choose?: string; auto_approve?: boolean };
 
 // An ack-required refusal: its diagnostics, plus the answer to retry with force after the ack.
 type ResumeConfirm = { kind: "confirm"; errors: ApiErrorEntry[]; retry: ResumeAnswerPayload };

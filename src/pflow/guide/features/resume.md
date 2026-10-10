@@ -41,8 +41,8 @@ pflow resume list                                # pending unanswered pauses (to
 
 **Or let your human answer in the browser** — usually the better channel when a person is
 deciding: `pflow ui <workflow> --run <execution-id>` opens the paused run on the visual canvas,
-where the paused step carries a ⏸ badge and an answer panel (Approve/Deny for an approval; the
-question, options, and a free-text field for an escalation). Their answer delivers the same
+where the paused step carries a ⏸ badge and an answer panel (Approve/Deny for an approval, plus
+Approve all remaining at a loop step; the question, options, and a free-text field for an escalation). Their answer delivers the same
 answer as the commands above, and the canvas follows the continued run live. They see the
 resolved preview in context instead of a relayed terminal snippet. A **failed** run opened the
 same way shows a Resume button (same confirmation rules as below).
@@ -51,7 +51,7 @@ Behavior worth knowing:
 
 - **Nothing re-runs.** Upstream steps are restored from the paused trace. An approved gate's step runs for the first time (approval gates fire *before* the step, so there is no side-effect re-fire risk and no confirmation prompt). An answered escalation continues **after** the escalating step with the decision folded into its result (`${step.result.escalation.decision.chosen}`) — the agent step is never re-paid. "After" is the next step, or for a loop step whatever its loop decides: its next iteration (which reads the decision) or its exit.
 - **A token is consumed by its answer.** The resumed attempt supersedes the paused run; a second answer refuses and names the newer attempt. Each later gate in the same workflow pauses again as a **new** token.
-- **An answer covers one gate, once.** `--approve yes` approves the paused gate only — it is not a standing approval for that step. A paused **loop** step runs the paused iteration on the answer; its next iteration is a new action that pauses again with a new token (the pause output names it: `Loop iteration 2`). Pass `--auto-approve <step>` to approve every remaining iteration at once.
+- **An answer covers one gate, once.** `--approve yes` approves the paused gate only — it is not a standing approval for that step. A paused **loop** step runs the paused iteration on the answer; its next iteration is a new action that pauses again with a new token (the pause output names it: `Loop iteration 2 of up to 3`). Pass `--auto-approve <step>` to approve every remaining iteration at once — the pause output prints that command, and the browser panel's Approve all remaining sends it.
 - **Resuming without an answer flag refuses** and shows the pending question with the exact command; `--approve`/`--choose` on a run that is not paused refuses too.
 - The **edited-workflow refusal** and `--force` (below) apply to paused resumes the same as failed ones, with one addition: editing the paused approval step after approving it refuses — the approval covered the version the human saw. Input overrides (`KEY=VALUE`) work the same way.
 
