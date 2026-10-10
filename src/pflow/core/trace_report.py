@@ -1149,6 +1149,8 @@ def _format_remaining_node_output(output: dict[str, Any], lines: list[str]) -> N
         "llm_usage",
         "response",
     }
+    if output.get("timeout") is False:  # a shell step that finished in time: nothing to say
+        shown_keys.add("timeout")
     if _has_batch_error_output(output):
         shown_keys.update({"errors", "count", "success_count", "error_count", "batch_metadata"})
         if output.get("results") == []:

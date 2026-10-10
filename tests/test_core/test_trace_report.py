@@ -723,6 +723,13 @@ class TestBuildNodeFile:
         assert "- Time: 42ms" in md
         assert "- Status: success" in md
 
+    def test_shell_timeout_flag_shows_only_when_the_step_timed_out(self) -> None:
+        in_time = _build_node_file(_make_event(node_type="ShellNode", node_output={"exit_code": 0, "timeout": False}))
+        timed_out = _build_node_file(_make_event(node_type="ShellNode", node_output={"exit_code": -1, "timeout": True}))
+
+        assert "## Output" not in in_time
+        assert '"timeout": true' in timed_out
+
     def test_cached_node_shows_cached_status(self) -> None:
         event = _make_event(node_id="cached-node", cached=True, duration_ms=0)
         md = _build_node_file(event)

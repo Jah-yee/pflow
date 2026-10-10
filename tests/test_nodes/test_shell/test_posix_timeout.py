@@ -1,5 +1,6 @@
-"""POSIX shell timeout process-group behavior."""
+"""POSIX shell timeout: SIGTERM to the process group, a fixed grace, then SIGKILL."""
 
+import signal
 import subprocess
 import sys
 import time
@@ -9,6 +10,10 @@ import pytest
 import pflow.nodes.shell.shell as shell_module
 from pflow.nodes.shell.shell import ShellNode, _run_posix_shell_command
 
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups are not available on Windows")
+
+GRACE = shell_module.TIMEOUT_GRACE_SECONDS
+
 
 def run_shell_node(shared, **params):
     node = ShellNode()
@@ -16,56 +21,47 @@ def run_shell_node(shared, **params):
     return node.run(shared)
 
 
-def test_posix_runner_kills_process_group_on_timeout(monkeypatch):
-    """Timeout should kill grandchildren by terminating the shell's process group."""
+class FakeProc:
+    """Popen stand-in: the first communicate() times out, later calls follow ``after_stop``."""
 
-    class FakeProc:
-        pid = 4321
-        returncode = None
+    pid = 4321
 
-        def __init__(self):
-            self.communicate_calls = 0
-            self.communicate_timeouts = []
-            self.killed = False
+    def __init__(self, after_stop="exit"):
+        self.after_stop = after_stop  # "exit" | "ignore_term"
+        self.communicate_timeouts = []
 
-        def communicate(self, input=None, timeout=None, **kwargs):  # noqa: A002 - mirrors subprocess API.
-            self.communicate_calls += 1
-            self.communicate_timeouts.append(timeout)
-            if self.communicate_calls == 1:
-                raise subprocess.TimeoutExpired("sleep 10", timeout or 0, output=b"partial", stderr=b"err")
-            self.returncode = -9
-            return b"captured", b"stderr"
+    def communicate(self, input=None, timeout=None, **kwargs):  # noqa: A002 - mirrors subprocess API.
+        self.communicate_timeouts.append(timeout)
+        call = len(self.communicate_timeouts)
+        if call == 1 or (self.after_stop == "ignore_term" and call == 2):
+            raise subprocess.TimeoutExpired("sleep 10", timeout or 0, output=b"partial", stderr=b"err")
+        return b"captured", b"stderr"
 
-        def kill(self):
-            self.killed = True
 
-    fake_proc = FakeProc()
-    popen_calls = []
-    killpg_calls = []
+@pytest.fixture
+def killpg_calls(monkeypatch):
+    calls = []
+    monkeypatch.setattr(shell_module.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
+    return calls
 
+
+def _run_fake(monkeypatch, fake_proc, popen_calls=None):
     def fake_popen(*args, **kwargs):
-        popen_calls.append((args, kwargs))
+        if popen_calls is not None:
+            popen_calls.append((args, kwargs))
         return fake_proc
 
-    def fake_getpgid(pid):
-        return pid + 100
-
-    def fake_killpg(pgid, sig):
-        killpg_calls.append((pgid, sig))
-
     monkeypatch.setattr(shell_module.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(shell_module.os, "getpgid", fake_getpgid, raising=False)
-    monkeypatch.setattr(shell_module.os, "killpg", fake_killpg, raising=False)
-    monkeypatch.setattr(shell_module.signal, "SIGKILL", 9, raising=False)
+    return _run_posix_shell_command("sleep 10", stdin_bytes=None, cwd=None, env={"PATH": "x"}, timeout=0.1)
+
+
+def test_timeout_terms_the_group_then_kills_what_outlived_the_shell(monkeypatch, killpg_calls):
+    """A step that exits on SIGTERM keeps the output it wrote while stopping."""
+    fake_proc = FakeProc(after_stop="exit")
+    popen_calls = []
 
     with pytest.raises(subprocess.TimeoutExpired) as exc_info:
-        _run_posix_shell_command(
-            "sleep 10",
-            stdin_bytes=None,
-            cwd=None,
-            env={"PATH": "x"},
-            timeout=0.1,
-        )
+        _run_fake(monkeypatch, fake_proc, popen_calls)
 
     assert popen_calls[0][0][0] == "sleep 10"
     assert popen_calls[0][1] == {
@@ -77,86 +73,97 @@ def test_posix_runner_kills_process_group_on_timeout(monkeypatch):
         "env": {"PATH": "x"},
         "start_new_session": True,
     }
-    assert killpg_calls == [(4421, 9)]
-    assert fake_proc.killed is True
-    assert fake_proc.communicate_timeouts == [0.1, 1]
+    # The group id is the shell's pid (start_new_session); SIGKILL sweeps stragglers.
+    assert killpg_calls == [(4321, signal.SIGTERM), (4321, signal.SIGKILL)]
+    assert fake_proc.communicate_timeouts == [0.1, GRACE]
     assert exc_info.value.output == b"captured"
     assert exc_info.value.stderr == b"stderr"
 
 
-def test_posix_runner_timeout_uses_partial_output_when_drain_still_times_out(monkeypatch):
-    """A missed pipe holder must not make timeout recovery block indefinitely."""
-
-    class FakeProc:
-        pid = 4321
-
-        def communicate(self, input=None, timeout=None, **kwargs):  # noqa: A002 - mirrors subprocess API.
-            raise subprocess.TimeoutExpired("sleep 10", timeout or 0, output=b"partial", stderr=b"err")
-
-        def kill(self):
-            pass
-
-    monkeypatch.setattr(shell_module.subprocess, "Popen", lambda *args, **kwargs: FakeProc())
-    monkeypatch.setattr(shell_module.os, "getpgid", lambda pid: pid + 100, raising=False)
-    monkeypatch.setattr(shell_module.os, "killpg", lambda pgid, sig: None, raising=False)
-    monkeypatch.setattr(shell_module.signal, "SIGKILL", 9, raising=False)
+def test_timeout_kills_a_step_that_outlives_the_grace(monkeypatch, killpg_calls):
+    fake_proc = FakeProc(after_stop="ignore_term")
 
     with pytest.raises(subprocess.TimeoutExpired) as exc_info:
-        _run_posix_shell_command(
-            "sleep 10",
-            stdin_bytes=None,
-            cwd=None,
-            env={"PATH": "x"},
-            timeout=0.1,
-        )
+        _run_fake(monkeypatch, fake_proc)
 
-    assert exc_info.value.output == b"partial"
-    assert exc_info.value.stderr == b"err"
+    assert killpg_calls == [(4321, signal.SIGTERM), (4321, signal.SIGKILL)]
+    assert fake_proc.communicate_timeouts == [0.1, GRACE, 1]
+    assert exc_info.value.output == b"captured"
 
 
-@pytest.mark.parametrize("raised", [KeyboardInterrupt, SystemExit])
-def test_posix_runner_kills_process_group_on_interrupt(monkeypatch, raised):
-    """Ctrl-C/SystemExit should not leave the shell process group orphaned."""
+def test_timeout_keeps_output_written_during_the_grace_when_the_drain_hangs(monkeypatch, killpg_calls):
+    """A pipe holder outside the group (setsid) blocks every drain: what the trap printed survives."""
 
-    class FakeProc:
+    class PipeHeldProc:
         pid = 4321
 
         def __init__(self):
-            self.communicate_calls = 0
-            self.killed = False
+            self.calls = 0
 
         def communicate(self, input=None, timeout=None, **kwargs):  # noqa: A002 - mirrors subprocess API.
-            self.communicate_calls += 1
-            if self.communicate_calls == 1:
+            self.calls += 1
+            # Like Popen, each timeout re-reports everything read so far.
+            seen = [b"early", b"early\nverdict-on-term", b"early\nverdict-on-term"][self.calls - 1]
+            raise subprocess.TimeoutExpired("sleep 10", timeout or 0, output=seen, stderr=b"err%d" % self.calls)
+
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        _run_fake(monkeypatch, PipeHeldProc())
+
+    assert killpg_calls == [(4321, signal.SIGTERM), (4321, signal.SIGKILL)]
+    assert exc_info.value.output == b"early\nverdict-on-term"
+    assert exc_info.value.stderr == b"err3"
+
+
+@pytest.mark.parametrize("raised", [KeyboardInterrupt, SystemExit])
+def test_interrupt_kills_the_group_without_a_grace(monkeypatch, killpg_calls, raised):
+    """Ctrl-C/SystemExit: pflow is exiting, so the group is killed at once — no SIGTERM."""
+
+    class InterruptedProc:
+        pid = 4321
+
+        def __init__(self):
+            self.communicate_timeouts = []
+
+        def communicate(self, input=None, timeout=None, **kwargs):  # noqa: A002 - mirrors subprocess API.
+            self.communicate_timeouts.append(timeout)
+            if len(self.communicate_timeouts) == 1:
                 raise raised()
             return b"", b""
 
-        def kill(self):
-            self.killed = True
-
-    fake_proc = FakeProc()
-    killpg_calls = []
-
-    monkeypatch.setattr(shell_module.subprocess, "Popen", lambda *args, **kwargs: fake_proc)
-    monkeypatch.setattr(shell_module.os, "getpgid", lambda pid: pid + 100, raising=False)
-    monkeypatch.setattr(shell_module.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)), raising=False)
-    monkeypatch.setattr(shell_module.signal, "SIGKILL", 9, raising=False)
-
+    fake_proc = InterruptedProc()
     with pytest.raises(raised):
-        _run_posix_shell_command(
-            "sleep 10",
-            stdin_bytes=None,
-            cwd=None,
-            env={"PATH": "x"},
-            timeout=0.1,
-        )
+        _run_fake(monkeypatch, fake_proc)
 
-    assert killpg_calls == [(4421, 9)]
-    assert fake_proc.killed is True
-    assert fake_proc.communicate_calls == 2
+    assert killpg_calls == [(4321, signal.SIGKILL)]
+    assert fake_proc.communicate_timeouts == [0.1, 1]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups are not available on Windows")
+@pytest.mark.parametrize("raised", [KeyboardInterrupt, SystemExit])
+def test_interrupt_during_the_grace_still_kills_the_group(monkeypatch, killpg_calls, raised):
+    """Ctrl-C while a TERM-ignoring step sits in its grace must not leave the group running."""
+
+    class GraceInterruptedProc:
+        pid = 4321
+
+        def __init__(self):
+            self.communicate_timeouts = []
+
+        def communicate(self, input=None, timeout=None, **kwargs):  # noqa: A002 - mirrors subprocess API.
+            self.communicate_timeouts.append(timeout)
+            if len(self.communicate_timeouts) == 1:
+                raise subprocess.TimeoutExpired("sleep 10", timeout or 0)
+            if len(self.communicate_timeouts) == 2:
+                raise raised()
+            return b"", b""
+
+    fake_proc = GraceInterruptedProc()
+    with pytest.raises(raised):
+        _run_fake(monkeypatch, fake_proc)
+
+    assert killpg_calls == [(4321, signal.SIGTERM), (4321, signal.SIGKILL)]
+    assert fake_proc.communicate_timeouts == [0.1, GRACE, 1]
+
+
 def test_shell_timeout_kills_grandchild_holding_stdout_pipe():
     """A real grandchild that inherits stdout must not keep communicate() blocked."""
     shared = {}
@@ -169,3 +176,36 @@ def test_shell_timeout_kills_grandchild_holding_stdout_pipe():
     assert action == "error"
     assert shared["exit_code"] == -1
     assert "timed out" in shared["error"]
+
+
+def test_timed_out_step_runs_its_term_trap_and_keeps_what_it_printed():
+    """The point of the grace: a cooperative step reports before it goes."""
+    shared = {}
+
+    action = run_shell_node(
+        shared,
+        command="trap 'echo verdict-on-term; exit 7' TERM; echo early; sleep 30",
+        timeout=0.5,
+    )
+
+    assert action == "error"
+    assert shared["stdout"] == "early\nverdict-on-term"
+    assert shared["exit_code"] == -1
+    assert shared["timeout"] is True
+    assert shared["error"] == "Command timed out after 0.5 seconds"
+
+
+def test_step_ignoring_sigterm_is_killed_after_the_grace(monkeypatch):
+    monkeypatch.setattr(shell_module, "TIMEOUT_GRACE_SECONDS", 0.3)
+    shared = {}
+    start = time.monotonic()
+
+    # An ignored signal stays ignored in children, so `sleep` ignores SIGTERM too.
+    action = run_shell_node(shared, command="trap '' TERM; echo early; sleep 30", timeout=0.2)
+
+    elapsed = time.monotonic() - start
+    assert 0.5 <= elapsed < 3
+    assert action == "error"
+    assert shared["stdout"] == "early"
+    assert shared["exit_code"] == -1
+    assert shared["timeout"] is True
