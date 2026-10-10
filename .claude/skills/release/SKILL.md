@@ -67,6 +67,9 @@ Run the workflow:
 uv run pflow examples/real-workflows/generate-changelog/workflow.pflow.md since_tag=<tag> is_major_release=<true|false>
 ```
 
+The run takes minutes (one LLM call per commit). Wait for it IN-TURN — a Monitor until-loop or
+foreground polls; a background launch you then stop on is never woken by its completion.
+
 This produces three file outputs:
 - `CHANGELOG.md` — prepended with the new version section
 - `docs/changelog.mdx` — Mintlify `<Update>` component

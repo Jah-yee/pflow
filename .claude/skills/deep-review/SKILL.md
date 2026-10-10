@@ -82,8 +82,9 @@ The main orchestrator commissions it as part of spec freshness (ORCHESTRATION "R
 `<path>` against today's code — classify every claim STILL TRUE / STALE / UNVERIFIABLE, and judge
 whether a planner building from it would build the wrong thing."* Lenses: `review-architecture-fit`
 always (and `review-plan` when the spec already carries phase structure), plus `feature-interactions`, `silent-failures`, `impact-completeness`, and `agent-ux` when
-the spec changes a user-facing surface; direct launches (plan/spec lenses never go through the
-fan-out). Findings land in ONE ledger file (`scratchpads/<session>/<task>-spec-battery.md`) with a
+the spec changes a user-facing surface; dispatch through the fan-out on codex like every other
+reading battery (cross-model is the point for a spec too) — `agent-ux` launches directly only when
+it must EXECUTE the BEFORE on the real surface. Findings land in ONE ledger file (`scratchpads/<session>/<task>-spec-battery.md`) with a
 disposition per finding — **A** fold the accuracy correction into the spec now · **B** record a
 design gap as a "RESOLVE AT START" constraint (constraint stated, mechanism left to the planner) ·
 **C** a genuine decision goes to the user · **D** disputed, with the counter-citation — then one
