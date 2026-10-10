@@ -61,7 +61,9 @@ proof.
   DECIDED ledger line + ADR-0016 ("compact JSON" — `to_string` uses default separators) and Task 182 ("SC2154
   catches it"); each caught by a context-free reader; APPLIED at s11 close as a sentence in ADR-FORMAT.md's
   "Review before commit" (re-derive every mechanism from the cited code; name the function, not a list of its
-  outputs) | s08, s09, s10, s11 | n=4 → promoted (ratify or revert)
+  outputs) | s08, s09, s10, s11, s12 | n=5 → promoted (ratify or revert); s12 instance: Task 120's (e) "the code node
+  already knows the annotation" (written s11 from an investigation summary) refuted by four lenses — the node reads
+  it in `prep`, after the parse
 - a lane ran `git stash push`/`pop` in a worktree and popped the USER's shared `stash@{0}` (Task 125 WIP) —
   stashes are repo-wide across worktrees; recognition would add "never `git stash`" to every implementing
   role's def (packets carried it ad hoc after; no repeat in s10 under the packet line) | s09 | n=1 → PROPOSED
@@ -101,3 +103,16 @@ proof.
   from the dogfood summary and refuted by the verifier (mis-coercion at template resolution, #686) — same
   family as the n=3 entry above but for a SPEC EVIDENCE block written from a producer's summary before the
   verification pass | s10 | n=1
+- a REWRITTEN spec contradicted the user's ruled sentence and only a SECOND context-free reader caught it — s11 (118
+  rewrite moved the dict/list block onto `env:` against the ruling), s12 (120 Design narrowed protection to `string`
+  roots against the ruled "declared non-`any`"); recognition: a rewrite gets its own fresh reader before any planner,
+  separate from the battery that produced it | s11, s12 | n=2 → PROPOSED (promote now: role prompt step 3)
+- the shell's `ls` is aliased to `eza`, which hangs on large dirs and prints a different format — s11 (`eza -t` hung
+  1h39m in a lane's tree), s12 (`$(ls -t …)` returned junk in my probe; the #720 lane advised `/bin/ls`); recognition:
+  scripts and probes use `/bin/ls` | s11, s12 | n=2 → PROPOSED (promote now: STANDING-KNOWLEDGE §6 gotcha)
+- a `gh` WRITE with stderr suppressed failed silently (`gh issue comment … -q 2>/dev/null` — `-q` is not a flag; both
+  comments never posted, caught only by reading them back); recognition: never suppress stderr on a write, and read
+  back every external write | s12 | n=1
+- `tests-windows` wall-clock flakes — two distinct tests in one day (`test_stdin_no_hang_integration` 5 s timeout on a
+  main push; `test_cache.py::test_concurrent_access` on PR #726), each green on one re-run; recognition: a third
+  distinct one → file a de-flake issue for timing assertions on shared runners | s12 | n=1
