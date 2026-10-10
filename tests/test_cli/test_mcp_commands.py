@@ -4,10 +4,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import click.testing
+import pytest
 
 from pflow.cli.commands.mcp import mcp
 from pflow.cli.main import main
 from pflow.mcp import MCPDiscovery, MCPRegistrar, MCPServerManager
+from pflow.mcp.registrar import SyncBatchResult
 from pflow.registry import Registry
 from pflow.registry.discovery import ComponentSelection
 
@@ -504,6 +506,13 @@ def _discover_good_fail_bad(server_name: str, **_kwargs) -> list[dict]:
 def test_add_syncs_only_added_servers_and_keeps_a_failed_one_configured() -> None:
     """Discovery happens where a server enters the config; a failure never undoes the add."""
     MCPServerManager().save({"mcpServers": {"existing": {"command": "existing"}}})
+    registry = Registry()
+    # Entries a full reconciliation would delete — a targeted add sync must leave them alone.
+    unrelated = {
+        "mcp-gone-tool": MCPRegistrar()._create_registry_entry("gone", {"name": "tool"}),
+        "mcp-legacy": {"type": "mcp"},
+    }
+    registry.save(registry.load(include_filtered=True) | unrelated)
 
     with patch.object(MCPDiscovery, "discover_tools", side_effect=_discover_good_fail_bad) as discover:
         result = click.testing.CliRunner(mix_stderr=False).invoke(
@@ -519,16 +528,42 @@ def test_add_syncs_only_added_servers_and_keeps_a_failed_one_configured() -> Non
     assert "✗ bad:" in result.stderr
     assert "Run 'pflow mcp sync bad' when the server is reachable." in result.stderr
     assert "pflow mcp sync good" not in result.stderr
+    persisted = Registry().load(include_filtered=True)
+    assert {name: persisted.get(name) for name in unrelated} == unrelated
 
 
-def test_add_keeps_config_when_tool_discovery_raises() -> None:
-    with patch.object(MCPRegistrar, "sync_servers", side_effect=OSError("registry is read-only")):
+@pytest.mark.parametrize(
+    ("sync_outcome", "message"),
+    [
+        ({"side_effect": OSError("registry is read-only")}, "Tool discovery failed: registry is read-only"),
+        (
+            {"return_value": SyncBatchResult([], config_missing=True)},
+            "MCP configuration was removed before tool discovery.",
+        ),
+    ],
+)
+def test_add_keeps_config_when_tool_discovery_cannot_run(sync_outcome: dict, message: str) -> None:
+    with patch.object(MCPRegistrar, "sync_servers", **sync_outcome):
         result = click.testing.CliRunner(mix_stderr=False).invoke(mcp, ["add", '{"one": {"command": "one"}}'])
 
     assert result.exit_code == 0
     assert MCPServerManager().list_servers() == ["one"]
-    assert "Tool discovery failed: registry is read-only" in result.stderr
+    assert message in result.stderr
     assert "Run 'pflow mcp sync one' when the server is reachable." in result.stderr
+
+
+def test_add_syncs_servers_saved_before_a_later_source_fails(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.mcp.json"
+
+    with patch.object(MCPDiscovery, "discover_tools", side_effect=_discover_good_fail_bad):
+        result = click.testing.CliRunner(mix_stderr=False).invoke(
+            mcp, ["add", '{"good": {"command": "good"}}', str(missing)]
+        )
+
+    assert result.exit_code == 1
+    assert f"Error: File not found: {missing}" in result.stderr
+    assert MCPServerManager().list_servers() == ["good"]
+    assert MCPRegistrar().list_registered_tools("good") == ["mcp-good-echo"]
 
 
 def test_workflow_run_never_contacts_mcp_servers(tmp_path: Path) -> None:

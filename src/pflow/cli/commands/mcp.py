@@ -174,55 +174,57 @@ def add(config_sources: tuple, timeout: int | None, sse_timeout: int | None) -> 
         # Full MCP format (compatible with config files):
         {"mcpServers": {"server-name": {...}}}
     """
-    from pathlib import Path
-
     # Validate timeout flags before saving anything
     _validate_timeout_flags(timeout, sse_timeout)
 
     manager = MCPServerManager()
     total_added = []
+    source_failed = False
 
     for config_source in config_sources:
         try:
-            # Check if it's a JSON string or a file path
-            if _is_json_string(config_source):
-                # Handle raw JSON string
-                added_servers = _add_from_json_string(manager, config_source)
-                source_name = "JSON input"
-            else:
-                # Handle file path
-                config_path = Path(config_source)
-                if not config_path.exists():
-                    click.echo(f"Error: File not found: {config_path}", err=True)
-                    sys.exit(1)
-                added_servers = manager.add_servers_from_file(config_path)
-                source_name = config_path.name
-
-            total_added.extend(added_servers)
-
-            if added_servers:
-                click.echo(f"✓ Added/updated {len(added_servers)} server(s) from {source_name}:")
-                for server_name in added_servers:
-                    click.echo(f"  - {server_name}")
-            else:
-                click.echo(f"⚠ No servers found in {source_name}")
-
+            added_servers, source_name = _add_config_source(manager, config_source)
         except ValueError as e:
             click.echo(f"Error: {e}", err=True)
-            sys.exit(1)
+            source_failed = True
+            break
         except Exception as e:
             click.echo(f"Error: Failed to add servers: {e}", err=True)
-            sys.exit(1)
+            source_failed = True
+            break
+
+        total_added.extend(added_servers)
+        if added_servers:
+            click.echo(f"✓ Added/updated {len(added_servers)} server(s) from {source_name}:")
+            for server_name in added_servers:
+                click.echo(f"  - {server_name}")
+        else:
+            click.echo(f"⚠ No servers found in {source_name}")
 
     # Apply timeout overrides to newly added HTTP servers
     if total_added and (timeout is not None or sse_timeout is not None):
         _apply_http_timeouts(manager, total_added, timeout, sse_timeout)
 
+    # Servers saved before a failing source are still configured, so they still get synced.
     if total_added:
         click.echo(f"\nSuccessfully configured {len(total_added)} MCP server(s).")
         _sync_added_servers(manager, list(dict.fromkeys(total_added)))
-    else:
+    elif not source_failed:
         click.echo("No servers were added.")
+    if source_failed:
+        sys.exit(1)
+
+
+def _add_config_source(manager: MCPServerManager, config_source: str) -> tuple[list[str], str]:
+    """Save the servers from one raw-JSON or file source; return their names and a display name."""
+    from pathlib import Path
+
+    if _is_json_string(config_source):
+        return _add_from_json_string(manager, config_source), "JSON input"
+    config_path = Path(config_source)
+    if not config_path.exists():
+        raise ValueError(f"File not found: {config_path}")
+    return manager.add_servers_from_file(config_path), config_path.name
 
 
 def _sync_added_servers(manager: MCPServerManager, server_names: list[str]) -> None:
@@ -234,10 +236,13 @@ def _sync_added_servers(manager: MCPServerManager, server_names: list[str]) -> N
     click.echo("Discovering tools...")
     try:
         batch = MCPRegistrar(manager=manager).sync_servers(server_names, reconcile_all=False)
+        problem = batch.aborted_reason or (
+            "MCP configuration was removed before tool discovery." if batch.config_missing else None
+        )
     except Exception as e:
-        batch = SyncBatchResult([], aborted_reason=f"Tool discovery failed: {e}")
-    if batch.aborted_reason:
-        click.echo(f"  ✗ {batch.aborted_reason}", err=True)
+        problem = f"Tool discovery failed: {e}"
+    if problem:
+        click.echo(f"  ✗ {problem}", err=True)
         failed = server_names
     else:
         failed = _echo_server_results(batch.servers, verbose=False)

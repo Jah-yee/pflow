@@ -1,7 +1,7 @@
 """MCP tool registration for pflow registry."""
 
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -138,7 +138,6 @@ class MCPRegistrar:
         configs: dict[str, dict[str, Any]],
         *,
         verbose: bool,
-        on_server_start: Callable[[str], None] | None,
     ) -> tuple[dict[str, list[dict[str, Any]]], list[ServerSyncResult]]:
         """Discover targets without reading or writing registry state."""
         discovered_tools: dict[str, list[dict[str, Any]]] = {}
@@ -148,8 +147,6 @@ class MCPRegistrar:
             if server_config is None:
                 results.append(ServerSyncResult(server=server_name, error="Server is not configured"))
                 continue
-            if on_server_start:
-                on_server_start(server_name)
             try:
                 tools = self.discovery.discover_tools(
                     server_name,
@@ -238,7 +235,6 @@ class MCPRegistrar:
         *,
         reconcile_all: bool,
         verbose: bool = False,
-        on_server_start: Callable[[str], None] | None = None,
     ) -> SyncBatchResult:
         """Discover target servers, then publish one coherent reconciliation."""
         initial_configs = self.manager.get_all_servers_if_configured()
@@ -249,7 +245,6 @@ class MCPRegistrar:
             targets,
             initial_configs,
             verbose=verbose,
-            on_server_start=on_server_start,
         )
 
         latest_configs = self.manager.get_all_servers_if_configured()
