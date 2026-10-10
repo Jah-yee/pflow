@@ -177,11 +177,11 @@ def _format_resolved_outputs_section(result: Any, workflow_ir: dict[str, Any]) -
     resolved = collect_outputs_resolved_before_failure(result, workflow_ir)
     if not resolved:
         return []
-    return [
-        "",
-        "Outputs that resolved before the failure:",
-        json.dumps(resolved, indent=2, ensure_ascii=False, default=str),
-    ]
+    try:
+        rendered = json.dumps(resolved, indent=2, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):  # non-str dict keys; same fallback as the success text's outputs
+        rendered = repr(resolved)
+    return ["", "Outputs that resolved before the failure:", rendered]
 
 
 def _format_paused_text(result: Any) -> str:

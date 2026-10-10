@@ -396,6 +396,20 @@ class TestOutputResolutionFailure:
         assert result.stdout == ""
         assert _OPTIONAL_HINT in result.stderr
 
+    def test_failed_output_sharing_a_node_name_is_not_reported_as_resolved(self, tmp_path: Path) -> None:
+        """The node namespace `run` sits in the shared store under the failed output's name."""
+        workflow = {
+            **_PARTIAL_OUTPUTS_IR,
+            "outputs": {"facts": {"source": "${run.result}"}, "run": {"source": "${run.result.video_path}"}},
+        }
+        workflow_path = tmp_path / "partial.pflow.md"
+        write_workflow_file(workflow, workflow_path)
+
+        result = CliRunner(mix_stderr=False).invoke(main, ["--output-format", "json", str(workflow_path)])
+
+        assert result.exit_code == 1
+        assert _parse_json_output(result)["result"] == {"facts": {"verdict": "hang"}}
+
     def test_node_failure_has_no_result_even_when_a_node_shares_an_output_name(self, tmp_path: Path) -> None:
         """Outputs are only populated once every step ran; before that a declared name in the
         shared store is a node namespace, not an output — it must not surface as `result`."""

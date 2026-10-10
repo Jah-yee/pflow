@@ -194,7 +194,8 @@ def _optional_field_suggestions(output_blocks: list[dict[str, Any]]) -> list[str
             expr = ref["coalesce_expr"] if ref.get("in_coalesce") else ref["var"]
             suggestion = (
                 f"If {expr} is optional, write ${{{expr} ?? null}} in output '{block['output_name']}'"
-                " — a missing field then resolves to null instead of failing the run"
+                " — a missing field then resolves to null (empty text inside a longer string)"
+                " instead of failing the run"
             )
             if suggestion not in suggestions:
                 suggestions.append(suggestion)
