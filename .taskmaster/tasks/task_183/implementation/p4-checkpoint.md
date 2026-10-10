@@ -1,5 +1,10 @@
 # Task 183 — P4 user checkpoint: the gate panel's "Approve all remaining"
 
+> **RULED 2026-10-11** — user: *"go ahead with all recommendations"*: all five choices kept as built
+> (layout under the pair; orange-tinted style; both tooltip wordings; shown on uncapped loops; no confirm
+> dialog); the answer-required numbered-list shape stays. The class-name eyebrow (last section) was folded
+> into this task by the main orchestrator (2/5): the gate payload's `node_type` becomes the IR type.
+
 Built and verified at `17039162`. Every shot below comes from that code, taken after the latest
 ruling (2026-10-07: R1 = yes, R2 = (a), web phase on Opus). **Stale shots: 0.** No ruling or
 code change has landed since they were taken, and the Python side has not changed since P3.
