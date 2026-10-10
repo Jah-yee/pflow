@@ -179,7 +179,8 @@ export async function fetchGate(run: string): Promise<GateInfo> {
 
 /** Answer a paused gate — or resume a failed/interrupted run — by spawning a detached
  *  `pflow resume` (Task 176): POST /api/resume, ONE endpoint mirroring the CLI verb.
- *  `approve`/`choose` are mutually exclusive; `force` is sent ONLY after an explicit ack
+ *  `approve`/`choose` are mutually exclusive; `auto_approve: true` only with `approve: "yes"`
+ *  (it becomes `--auto-approve <paused step>`); `force` is sent ONLY after an explicit ack
  *  dialog (stale-workflow / side-effect confirmation — the server never adds it itself).
  *  Resolves with the spawned attempt's run_id (server-minted, like runWorkflow) so the
  *  caller PINS the overlay to the exact new attempt. A refusal throws ApiError with the
@@ -191,6 +192,7 @@ export async function resumeRun(req: {
   run: string;
   approve?: "yes" | "no";
   choose?: string;
+  auto_approve?: boolean;
   force?: boolean;
 }): Promise<string> {
   const response = await fetch("/api/resume", {

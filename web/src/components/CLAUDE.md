@@ -59,6 +59,9 @@ edge routing, or focus policy.
   focus, expansion, or camera: `../graph/focus.ts:rowTouches` uses resolved flow edges. Clear marks
   on focus/selection/structure changes. `.hover-mark` must follow `.node.dimmed` in CSS; hover
   does not inherit selected-edge elevation.
+- `GateCallout`'s approval foot has ONE accent-filled affirmative, Approve. A loop approval gate
+  (numeric `iteration`, capped or not) adds "Approve all remaining" as a tinted secondary, never a
+  second fill; escalations never get it.
 - `GateCallout` option clicks select without submitting. Submitting an answer can consume
   the gate token, so preserve the separate Answer action as a deliberate confirmation step.
 - Resume refusal UI switches on the machine-readable `refusal` field, never by parsing diagnostic
