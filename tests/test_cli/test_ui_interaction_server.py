@@ -1079,6 +1079,7 @@ class TestGateEndpoint:
         assert body["gate_request"]["preview"]["env"]["API_KEY"] == "<REDACTED>"
         assert "sk-super-secret" not in response.text, "the raw secret never reaches the browser"
         assert body["gate_request"]["iteration"] is None  # a non-loop step: the key rides, empty (Task 179)
+        assert body["gate_request"]["max_iterations"] is None  # …and so does the cap (Task 183)
 
     @pytest.mark.trace_files
     def test_loop_pause_payload_carries_the_iteration(self, tmp_path: Path, monkeypatch) -> None:
@@ -1095,6 +1096,7 @@ class TestGateEndpoint:
         body = _client().get("/api/gate", params={"run": token}).json()
         assert body["paused_node_id"] == "gated"
         assert body["gate_request"]["iteration"] == 1
+        assert body["gate_request"]["max_iterations"] == 3  # Task 183: the panel's ONLY source for "of up to 3"
 
     @pytest.mark.trace_files
     def test_long_approval_command_is_served_in_full_not_as_a_blob_ref(self, tmp_path: Path, monkeypatch) -> None:
@@ -1451,6 +1453,67 @@ class TestResumeEndpoint:
         assert "--force" not in plain_argv, "the server NEVER adds --force itself"
         assert forced_argv[-1] == "--force"
 
+    @staticmethod
+    def _pause_loop(tmp_path: Path) -> str:
+        wf = tmp_path / "gated_loop.pflow.md"
+        wf.write_text(_LOOP_GATE_WF, encoding="utf-8")
+        result = CliRunner(mix_stderr=False).invoke(cli, [str(wf), f"marker={tmp_path / 'effects.txt'}"])
+        assert result.exit_code == 4, result.stderr
+        return _TOKEN_RE.search(result.stdout).group(1)
+
+    def test_auto_approve_maps_to_the_paused_step(self, tmp_path: Path, monkeypatch) -> None:
+        """Task 183: "Approve all remaining" → `--approve yes --auto-approve <paused step>`, the step id
+        taken from the pre-flight's source (the CLI half — that this argv finishes the loop — is
+        `test_paused_cli.py::test_approve_yes_with_auto_approve_runs_gated_loop_to_completion`)."""
+        self._home(tmp_path, monkeypatch)
+        token = self._pause_loop(tmp_path)
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post("/api/resume", json={"run": token, "approve": "yes", "auto_approve": True})
+        assert response.status_code == 200, response.text
+        prefix = [sys.executable, "-m", "pflow.cli", "resume", token, "--output-format", "json"]
+        assert popen.call_args.args[0] == [*prefix, "--approve", "yes", "--auto-approve", "gated"]
+
+    def test_auto_approve_false_or_absent_is_a_plain_approve(self, tmp_path: Path, monkeypatch) -> None:
+        self._home(tmp_path, monkeypatch)
+        token = self._pause_loop(tmp_path)
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            absent = _client().post("/api/resume", json={"run": token, "approve": "yes"})
+            false = _client().post("/api/resume", json={"run": token, "approve": "yes", "auto_approve": False})
+        assert absent.status_code == false.status_code == 200
+        prefix = [sys.executable, "-m", "pflow.cli", "resume", token, "--output-format", "json"]
+        assert [call.args[0] for call in popen.call_args_list] == [[*prefix, "--approve", "yes"]] * 2
+
+    def test_auto_approve_with_force_carries_both_flags(self, tmp_path: Path, monkeypatch) -> None:
+        """The stale/side-effect ack retry re-sends the bulk answer with `force: true`."""
+        self._home(tmp_path, monkeypatch)
+        token = self._pause_loop(tmp_path)
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post(
+                "/api/resume", json={"run": token, "approve": "yes", "auto_approve": True, "force": True}
+            )
+        assert response.status_code == 200, response.text
+        assert popen.call_args.args[0][-5:] == ["--approve", "yes", "--auto-approve", "gated", "--force"]
+
+    def test_auto_approve_on_a_non_loop_approval_is_accepted(self, tmp_path: Path, monkeypatch) -> None:
+        """CLI parity: "loop gates only" is the panel's rule, not the endpoint's."""
+        self._home(tmp_path, monkeypatch)
+        token = self._pause(self._paused_wf(tmp_path))
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post("/api/resume", json={"run": token, "approve": "yes", "auto_approve": True})
+        assert response.status_code == 200, response.text
+        assert popen.call_args.args[0][-4:] == ["--approve", "yes", "--auto-approve", "gated"]
+
+    def test_auto_approve_on_a_paused_escalation_is_409_answer_required(self, tmp_path: Path, monkeypatch) -> None:
+        """An approve answer on an escalation is the loader's `wrong_flag` refusal — unchanged by
+        `auto_approve`, and nothing spawns."""
+        self._home(tmp_path, monkeypatch)
+        token = self._pause(_escalation_wf(tmp_path, "pick a or b"))
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post("/api/resume", json={"run": token, "approve": "yes", "auto_approve": True})
+        assert response.status_code == 409
+        assert response.json()["refusal"] == "answer_required"
+        popen.assert_not_called()
+
     def test_superseded_token_is_409_and_does_not_spawn(self, tmp_path: Path, monkeypatch) -> None:
         self._home(tmp_path, monkeypatch)
         token = self._pause(self._paused_wf(tmp_path))
@@ -1615,6 +1678,40 @@ class TestResumeEndpoint:
         with patch("pflow.ui.server.subprocess.Popen") as popen:
             for body in bad_bodies:
                 assert _client().post("/api/resume", json=body).status_code == 400, body
+        popen.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("body", "error"),
+        [
+            (
+                {"approve": "no", "auto_approve": True},
+                "Field 'auto_approve' requires approve: \"yes\" — it pre-approves this step's remaining "
+                "iterations, which contradicts denying it.",
+            ),
+            (
+                {"choose": "b", "auto_approve": True},
+                "Field 'auto_approve' applies to approval gates only — escalations cannot be pre-answered.",
+            ),
+            ({"auto_approve": True}, "Field 'auto_approve' requires approve: \"yes\"."),
+            ({"approve": "yes", "auto_approve": "true"}, "Field 'auto_approve' must be a boolean."),
+            (
+                {"approve": "yes", "autoApprove": True},
+                "Unknown field(s): autoApprove — expected run, approve, choose, force, auto_approve.",
+            ),
+        ],
+        ids=["with-deny", "with-choose", "no-answer", "string", "unknown-key"],
+    )
+    def test_auto_approve_contradictions_are_400_before_any_io(
+        self, tmp_path: Path, monkeypatch, body: dict[str, object], error: str
+    ) -> None:
+        """Task 183 D7: refused on the body's shape alone — a REAL paused loop token underneath
+        proves the refusal never reached pre-flight (which would accept the token)."""
+        self._home(tmp_path, monkeypatch)
+        token = self._pause_loop(tmp_path)
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post("/api/resume", json={"run": token, **body})
+        assert response.status_code == 400
+        assert response.json() == {"error": error}
         popen.assert_not_called()
 
     def test_equals_bearing_target_is_400_and_does_not_spawn(self, tmp_path: Path, monkeypatch) -> None:

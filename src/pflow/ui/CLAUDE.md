@@ -49,6 +49,9 @@ Keep these non-obvious contracts:
   compile) through `asyncio.to_thread`, then use the single detached `Popen` seam. The server
   observes the child trace; it does not host execution or infer success from the spawn. A UI
   launch forces the minted execution ID through `PFLOW_EXECUTION_ID` so the browser pins the exact run.
+- `/api/resume`'s `auto_approve: true` becomes `--auto-approve <paused step>`, the step id taken
+  from the pre-flight's source, never the client. The body contract lives in the
+  `_parse_resume_body` / `resume` docstrings.
 - Runtime data joins the current graph through structural refs (`node_id`, `ancestor_path`,
   and `port`). React Flow flat IDs are positional render IDs and may change after rebuilds.
 - Run-input and gate responses are server-redacted. Do not move secret masking exclusively to

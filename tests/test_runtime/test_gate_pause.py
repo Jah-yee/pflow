@@ -17,6 +17,7 @@ accept. These tests pin both halves of that promise at the producer:
 from __future__ import annotations
 
 import contextlib
+import json
 import tempfile
 from pathlib import Path
 from typing import Any, ClassVar
@@ -259,6 +260,16 @@ def _loop_approval_ir() -> dict[str, Any]:
     }
 
 
+def _pause_line_positions(collector: WorkflowTraceCollector) -> list[tuple[Any, Any]]:
+    """``(iteration, max_iterations)`` of each gate pause line this attempt streamed."""
+    lines = [json.loads(line) for line in collector._stream_path.read_text(encoding="utf-8").splitlines()]
+    return [
+        (ln["request"]["iteration"], ln["request"]["max_iterations"])
+        for ln in lines
+        if ln["kind"] == "gate" and ln["phase"] == "pause"
+    ]
+
+
 class TestApprovalPausePromise:
     """Task 179: a loop step's approval pauses at EVERY iteration, and resume continues
     at the gated iteration (superseding #615's first-iteration-only rule)."""
@@ -341,6 +352,9 @@ class TestApprovalPausePromise:
         assert second.gate_outcome == "paused"
         assert second.pause_request is not None
         assert second.pause_request["gate_request"]["iteration"] == 3
+        # Task 183: the resumed attempt's FIRST gate (iteration 2) runs before any re-entry
+        # decision of this run memoized a cap — the cap still rides on every payload.
+        assert _pause_line_positions(second) == [(2, 3), (3, 3)]
         assert effects() == ["effect 1", "effect 2"]
 
         source = load_resume_source(
@@ -952,3 +966,37 @@ def test_approval_after_a_recovered_failure_resumes_at_the_gated_iteration(tmp_p
     assert resumed.pause_request is not None
     assert resumed.pause_request["gate_request"]["iteration"] == 5
     assert [e["node_id"] for e in resumed.events if e.get("restored")] == ["h"]  # H's output was in the store
+
+
+@pytest.mark.trace_files
+def test_back_edge_past_the_cap_carries_the_cap_beside_the_continuing_count(tmp_path, monkeypatch):
+    """Task 183 (P1-8): the per-run loop counter continues across a back edge, past the
+    author cap — K (cap 3) fails at iteration 3, H routes back, K's approval fires at
+    iteration 4. The payload states both facts; renderers drop the "of up to" clause."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    ir = {
+        "ir_version": "0.1.0",
+        "nodes": [
+            {
+                "id": "k",
+                "type": "code",
+                "approval": "required",
+                "params": {
+                    "code": "i: int\nif int(i) == 3:\n    raise RuntimeError('boom')\nresult: dict = {'more': True}",
+                    "inputs": {"i": "${__iteration__}"},
+                },
+                "loop": {"while": "${k.result.more}", "max_iterations": 3},
+            },
+            {"id": "h", "type": "shell", "params": {"command": "echo handled"}},
+        ],
+        "edges": [{"from": "k", "to": "h", "action": "error"}, {"from": "h", "to": "k", "action": "default"}],
+    }
+    collector = WorkflowTraceCollector("bk", workflow_path="bk.pflow.md", is_run_scoped=True, stream_to_disk=True)
+    with pytest.raises(GateNotInteractiveError):
+        WorkflowEngine(trace_collector=collector, workflow_path="bk.pflow.md").run(
+            compile_workflow(ir, _registry_with_escalating_node()), {"__gate_resolver__": _ApproveFirstResolver(3)}
+        )
+    assert collector.finalize() is not None
+    assert collector.pause_request is not None
+    request = collector.pause_request["gate_request"]
+    assert (request["iteration"], request["max_iterations"]) == (4, 3)

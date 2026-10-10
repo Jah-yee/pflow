@@ -246,6 +246,7 @@ class TestExecuteWorkflowPaused:
         # The token is real and the resume command is kind-correct.
         exec_id = next(line.split(": ", 1)[1] for line in text.splitlines() if line.startswith("execution_id: "))
         assert f"resume_command: pflow resume {exec_id} --approve yes|no" in text
+        assert "--auto-approve" not in text  # one-off gate: no bulk hint (the loop test pins its presence)
         # Gate content is rendered — an agent can show its human WHAT is gated.
         assert "do-it" in text
 
@@ -349,9 +350,13 @@ class TestExecuteWorkflowPaused:
 
         text = ExecutionService.execute_workflow(str(workflow_path), {"marker": str(marker)})
         assert "status: paused" in text
-        assert "Gate:\n  Loop iteration 1\n" in text
+        assert "Gate:\n  Loop iteration 1 of up to 3\n" in text
         token = next(line.split(": ", 1)[1] for line in text.splitlines() if line.startswith("execution_id: "))
-        assert f"resume_command: pflow resume {token} --approve yes|no" in text
+        assert (
+            f"resume_command: pflow resume {token} --approve yes|no\n"
+            f"To approve this and every remaining iteration of 'gated' (only with your human's OK): "
+            f"pflow resume {token} --approve yes --auto-approve gated\n"
+        ) in text
 
         exit_codes = []
         for _ in range(3):

@@ -13,6 +13,7 @@ the two runtime decisions that drive that re-entry:
   to ``[1, MAX_NODE_VISITS]``.
 """
 
+import math
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -180,6 +181,42 @@ def resolve_loop_cap(loop_config: LoopConfig, shared: dict[str, Any], node_id: s
     return instrumentation.MAX_NODE_VISITS
 
 
+def declared_loop_cap(config: NodeConfig, shared: dict[str, Any]) -> int | None:
+    """The loop's author cap as knowable from outside the loop body — for display only.
+
+    Feeds ``GateRequest.max_iterations`` ("iteration 2 of up to 3"). Never read by the
+    walk or by resume: :func:`should_reenter` stays the one cap decision. ``None``
+    means "no limit to show": a non-loop step, a loop with no ``max_iterations`` (the
+    engine's visit guard is never shown), or a cap not knowable at the gate.
+
+    - A literal cap is the compile-time constant.
+    - A ``${template}`` cap resolves against the store, unless it REFERENCES this step's
+      own output or ``${__iteration__}`` — those change with the loop body, so the
+      value at the gate may differ from the one :func:`should_reenter` memoizes after
+      iteration 1. "Unknown" is decided from the template's references, not by hiding
+      store keys: a ``??`` falls through to its fallback when a key is absent, which
+      would show a confident wrong cap.
+    - A cap that does not resolve to a valid number is unknown (the gate never raises).
+
+    Known limit: the engine memoizes the cap once per run, so a back edge that re-runs
+    an upstream step the template reads can make this differ from the enforced cap.
+    """
+    loop_config = config.loop_config
+    if loop_config is None:
+        return None
+    if loop_config.max_iterations is not None:
+        return loop_config.max_iterations
+    template = loop_config.max_iterations_template
+    if template is None:
+        return None
+    if any(ref.root in (config.node_id, "__iteration__") for ref in parse(template).references):
+        return None
+    try:
+        return resolve_loop_cap(loop_config, shared, config.node_id)
+    except LoopConditionError:
+        return None
+
+
 def _coerce_runtime_cap(raw: Any, node_id: str, template: str) -> int:
     """Coerce a runtime-resolved ``max_iterations`` value to a bounded positive int."""
     if isinstance(raw, bool):
@@ -187,6 +224,13 @@ def _coerce_runtime_cap(raw: Any, node_id: str, template: str) -> int:
     elif isinstance(raw, int):
         value = raw
     elif isinstance(raw, float):
+        if not math.isfinite(raw):
+            raise LoopConditionError(
+                f"Node '{node_id}' loop `max_iterations` template '{template}' resolved to {raw!r}, "
+                f"which is not a positive integer.",
+                node_id=node_id,
+                suggestion="Ensure the referenced value is a positive integer (the iteration cap).",
+            )
         value = int(raw)
     elif isinstance(raw, str):
         try:
