@@ -47,5 +47,5 @@ ${item.text}
 
 Scores.
 
-- source: ${score.responses}
+- source: ${score.results}
 - type: array
