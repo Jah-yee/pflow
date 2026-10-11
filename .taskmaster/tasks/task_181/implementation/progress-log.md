@@ -278,3 +278,41 @@
 - Why within my authority (importance 2, not 3): (A) is the shape that *meets* the user's ruled §6 ("every suggestion keeps `|json`"); no user-visible fork remains, it is internal and reversible. (B) keeps a post-hoc string rewrite; (C) would deviate from a ruling — that one would have needed the user.
 - Committed the mid-task fixes as one commit (review-midtask.out stays untracked).
 - Next: I1 builds (A) with tests + mutations; then fresh I2 on PD.
+
+## [2026-10-11 19:30] implementer I1 — review finding #2, ruling (A): references rendered at the source; the rewrite deleted
+- Did: built ruling (A).
+  - **One primitive.** `diagnostic_render.written_reference(text, *, as_json=False)`. The runtime renderer calls it through a tiny `_inserted(ref)`, because a quoted dict lookup cannot sit inside a 3.10 f-string.
+  - **Pass 5 (`path_validation.py`).** `validate_template_paths` takes `(raw, as_json)` pairs. A keyword `as_json` threads through `validate_template_path`, `validate_namespaced_output`, `_batch_results_index_error`, `create_template_diagnostic` and the node-reference / path / simple / enhanced / batch / batch-inner builders.
+    - `validate_nested_path` and `check_type_allows_traversal` now receive the reference already written. That removes their two `startswith("${")` guesses.
+  - **Pass 8 (`batch_item_validation.py`).** It keeps the `TemplateOperand` and passes `as_json`. Its dedupe key is `(path, as_json)`.
+  - **Deleted:** `validator._shown_as_inserts`, `_insert_references` and the workflow-wide "insert-only" rule.
+- **Shape chosen, as the ruling asked:** a bool keyword per builder, not a value type. A value type would ride the same path; every builder still renders with it and still needs the raw text to parse. The bool keeps signatures readable, and `as_json=False` defaults leave every untouched caller's output unchanged.
+  - The diff is about +170/−160 in five files.
+  - The final code has no post-hoc rewrite. Each `${…}` a builder prints goes through `written_reference`; the bare ones are deliberate.
+- **Which renders stay bare, on purpose:**
+  - root mentions (`'${nod}' is neither…`, `Required input '${x}'`), matching the ruled §6 text;
+  - references the fix sends elsewhere: `items: ${n.results}` (batch items) and "pass `${n.results}` to a code node".
+  - Everything shown or suggested in the author's place is rendered: the original reference, changed paths (`Change ${up.exit_cod|json} to ${up.exit_code|json}`), `Or use` / `Try` / `Use`, available-field lists, `similar_names` and `context.template`.
+- Changed:
+  - `src/pflow/core/diagnostic_render.py`
+  - `src/pflow/runtime/engine/template_errors.py` (call shape)
+  - `src/pflow/runtime/template_validation/{path_validation,batch_item_validation,validator}.py`
+  - `tests/test_integration/test_embedded_code_diagnostics.py` (+4 tests)
+- Verified:
+  - `make check` rc 0; `make test` 10923 passed (+3 vs the mid-task fixes).
+  - §6 still renders verbatim (p6 probe).
+  - **Mutation ledger** (counted failures; restored from byte copies):
+    - W1 = R6 re-run (Pass 5 renders bare) → 3 red: §6, changed-path, mixed-use;
+    - W2 (the changed path rendered bare) → 2;
+    - W3 (Pass 8 renders bare) → 3;
+    - R10 re-run (`TemplateOperand` never `as_json`) → 6;
+    - W4 (Pass 5 dedupes by path only) → 3.
+  - Every new test has a presence pair in the same medium: the bare twin's suggestion, in the same workflow for Pass 8.
+- Deviations/surprises:
+  - **Mixed use in Pass 5 dedupes at display.** Pass 5's "Node 'up' … does not output 'exit_cod'." names the producer, not the consumer. So two consumers of one missing path (a bare prompt and an insert) now produce two diagnostics with identical messages and different suggestions, which `deduplicate_diagnostics` collapses to the first — the bare one — on the CLI (executed).
+    - The structured diagnostics are each correct (`test_pass_5_mixed_use_renders_each_reference_in_its_own_form`, pre-dedup).
+    - Pass 8 names the consumer step, so both show there.
+    - Making both visible in Pass 5 would mean new message text on an existing non-ruled diagnostic; not done. The visible outcome equals the pre-(A) one, and the structure is now right.
+  - The finding's example `stdot` reaches Pass 5's "Try …" branch (no similar path); the tests use `exit_cod`, which reaches the "Change … to …" branch.
+- Self-checks: fully happy. The one doubt — the Pass 5 display dedupe on mixed use — is resolved as documented above, not absorbed silently. test-reflect: W1–W4 + R10 kill every new test; no shallow test; nothing deleted.
+- Next: back to the orchestrator; PD/PE not started.

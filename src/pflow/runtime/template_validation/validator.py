@@ -55,7 +55,6 @@ from pflow.runtime.output_resolver import normalize_output_source
 from pflow.runtime.template_validation.batch_item_validation import validate_batch_item_fields
 from pflow.runtime.template_validation.operands import (
     OperandPolicy,
-    TemplateOperand,
     iter_output_source_operands,
     iter_template_operands,
 )
@@ -121,7 +120,6 @@ def validate_workflow_templates(
 
     # Every reference in params, batch.items and loop fields, tagged with its policy
     operands = list(iter_template_operands(workflow_ir))
-    inserts = _insert_references(operands)
     output_operands = list(iter_output_source_operands(workflow_ir))
     all_templates = {operand.ref.raw for operand in operands}
     cache_templates = _extract_cache_templates_for_unused_check(workflow_ir)
@@ -159,8 +157,10 @@ def validate_workflow_templates(
     # its node-output paths: its roots are WorkflowValidator._validate_output_sources's,
     # and a whole-node source (``n``) is a legal output.
     node_ids = get_node_ids(workflow_ir)
-    field_checkable = {operand.ref.raw for operand in operands if operand.policy is OperandPolicy.FIELD_CHECK} | {
-        operand.ref.raw
+    field_checkable = {
+        (operand.ref.raw, operand.as_json) for operand in operands if operand.policy is OperandPolicy.FIELD_CHECK
+    } | {
+        (operand.ref.raw, operand.as_json)
         for operand in output_operands
         if operand.policy is OperandPolicy.FIELD_CHECK and operand.ref.root in node_ids and operand.ref.path
     }
@@ -184,17 +184,13 @@ def validate_workflow_templates(
     )
 
     # Pass 5: Validate each field-checkable template path
-    diagnostics.extend(
-        _shown_as_inserts(
-            validate_template_paths(field_checkable, available_params, node_outputs, workflow_ir, registry), inserts
-        )
-    )
+    diagnostics.extend(validate_template_paths(field_checkable, available_params, node_outputs, workflow_ir, registry))
 
     # Pass 6: Validate template types match parameter expectations
     diagnostics.extend(validate_template_types(workflow_ir, node_outputs, registry))
 
     # Pass 8: Validate batch item field access (${item.field} against inferred structure)
-    diagnostics.extend(_shown_as_inserts(validate_batch_item_fields(workflow_ir, node_outputs, operands), inserts))
+    diagnostics.extend(validate_batch_item_fields(workflow_ir, node_outputs, operands))
 
     # Pass 9: Validate code-node input annotations against upstream template types
     diagnostics.extend(validate_code_node_input_annotations(workflow_ir, node_outputs))
@@ -222,26 +218,6 @@ def validate_workflow_templates(
     else:
         logger.info("Template validation passed")
 
-    return diagnostics
-
-
-def _insert_references(operands: list[TemplateOperand]) -> set[str]:
-    """The references written only as JSON inserts (``${x|json}``), by source text."""
-    return {op.ref.raw for op in operands if op.as_json} - {op.ref.raw for op in operands if not op.as_json}
-
-
-def _shown_as_inserts(diagnostics: list[Diagnostic], inserts: set[str]) -> list[Diagnostic]:
-    """Show each insert reference as written — ``${x|json}``, never ``${x}`` — in a path
-    pass's message, fixes and ``template``: a pasted fix must stay an insert, or embedded
-    code sends it to the tool as JavaScript."""
-    for diagnostic in diagnostics:
-        for raw in inserts:
-            bare, insert = f"${{{raw}}}", f"${{{raw}|json}}"
-            diagnostic.message = diagnostic.message.replace(bare, insert)
-            if diagnostic.suggestions:
-                diagnostic.suggestions = [s.replace(bare, insert) for s in diagnostic.suggestions]
-            if diagnostic.context and diagnostic.context.get("template") == bare:
-                diagnostic.context["template"] = insert
     return diagnostics
 
 

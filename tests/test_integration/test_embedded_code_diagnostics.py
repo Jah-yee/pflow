@@ -531,3 +531,62 @@ def test_4b_a_coalesce_of_two_scoped_roots_lists_both_owners_and_one_fix() -> No
         f"To insert it, put ${{item.id ?? fetch.stdout|json}} {JS_VALUE_PLACE}: const id = ${{item.id ?? fetch.stdout|json}};"
     )
     assert len(warning.suggestions) == 2  # one fix for the one expression, then the closing line
+
+
+# ── Every reference a path pass shows or suggests keeps the insert's form (§6) ──
+
+
+def _up_and(*consumers: dict[str, Any]) -> dict[str, Any]:
+    return _ir({"id": "up", "type": "shell", "params": {"command": "echo"}}, *consumers)
+
+
+def _path_error(diagnostics: list[Diagnostic]) -> list[Diagnostic]:
+    return [d for d in _errors(diagnostics) if "does not output" in d.message or "not available on batch" in d.message]
+
+
+def test_pass_5_suggests_a_changed_path_as_an_insert() -> None:
+    [error] = _path_error(_validate(_up_and(_eval("s", "() => ${up.exit_cod|json}"))))
+    assert error.suggestions == ["Change ${up.exit_cod|json} to ${up.exit_code|json}"]
+    assert error.context["similar_names"] == ["${up.exit_code|json}"]
+    assert "${up.stdout|json} (str)" in error.context["available_fields"]
+    # Presence pair: the same miss in a Template param suggests the bare form.
+    [bare] = _path_error(_validate(_up_and({"id": "ask", "type": "llm", "params": {"prompt": "${up.exit_cod}"}})))
+    assert bare.suggestions == ["Change ${up.exit_cod} to ${up.exit_code}"]
+    assert "${up.stdout} (str)" in bare.context["available_fields"]
+
+
+def test_pass_5_mixed_use_renders_each_reference_in_its_own_form() -> None:
+    """One missing path read bare by a prompt and as an insert by embedded code: each
+    diagnostic carries its own form (their messages are identical, so a display that
+    deduplicates by message shows the first — the bare one — until it is fixed)."""
+    ir = _up_and(
+        _eval("s", "() => ${up.exit_cod|json}"), {"id": "ask", "type": "llm", "params": {"prompt": "${up.exit_cod}"}}
+    )
+    assert [e.suggestions for e in _path_error(_validate(ir))] == [
+        ["Change ${up.exit_cod} to ${up.exit_code}"],
+        ["Change ${up.exit_cod|json} to ${up.exit_code|json}"],
+    ]
+
+
+def _batched(*consumers: dict[str, Any]) -> dict[str, Any]:
+    ir = _ir(
+        {"id": "process", "type": "llm", "batch": {"items": "${data}"}, "params": {"prompt": "P ${item}"}},
+        *consumers,
+    )
+    ir["inputs"] = {"data": {"type": "array", "required": True, "description": "Items."}}
+    return ir
+
+
+def test_pass_8_suggests_item_fields_as_inserts_beside_a_bare_twin() -> None:
+    ir = _batched(
+        _eval("s", "() => ${item.respons|json}", batch={"items": "${process.results}"}),
+        {"id": "ask", "type": "llm", "batch": {"items": "${process.results}"}, "params": {"prompt": "${item.respons}"}},
+    )
+    errors = _path_error(WorkflowValidator.validate(ir, extracted_params={"data": ["a"]}, registry=Registry()))
+    by_node = {e.node_id: e for e in errors}
+    assert by_node["s"].suggestions == ["Use ${item.response|json}"]
+    assert by_node["s"].context["template"] == "${item.respons|json}"
+    assert "${item.prompt|json} (str)" in by_node["s"].context["available_fields"]
+    # Presence pair, same workflow: the Template param's twin is suggested bare.
+    assert by_node["ask"].suggestions == ["Use ${item.response}"]
+    assert "${item.prompt} (str)" in by_node["ask"].context["available_fields"]

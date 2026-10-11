@@ -389,7 +389,9 @@ def build_template_error_diagnostic(
     failed_keys: list[str] = sorted(str(k) for k in failures) if isinstance(failures, dict) else []
 
     if references:
-        ref_summary = ", ".join(written_reference(ref, ref["var"]) for ref in references[:3])
+        ref_summary = ", ".join(
+            written_reference(ref["var"], as_json=bool(ref.get("as_json"))) for ref in references[:3]
+        )
         if len(references) > 3:
             ref_summary += f" (+{len(references) - 3} more)"
         message = f"Unresolved variables in parameter '{param_key}': {ref_summary}"

@@ -9,6 +9,7 @@ from collections import defaultdict
 from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
+from pflow.core.diagnostic_render import written_reference
 from pflow.core.templates import Field, Reference, parse
 from pflow.runtime.template_validation.operands import OperandPolicy, TemplateOperand
 from pflow.runtime.template_validation.path_validation import validate_nested_path
@@ -36,10 +37,10 @@ def validate_batch_item_fields(
     non-batch source).
     """
     diagnostics: list[Diagnostic] = []
-    field_checked: defaultdict[str | None, list[Reference]] = defaultdict(list)
+    field_checked: defaultdict[str | None, list[TemplateOperand]] = defaultdict(list)
     for operand in operands:
         if operand.policy is OperandPolicy.FIELD_CHECK:
-            field_checked[operand.node_id].append(operand.ref)
+            field_checked[operand.node_id].append(operand)
 
     for node in workflow_ir.get("nodes", []):
         node_id = node.get("id")
@@ -56,11 +57,14 @@ def validate_batch_item_fields(
         if not item_structure:
             continue
 
-        seen_errors: set[str] = set()  # Mutated by _check_batch_item_ref to dedup
-        for ref in field_checked[node_id]:
+        seen_errors: set[tuple[str, bool]] = set()  # Mutated by _check_batch_item_ref to dedup
+        for operand in field_checked[node_id]:
+            ref = operand.ref
             if ref.root != item_alias or not ref.path or not isinstance(ref.path[0], Field):
                 continue
-            error = _check_batch_item_ref(ref, item_structure, item_alias, items_template, node_id, seen_errors)
+            error = _check_batch_item_ref(
+                ref, item_structure, item_alias, items_template, node_id, seen_errors, as_json=operand.as_json
+            )
             if error:
                 diagnostics.append(error)
 
@@ -105,28 +109,32 @@ def _check_batch_item_ref(
     item_alias: str,
     items_template: Any,
     node_id: str,
-    seen_errors: set[str],
+    seen_errors: set[tuple[str, bool]],
+    *,
+    as_json: bool,
 ) -> Diagnostic | None:
-    """Check a single ${item.field} reference against item structure."""
+    """Check a single ${item.field} reference against item structure (``as_json``: a JSON
+    insert's — shown, with its fixes, as ``${…|json}``; deduplicated per written form)."""
     first = ref.path[0]
     assert isinstance(first, Field)  # noqa: S101 — the caller selects `${alias.field…}` references
     first_field = first.name
 
     if first_field not in item_structure:
-        if first_field in seen_errors:
+        if (first_field, as_json) in seen_errors:
             return None
-        seen_errors.add(first_field)
+        seen_errors.add((first_field, as_json))
         return _build_batch_item_field_diagnostic(
-            node_id, item_alias, items_template, first_field, ref.raw, item_structure
+            node_id, item_alias, items_template, first_field, ref.raw, item_structure, as_json=as_json
         )
 
     # First field exists — validate deeper fields if any
     field_info = item_structure[first_field]
     if sum(isinstance(segment, Field) for segment in ref.path) > 1 and isinstance(field_info, dict):
-        is_valid, _ = validate_nested_path(ref.path[1:], field_info, f"${{{ref.raw}}}", item_alias)
-        if not is_valid and ref.raw not in seen_errors:
-            seen_errors.add(ref.raw)
-            return _build_batch_item_nested_diagnostic(node_id, item_alias, ref, field_info)
+        written = written_reference(ref.raw, as_json=as_json)
+        is_valid, _ = validate_nested_path(ref.path[1:], field_info, written, item_alias)
+        if not is_valid and (ref.raw, as_json) not in seen_errors:
+            seen_errors.add((ref.raw, as_json))
+            return _build_batch_item_nested_diagnostic(node_id, item_alias, ref, field_info, as_json=as_json)
 
     return None
 
@@ -138,6 +146,8 @@ def _build_batch_item_field_diagnostic(
     first_field: str,
     full_template: str,
     item_structure: dict[str, Any],
+    *,
+    as_json: bool,
 ) -> Diagnostic:
     """Build diagnostic for invalid batch item field access."""
     safe_node_id = sanitize_for_display(node_id)
@@ -148,7 +158,7 @@ def _build_batch_item_field_diagnostic(
     available_fields: list[str] = []
     for field_name, field_info in item_structure.items():
         field_type = field_info.get("type", "any") if isinstance(field_info, dict) else "any"
-        available_fields.append(f"${{{safe_alias}.{field_name}}} ({field_type})")
+        available_fields.append(f"{written_reference(f'{safe_alias}.{field_name}', as_json=as_json)} ({field_type})")
 
     available_paths = [
         (f"{safe_alias}.{field}", info.get("type", "any") if isinstance(info, dict) else "any")
@@ -158,15 +168,16 @@ def _build_batch_item_field_diagnostic(
 
     context: dict[str, Any] = {
         "category": "template_error",
-        "template": f"${{{full_template}}}",
+        "template": written_reference(full_template, as_json=as_json),
         "available_fields": available_fields,
         "available_fields_total": len(available_fields),
         "available_fields_label": "batch item fields",
         "items_source": safe_source,
         "batch_alias": safe_alias,
     }
+    similar_written = [written_reference(path, as_json=as_json) for path, _ in similar]
     if similar:
-        context["similar_names"] = [f"${{{path}}}" for path, _ in similar]
+        context["similar_names"] = similar_written
 
     return Diagnostic(
         severity=Severity.ERROR,
@@ -174,10 +185,10 @@ def _build_batch_item_field_diagnostic(
         title="Template Error",
         node_id=node_id,
         message=(
-            f"Node '{safe_node_id}': ${{{full_template}}} references field '{first_field}' "
-            f"which is not available on batch items (items come from: {safe_source})."
+            f"Node '{safe_node_id}': {written_reference(full_template, as_json=as_json)} references field "
+            f"'{first_field}' which is not available on batch items (items come from: {safe_source})."
         ),
-        suggestions=[f"Use ${{{path}}}" for path, _ in similar] if similar else None,
+        suggestions=[f"Use {written}" for written in similar_written] or None,
         context=context,
         see_also=["batch"],
     )
@@ -188,6 +199,8 @@ def _build_batch_item_nested_diagnostic(
     item_alias: str,
     ref: Reference,
     field_info: dict[str, Any],
+    *,
+    as_json: bool,
 ) -> Diagnostic:
     """Build diagnostic for invalid nested path on a batch item field.
 
@@ -224,7 +237,7 @@ def _build_batch_item_nested_diagnostic(
     if nested_structure:
         for field_name, sub_info in nested_structure.items():
             sub_type = sub_info.get("type", "any") if isinstance(sub_info, dict) else "any"
-            available_fields.append(f"${{{parent_path}.{field_name}}} ({sub_type})")
+            available_fields.append(f"{written_reference(f'{parent_path}.{field_name}', as_json=as_json)} ({sub_type})")
 
         available_paths = [
             (f"{parent_path}.{f}", i.get("type", "any") if isinstance(i, dict) else "any")
@@ -233,7 +246,7 @@ def _build_batch_item_nested_diagnostic(
         similar = find_similar_paths(bad_field, available_paths)
 
     if similar:
-        suggestions: list[str] | None = [f"Use ${{{path}}}" for path, _ in similar]
+        suggestions: list[str] | None = [f"Use {written_reference(path, as_json=as_json)}" for path, _ in similar]
     elif not nested_structure:
         suggestions = [f"'{parent_name}' has no known sub-fields. Nested access may fail at runtime."]
     else:
@@ -241,7 +254,7 @@ def _build_batch_item_nested_diagnostic(
 
     context: dict[str, Any] = {
         "category": "template_error",
-        "template": f"${{{full_template}}}",
+        "template": written_reference(full_template, as_json=as_json),
         "parent_path": parent_path,
         "parent_type": parent_type,
     }
@@ -250,7 +263,7 @@ def _build_batch_item_nested_diagnostic(
         context["available_fields_total"] = len(available_fields)
         context["available_fields_label"] = "nested fields"
     if similar:
-        context["similar_names"] = [f"${{{path}}}" for path, _ in similar]
+        context["similar_names"] = [written_reference(path, as_json=as_json) for path, _ in similar]
 
     return Diagnostic(
         severity=Severity.ERROR,
@@ -258,7 +271,7 @@ def _build_batch_item_nested_diagnostic(
         title="Template Error",
         node_id=node_id,
         message=(
-            f"Node '{safe_node_id}': ${{{full_template}}} — '{bad_field}' does not exist on "
+            f"Node '{safe_node_id}': {written_reference(full_template, as_json=as_json)} — '{bad_field}' does not exist on "
             f"'{parent_name}' ({parent_type})."
         ),
         suggestions=suggestions,
