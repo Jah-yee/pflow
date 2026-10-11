@@ -1141,3 +1141,28 @@ resume path for any successor.
   redaction exclusion), so a direct row was added before the ledger. test-reflect: not separately directed; each row
   has a presence half.
 - Next: hand back. W1 and H1 go to the user; S3, S4 and the two main-broken items go to the orchestrator.
+
+## [2026-10-12 01:10] task-orchestrator — PARKED on user escalation (H1 + W1); falsifier evaluated
+- State: head `8730db0f` (after this entry's commit, one more). Completion gate reading battery (9/9 lenses) + falsifier
+  done and evaluated by G1 ([15:26], [16:13]); all fixes committed (`a0528d02`, `8730db0f`). G1's last gates:
+  `make check` rc 0, `make test` 11469 passed, Task-159 `verify.sh` 87/0/0; `make test-all-local` last run at
+  `a0528d02` (11512 passed / 2 skipped) — re-run at close-out. No `pflow ui` server running.
+- Dispositions this step: falsifier W2/S1/S2/S5/S6 FIXED (classes in [16:13]); S3 → **#791**; S4 + the D1 clause →
+  **#792** (host never sees its authored `inputs:`/carry keys); main-broken items → **#789** (parallel fail_fast empty
+  `Executor error:`), **#790** (container default shared across calls; fix site `ir_preparation._fallback_value`); O1 by
+  design (D6).
+- Asked of the user (ONE handback): **H1 (3/5)** required child input supplied only by env/settings — rec **B** (must
+  come from the parent; env/settings fill only optional child inputs; matches main; O1 supports it). **W1 (3/5)** a
+  declared input rebound to a batch alias or a step `inputs:` key regains JSON parsing — options A (binding provenance at
+  `_bind_locally` + per-item alias; planner + validator mirrors; ADR-0017 sentence amended; 0 in-tree behaviour changes
+  per `scratchpads/task-120/gate2/scan_w1.txt`), B (by design; correct "at every step" in guide + both MCP copies), C
+  (validator-only flag) — rec **A in this task** (engine contact → a plan addendum + targeted re-review), fallback B now +
+  A follow-up. Optional ask: fold #790 (one `deepcopy` at the boundary this task rebuilt) into this PR?
+- Exact resume point: on the rulings — (1) H1: if B, G1-or-fresh Opus implements in `prepare_inputs`'s child caller
+  (`_Caller`/`type_child_inputs`) + validator `_check_required_inputs` parity + tests; (2) W1: if A, I write a short plan
+  addendum (sites, mirrors, ADR-0017 wording for the main orchestrator), a fresh Opus implementer builds it, then a
+  targeted re-review (`validation-consistency` + `feature-interactions` on that diff) and a re-run of the falsifier's W1
+  probes; if B, doc edits in guide/core.md + both MCP copies + re-record `12/04-guide-auto-detect` if it moves; (3) merge
+  `origin/main`, `make check` + `make test-all-local`, verify.sh, `capture.py --check` vs P0's 5; (4) spec Status done +
+  Completed; `create-task-review`; `create-pr` closing #686, #687, #188 (Refs #297, #742, #743 — not closing PRs);
+  check `closingIssuesReferences`.
