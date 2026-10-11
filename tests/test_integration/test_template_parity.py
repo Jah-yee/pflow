@@ -54,7 +54,7 @@ from pflow.nodes.shell.env_binding import bind_env
 from pflow.registry import Registry
 from pflow.registry.scanner import extract_metadata
 from pflow.runtime import WorkflowEngine, compile_workflow
-from pflow.runtime.engine.batch_executor import _resolve_and_validate_items, resolve_batch_items
+from pflow.runtime.engine.batch_executor import _resolve_and_validate_items, bind_batch_item, resolve_batch_items
 from pflow.runtime.engine.engine import _resolve_template_string
 from pflow.runtime.engine.loop_control import evaluate_loop_condition, resolve_loop_cap
 from pflow.runtime.engine.plan_node import _render_cache_for_hash
@@ -465,7 +465,9 @@ def _drive_batch_param(row: Row, ir: dict[str, Any], shared: dict[str, Any]) -> 
     require(isinstance(items, list), f"batch items did not resolve: {items!r}")
     values = []
     for index, item in enumerate(items):
-        observed = _resolve_param(row, config, {**shared, "item": item, "__index__": index}, _param_key(row))
+        item_shared = dict(shared)
+        bind_batch_item(item_shared, shared, config.batch_config, item, index)
+        observed = _resolve_param(row, config, item_shared, _param_key(row))
         if observed.kind != "resolves":
             return observed
         values.append(observed.value)
@@ -2156,6 +2158,85 @@ DECLARED_INPUT_ROWS: tuple[Row, ...] = (
         prompt_cache=("data.a",),
         declared_inputs=declared("data", "any"),
         params={"data": JSON_TEXT},
+    ),
+    # D15: a name bound to ONE whole reference of a declared input (a step `inputs:` key, a batch alias) is that
+    # input for the step — validator and runtime alike; any other binding is local (a node output's rules).
+    Row(
+        "bound_declared_string_field",
+        "param",
+        "${doc.a}",
+        Error("Input 'txt' (as 'doc') is declared `- type: string`, so `${doc.a}` cannot read a field of it"),
+        Raises("CompilationError", "Input 'txt' (as 'doc') is declared `- type: string`"),
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+        extra_params=MappingProxyType({"inputs": {"doc": "${txt}"}}),
+        mutation="a step's inputs: key bound to a declared input drops its protection (W1)",
+    ),
+    Row(
+        "bound_declared_object_descendant",
+        "param",
+        "${doc.a}",
+        Ok(),
+        Unresolved(("doc.a",)),
+        declared_inputs=declared("d", "object"),
+        params={"d": json.dumps({"payload": JSON_TEXT})},
+        extra_params=MappingProxyType({"inputs": {"doc": "${d.payload}"}}),
+        mutation="a binding to text inside a declared input is parsed",
+    ),
+    Row(
+        "bound_node_output_is_local",
+        "param",
+        "${doc.a}",
+        Ok(),
+        Resolves(1),
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+        extra_params=MappingProxyType({"inputs": {"doc": "${p.out.json_str}", "t": "${txt}"}}),
+    ),
+    Row(
+        "bound_coalesce_is_local",
+        "param",
+        "${doc.a}",
+        Ok(),
+        Resolves(1),
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+        extra_params=MappingProxyType({"inputs": {"doc": "${txt ?? p.out.json_str}"}}),
+        mutation="a ?? binding inherits its first operand's protection",
+    ),
+    Row(
+        "alias_of_a_declared_array",
+        "batch_param",
+        "${item}",
+        Ok(),
+        Resolves([JSON_TEXT]),
+        consumer="code",
+        batch_items="${arr}",
+        declared_inputs=declared("arr", "array"),
+        params={"arr": json.dumps([JSON_TEXT])},
+        mutation="the batch alias over a declared input drops its protection (W1)",
+    ),
+    Row(
+        "alias_of_a_declared_array_path",
+        "batch_param",
+        "${item.a}",
+        Ok(),
+        Unresolved(("item.a",)),
+        batch_items="${arr}",
+        declared_inputs=declared("arr", "array"),
+        params={"arr": json.dumps([JSON_TEXT])},
+    ),
+    Row(
+        "alias_inline_follows_each_element",
+        "batch_param",
+        "${item}",
+        Ok(),
+        Resolves([JSON_TEXT, {"a": 1}]),
+        consumer="code",
+        batch_items=["${txt}", "${p.out.json_str}"],
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+        mutation="an inline element's provenance is not read per item",
     ),
 )
 

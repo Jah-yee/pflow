@@ -7,8 +7,10 @@ chunk). ``declared_input_diagnostics`` reports them, and an input named like a b
 declared type the resolver would apply to the item). It runs inside ``validate_data_flow``, so
 the compiler enforces it too — a child chosen at run time (``workflow: ${…}``) is only compiled.
 
-``declared_root_type`` is the one answer to "is this root the declared input here"; the
-template validator's container rule (Passes 6 and 9) reads it as well.
+``declared_root`` is the one answer to "is this root the declared input here" — a name bound
+to one by a single whole reference (a step ``inputs:`` key, a batch alias) included, as the
+runtime binds it (``templates.bound_declaration``); the template validator's container rule
+(Passes 6 and 9) reads it as well.
 """
 
 from __future__ import annotations
@@ -19,8 +21,16 @@ from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.ir_schema import declared_input_types
-from pflow.core.templates import Expression, Field, Reference, parse
-from pflow.core.workflow.data_flow import step_scope
+from pflow.core.templates import (
+    PROTECTION_ONLY,
+    Expression,
+    Field,
+    Reference,
+    batch_item_declaration,
+    bound_declaration,
+    bound_reference,
+    parse,
+)
 from pflow.core.workflow.template_surfaces import (
     WORKFLOW_NODE_TYPES,
     SurfaceKind,
@@ -37,37 +47,107 @@ def declared_input_diagnostics(workflow_ir: dict[str, Any]) -> list[Diagnostic]:
     return [*_inputs_named_like_batch_aliases(workflow_ir), *_declared_reads(workflow_ir)]
 
 
-def declared_root_type(
+# What a name holds on a surface: its declared-input map entry and the input(s) its binding chain
+# starts at — several when an inline batch list binds elements of different inputs of one type.
+_Bound = tuple[str, tuple[str, ...]]
+
+
+def declared_root(
     workflow_ir: dict[str, Any],
     node: dict[str, Any] | None,
     root: str,
     *,
     surface_kind: SurfaceKind,
     param_key: str | None = None,
-) -> str | None:
-    """The declared type of workflow input ``root`` where that input is CERTAINLY the active
-    binding of ``root`` on this surface — ``None`` when it is not or may not be, or when it is
-    ``any``/untyped.
+) -> _Bound | None:
+    """``(declared type, inputs)`` when ``root`` on this surface is CERTAINLY a declared input of
+    that type, or a name bound to such inputs carrying their type — ``None`` when it is not or may
+    not be, when the input is ``any``/untyped, or when the binding is protection-only (its type
+    unknown). ``inputs`` names the declared input(s) behind the name (``(root,)`` for the input itself).
 
-    Bindings follow the runtime's merge points (``template_resolution._bind_locally``): a
-    step's own ``inputs:`` values resolve before its keys are bound, so the workflow input owns
-    the root there unless the batch alias holds it; every other param of the step reads its own
-    ``inputs:`` key or alias first (``data_flow.step_scope``) — and after a whole-map
-    ``inputs: ${…}``, whose keys are known only at run time, may read anything. ``batch.items``,
-    loop fields and workflow-level surfaces resolve against the store itself.
+    Bindings follow the runtime's (``template_resolution._bind_locally``,
+    ``batch_executor.bind_batch_item``): a batched step's alias is bound first; a step's own
+    ``inputs:`` values resolve before its keys are bound, and every other param of the step then
+    reads its own ``inputs:`` key first (a loop's carried key: its round-1 and carry bindings
+    must agree) — after a whole-map ``inputs: ${…}``, whose keys are known only at run time, any
+    root may be one. ``batch.items``, loop fields and workflow-level surfaces resolve against
+    the store itself.
     """
-    declared = declared_input_types(workflow_ir).get(root, "any")
-    if declared == "any":
-        return None
+    bound = _declared_scope(workflow_ir, node, surface_kind=surface_kind, param_key=param_key).get(root)
+    return None if bound is None or bound[0] == PROTECTION_ONLY else bound
+
+
+def _declared_scope(
+    workflow_ir: dict[str, Any], node: dict[str, Any] | None, *, surface_kind: SurfaceKind, param_key: str | None
+) -> dict[str, _Bound]:
+    """Every name a declared input owns on this surface."""
+    scope: dict[str, _Bound] = {
+        name: (kind, (name,)) for name, kind in declared_input_types(workflow_ir).items() if kind != "any"
+    }
     if node is None or surface_kind != "param":
-        return declared
+        return scope
+    batch = node.get("batch")
+    if isinstance(batch, dict):
+        raw_alias = batch.get("as")
+        alias = raw_alias if isinstance(raw_alias, str) and raw_alias else "item"
+        _bind(scope, {alias: _item_binding(batch.get("items"), scope)})
     if param_key == "inputs":
-        owners: tuple[str, ...] = ("input", "inputs_key")
-    elif isinstance((node.get("params") or {}).get("inputs"), str):
+        return scope
+    own_inputs = (node.get("params") or {}).get("inputs")
+    if isinstance(own_inputs, str):
+        return {}
+    authored = own_inputs if isinstance(own_inputs, dict) else {}
+    types = _types(scope)
+    bound = {key: _inherit(scope, value, bound_declaration(value, types)) for key, value in authored.items()}
+    loop = node.get("loop")
+    carry = loop.get("carry") if isinstance(loop, dict) else None
+    # From iteration 2 a carried key is bound to its carry template (`loop_control.apply_carry_overrides`):
+    # what it inherits is certain only when every iteration's binding agrees.
+    for key, value in (carry if isinstance(carry, dict) else {}).items():
+        first = bound[key] if key in authored else scope.get(key)
+        bound[key] = _agree([first, _inherit(scope, value, bound_declaration(value, types))])
+    _bind(scope, bound)
+    return scope
+
+
+def _item_binding(items: Any, scope: dict[str, _Bound]) -> _Bound | None:
+    """What the batch alias holds for EVERY item, statically: an inline list binds only when each
+    element's entry is the same (``templates.batch_item_declaration``)."""
+    types = _types(scope)
+    if isinstance(items, str):
+        return _inherit(scope, items.strip(), batch_item_declaration(items, 0, types))
+    if not isinstance(items, list):
         return None
-    else:
-        owners = ("input",)
-    return declared if step_scope(workflow_ir, node).kind(root, has_path=False) in owners else None
+    return _agree([_inherit(scope, item, batch_item_declaration(items, i, types)) for i, item in enumerate(items)])
+
+
+def _agree(bindings: list[_Bound | None]) -> _Bound | None:
+    """The binding every case shares — one entry, the inputs of all — or ``None`` when one case is
+    local or the entries differ (nothing about the name is certain)."""
+    if not bindings or any(bound is None for bound in bindings):
+        return None
+    certain = [bound for bound in bindings if bound is not None]
+    if len({entry for entry, _ in certain}) != 1:
+        return None
+    return certain[0][0], tuple(dict.fromkeys(name for _, inputs in certain for name in inputs))
+
+
+def _inherit(scope: dict[str, _Bound], authored: Any, entry: str | None) -> _Bound | None:
+    """``(entry, the input(s) the binding chain starts at)``; ``None`` for a local name."""
+    ref = bound_reference(authored)
+    return None if entry is None or ref is None else (entry, scope[ref.root][1])
+
+
+def _types(scope: dict[str, _Bound]) -> dict[str, str]:
+    return {name: entry for name, (entry, _) in scope.items()}
+
+
+def _bind(scope: dict[str, _Bound], bindings: dict[str, _Bound | None]) -> None:
+    for name, bound in bindings.items():
+        if bound is None:
+            scope.pop(name, None)
+        else:
+            scope[name] = bound
 
 
 def _declared_reads(workflow_ir: dict[str, Any]) -> list[Diagnostic]:
@@ -79,24 +159,34 @@ def _declared_reads(workflow_ir: dict[str, Any]) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
     for surface, path, expression, ref in _surface_reads(workflow_ir):
         node = nodes.get(surface.node_id) if surface.node_id else None
-        declared = declared_root_type(workflow_ir, node, ref.root, surface_kind=surface.kind, param_key=surface.key)
-        if declared is None:
-            continue
-        if ref.path:
-            diagnostic = _path_miss(ref, declared, surface.node_id, path, len(expression.operands) > 1)
-        elif ref not in expression.operands or not isinstance(surface.value, str):
-            diagnostic = None
-        elif surface.kind == "batch_items":
-            diagnostic = _whole_root(ref.root, declared, surface.node_id, path, "array", "`batch.items` needs a list")
-        elif surface.key == "inputs" and node is not None and node.get("type") in WORKFLOW_NODE_TYPES:
-            diagnostic = _whole_root(
-                ref.root, declared, surface.node_id, path, "object", "A sub-workflow step's whole `inputs:` needs a map"
-            )
-        else:
-            diagnostic = None
-        if diagnostic is not None:
-            diagnostics.append(diagnostic)
+        bound = declared_root(workflow_ir, node, ref.root, surface_kind=surface.kind, param_key=surface.key)
+        for declared, input_name in [(bound[0], name) for name in bound[1]] if bound is not None else []:
+            # One error per input behind the name: each is certain for the items that came from it.
+            diagnostic = _declared_read(surface, node, path, expression, ref, (declared, input_name))
+            if diagnostic is not None:
+                diagnostics.append(diagnostic)
     return diagnostics
+
+
+def _declared_read(
+    surface: TemplateSurface,
+    node: dict[str, Any] | None,
+    path: str,
+    expression: Expression,
+    ref: Reference,
+    bound: tuple[str, str],
+) -> Diagnostic | None:
+    """The certain miss of ``ref`` reading input ``bound`` = ``(declared type, input)``, if any."""
+    if ref.path:
+        return _path_miss(ref, bound, surface.node_id, path, len(expression.operands) > 1)
+    if ref not in expression.operands or not isinstance(surface.value, str):
+        return None
+    if surface.kind == "batch_items":
+        return _whole_root(ref.root, bound, surface.node_id, path, "array", "`batch.items` needs a list")
+    if surface.key == "inputs" and node is not None and node.get("type") in WORKFLOW_NODE_TYPES:
+        needs = "A sub-workflow step's whole `inputs:` needs a map"
+        return _whole_root(ref.root, bound, surface.node_id, path, "object", needs)
+    return None
 
 
 def _surface_reads(workflow_ir: dict[str, Any]) -> Iterator[tuple[TemplateSurface, str, Expression, Reference]]:
@@ -123,52 +213,54 @@ def _surface_reads(workflow_ir: dict[str, Any]) -> Iterator[tuple[TemplateSurfac
                             yield surface, surface.path(location), expression, ref
 
 
-def _path_miss(ref: Reference, declared: str, node_id: str | None, path: str, in_coalesce: bool) -> Diagnostic | None:
+def input_as(root: str, input_name: str) -> str:
+    """``'v'`` — or ``'v' (as 'doc')`` when the template reads it through a name bound to it."""
+    return f"'{input_name}'" if root == input_name else f"'{input_name}' (as '{root}')"
+
+
+def _path_miss(
+    ref: Reference, bound: tuple[str, str], node_id: str | None, path: str, in_coalesce: bool
+) -> Diagnostic | None:
     """The ERROR for a path the walk cannot take on a declared input's value, else ``None``
     (a field on an ``object`` and an index on an ``array`` may well resolve)."""
-    root, written, by_field = ref.root, f"${{{ref.raw}}}", isinstance(ref.path[0], Field)
+    (declared, input_name), root = bound, ref.root
+    written, by_field = f"${{{ref.raw}}}", isinstance(ref.path[0], Field)
+    head = f"Input {input_as(root, input_name)} is declared `- type: {declared}`"
     if declared == "string":
         action = "read a field of it" if by_field else "index it"
-        message = (
-            f"Input '{root}' is declared `- type: string`, so `{written}` cannot {action} — "
-            "a string input is never JSON-parsed."
-        )
+        message = f"{head}, so `{written}` cannot {action} — a string input is never JSON-parsed."
         shape = "object" if by_field else "array"
-        fix = f"Declare `- type: {shape}` if '{root}' holds a JSON {shape}, or reference `${{{root}}}` whole."
+        fix = f"Declare `- type: {shape}` if '{input_name}' holds a JSON {shape}, or reference `${{{root}}}` whole."
     elif declared in _SCALAR_NOUNS:
         action = "read a field of" if by_field else "index"
-        message = (
-            f"Input '{root}' is declared `- type: {declared}`; `{written}` cannot {action} {_SCALAR_NOUNS[declared]}."
-        )
+        message = f"{head}; `{written}` cannot {action} {_SCALAR_NOUNS[declared]}."
         fix = f"Reference `${{{root}}}` whole."
     elif declared == "array" and by_field:
-        message = (
-            f"Input '{root}' is declared `- type: array`; `{written}` names a field, "
-            f"but an array has only indexes (`${{{root}[0]}}`)."
-        )
+        message = f"{head}; `{written}` names a field, but an array has only indexes (`${{{root}[0]}}`)."
         fix = f"Index it first (`${{{root}[0]…}}`), or reference `${{{root}}}` whole."
     elif declared == "object" and not by_field:
-        message = (
-            f"Input '{root}' is declared `- type: object`; `{written}` indexes it, "
-            f"but an object has only fields (`${{{root}.<field>}}`)."
-        )
-        fix = f"Read a field (`${{{root}.<field>}}`), or declare `- type: array` if '{root}' holds a list."
+        message = f"{head}; `{written}` indexes it, but an object has only fields (`${{{root}.<field>}}`)."
+        fix = f"Read a field (`${{{root}.<field>}}`), or declare `- type: array` if '{input_name}' holds a list."
     else:
         return None
     if in_coalesce:
         message += " As a ?? operand the fallback would always win."
-    return _error(node_id, path, message, fix, root, declared, written)
+    return _error(node_id, path, message, fix, input_name, declared, written)
 
 
-def _whole_root(root: str, declared: str, node_id: str | None, path: str, needed: str, needs: str) -> Diagnostic | None:
+def _whole_root(
+    root: str, bound: tuple[str, str], node_id: str | None, path: str, needed: str, needs: str
+) -> Diagnostic | None:
     """The ERROR for a whole declared root where the runtime needs a ``needed`` container and never
     parses text into one: ``batch.items: ${v}`` (a list) and a sub-workflow step's whole-map
     ``inputs: ${v}`` (a map — the host refuses anything else, ``_extract_child_inputs``)."""
+    declared, input_name = bound
     if declared == needed:
         return None
     parsed = " and is never JSON-parsed" if declared == "string" else ""
-    message = f"{needs}; input '{root}' is declared `- type: {declared}`{parsed}."
-    return _error(node_id, path, message, f"Declare `- type: {needed}` for '{root}'.", root, declared, f"${{{root}}}")
+    message = f"{needs}; input {input_as(root, input_name)} is declared `- type: {declared}`{parsed}."
+    fix = f"Declare `- type: {needed}` for '{input_name}'."
+    return _error(node_id, path, message, fix, input_name, declared, f"${{{root}}}")
 
 
 def _error(
@@ -187,8 +279,7 @@ def _error(
 
 def _inputs_named_like_batch_aliases(workflow_ir: dict[str, Any]) -> list[Diagnostic]:
     """One name, one owner: inside a batched step its alias (``batch.as``, default ``item``) IS
-    the batch item, so a same-named input is unreachable there — and its declared type would be
-    applied to the item (``templates.DECLARED_INPUT_TYPES_KEY`` is keyed by name)."""
+    the batch item, so a same-named input is unreachable there."""
     inputs = workflow_ir.get("inputs") or {}
     diagnostics: list[Diagnostic] = []
     for node in workflow_ir.get("nodes", []):

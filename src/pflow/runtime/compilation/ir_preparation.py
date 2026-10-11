@@ -5,6 +5,7 @@
 - check_supplied_inputs: the same boundary over the supplied values only
 """
 
+import copy
 import logging
 import os
 from collections.abc import Mapping
@@ -48,6 +49,16 @@ class _Caller:
         """Where the value for input ``name`` is supplied."""
         return f"nodes[id={self.step}].params.inputs.{name}" if self.step else f"inputs.{name}"
 
+    @property
+    def required_fix(self) -> str:
+        """The remedy for a missing required input — at a sub-workflow boundary only the parent can pass it."""
+        if not self.step:
+            return ""
+        return (
+            f"Pass it under step '{self.step}' `inputs:` "
+            "(a required sub-workflow input is never read from the environment or settings)"
+        )
+
     def context(self) -> dict[str, str]:
         if not self.step:
             return {}
@@ -70,19 +81,25 @@ class _Caller:
 
 
 def _fallback_value(
-    input_name: str, input_spec: dict[str, Any], settings_env: Mapping[str, str]
+    input_name: str, input_spec: dict[str, Any], settings_env: Mapping[str, str], caller: _Caller
 ) -> tuple[Any, InputSource | None]:
     """A value for an input nobody supplied: shell environment → settings.env → declared default.
 
-    ``(None, None)`` when none has one (a ``default: null`` is no value).
+    ``(None, None)`` when none has one (a ``default: null`` is no value). At a sub-workflow
+    boundary a required input with no default has none: it comes from the parent, never from
+    the environment or settings (as the validator rules statically, ``_check_required_inputs``).
+    A container default is a fresh copy every time — the IR's own object is never handed to a run.
     """
+    has_default = input_spec.get("default") is not None
+    if caller.step and input_spec.get("required", True) and not has_default:
+        return None, None
     if input_name in os.environ:
         # CLI/MCP startup copies settings.env into the environment, never over an exported name.
         return os.environ[input_name], "settings" if is_settings_injected(input_name) else "env"
     if input_name in settings_env:
         return settings_env[input_name], "settings"
-    if input_spec.get("default") is not None:
-        return input_spec["default"], "default"
+    if has_default:
+        return copy.deepcopy(input_spec["default"]), "default"
     return None, None
 
 
@@ -96,17 +113,16 @@ def _resolve_input(
 ) -> tuple[Diagnostic | None, Any, InputSource | None]:
     """One declared input: ``(problem, typed value, source)``; ``source`` is ``None`` when no value exists."""
     value, source = (
-        (supplied, supplied_source) if supplied is not None else _fallback_value(input_name, input_spec, settings_env)
+        (supplied, supplied_source)
+        if supplied is not None
+        else _fallback_value(input_name, input_spec, settings_env, caller)
     )
     description = input_spec.get("description", "No description provided")
     is_required = input_spec.get("required", True)
     if source is None:
         if is_required:
-            return (
-                caller.error(f"{caller.subject} requires input '{input_name}': {description}", caller.path(input_name)),
-                None,
-                None,
-            )
+            message = f"{caller.subject} requires input '{input_name}': {description}"
+            return caller.error(message, caller.path(input_name), caller.required_fix), None, None
         return None, None, None
     if is_required and value == "":
         origin = "" if supplied is not None else f" (resolved from {source})"
@@ -237,8 +253,9 @@ def prepare_inputs(
     """The workflow input boundary: resolve each declared input, type it, report what is wrong.
 
     Per declared input, the first value found wins: supplied (a supplied ``None`` is no
-    value) → shell environment → settings.env → declared default; with none, a required
-    input (``required`` defaults to true) is an error and an optional one is ``None``.
+    value) → shell environment → settings.env → declared default (``_fallback_value``; at a
+    sub-workflow boundary a required input with no default takes no fallback); with none, a
+    required input (``required`` defaults to true) is an error and an optional one is ``None``.
     Every value found is typed by ``coerce_declared_input`` with its source — supplied
     values take theirs from ``input_sources`` (absent key: ``"argument"``). ``resumed_run``
     is the id of the run whose recorded inputs are being replayed, named in a ``recorded``

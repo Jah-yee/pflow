@@ -451,7 +451,7 @@ In JavaScript passed to an MCP tool (`evaluate_script`'s `function` and the like
 - Invalid JSON gracefully stays a string
 
 **What is never parsed** (the value arrives as it is):
-- A workflow input with a declared type other than `any` — `${input}` is exactly what its `## Inputs` type made it, at every step. JSON text inside a declared input stays text, so `${input.field}` cannot reach into it (declare `- type: object` instead). An `any` or untyped input is parsed like a step output.
+- A workflow input with a declared type other than `any` — `${input}` is exactly what its `## Inputs` type made it, at every step. JSON text inside a declared input stays text, so `${input.field}` cannot reach into it (declare `- type: object` instead). A step's `inputs:` key or a batch alias bound to one whole reference to such an input (`doc: ${input}`, `items: ${input}`) keeps that protection; a binding with `??` or text around the reference is parsed like a step output. An `any` or untyped input is parsed like a step output.
 - A code `inputs:` key annotated `str` (or `str | None`), a shell `env:` value, an http `headers` value, and a sub-workflow step's `inputs:` — the child types each value by its own `## Inputs`
 
 **Concrete examples** (inline object context):

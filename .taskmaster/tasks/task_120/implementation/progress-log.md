@@ -1178,3 +1178,154 @@ resume path for any successor.
 - Pending coordination: lane #783 re-records `12/04-guide-auto-detect` + fixes `verify.sh`; if it lands before my next
   merge, re-run `regenerate.sh` on that case after merging so this branch's guide re-record wins.
 - Next: fresh Opus · high I5 for PG (+ its targeted re-review as gate-runner).
+
+## [2026-10-11 17:19] I5 (Opus) — PG (D15 W1 binding provenance, D16 H1 required child inputs, D17 #790 fresh defaults) · ENGINE CONTACT · + its targeted re-review as gate-runner
+- Did, per decision:
+  - **D15.** One pure rule in `core/templates.py` beside `DECLARED_INPUT_TYPES_KEY`: `bound_reference` (the authored
+    value IS one whole single-operand, non-`|json` Expression), `bound_declaration(authored, declared)` (whole root →
+    the root's map entry; a path → `PROTECTION_ONLY = "protection-only"`, a map VALUE, one constant, no second key;
+    anything else → `None`, local), `batch_item_declaration(items_template, index, declared)` (inline element by its
+    own text; any item of a whole reference → `PROTECTION_ONLY`), `bind_declared(store, entries)` (rebinds names in a
+    step's/item's own copy; `None` removes). Runtime: `template_resolution._bind_locally(context, authored)` at BOTH
+    merge points (static inputs → all literal → local; resolved `inputs:` → per key from `template[k]`, which under a
+    loop is the carry template from round 2 because `carry_effective_config` rewrites `template_params` — so the
+    loop-carry mechanism needs nothing extra; whole-map `inputs: ${m}` → every key local, as before);
+    `batch_executor.bind_batch_item(item_store, parent_store, batch_config, item, index)` (alias + `__index__` + the
+    alias entry computed against the PARENT's map, i.e. where `batch.items` resolved) at the compile prewarm and the
+    per-attempt site; the planner's three per-item contexts (item 0, per-item `inputs:`, child-per-item) call it on a
+    copy of the planner store (the old set-then-pop on the shared store is gone). Validator mirror:
+    `declared_inputs.declared_root(...) -> (type, inputs) | None` (renamed from `declared_root_type`; CLAUDE.md rows
+    updated) over `_declared_scope`: workflow inputs, the alias bound first, a step's `inputs:` keys for its other
+    params, a carried key only when round 1 and the carry template agree, an inline alias only when every element's
+    entry agrees (`_agree`); `PROTECTION_ONLY` → `None`. `_declared_reads` emits one error per input behind a name;
+    `type_validation._declared_text_into_container` reads the same helper. Messages name the input through the
+    binding: `Input 'v' (as 'doc') is declared …` / fix `… if 'v' holds …`, context `input: v`.
+    Analyzer synthetic contexts (`prompt_cache_analysis/context.py:178`, `token_estimation.py:483`): **no mirror** —
+    they resolve only declared-input roots (parameters) and node ids (memo) (`resolve_ref_value`, `context.py:255-283`;
+    `build_shared_store_for_refs`), never a step's `inputs:` key or a batch alias (the alias is only a per-item
+    position marker there). The VC lens concurred.
+  - **D16.** `ir_preparation._fallback_value(…, caller)`: at the child placement (`caller.step`) a `required` input
+    whose default is absent or `null` takes no fallback → the child-named "requires input" error, with the remedy
+    `Pass it under step 'call' \`inputs:\` (a required sub-workflow input is never read from the environment or
+    settings)` (`_Caller.required_fix`; root unchanged, no suggestion there). Validator `_check_required_inputs` now
+    reads `default: null` as no default (`get("default") is not None`, the boundary's rule) — static == run time.
+  - **D17.** `_fallback_value` returns `copy.deepcopy` of a declared default. Grep of `"default"` reads in the boundary
+    and validator paths: `_fallback_value` is the only site that hands a default to a run (`validator._check_input_defaults`,
+    `path_validation`, describe/graph formatters only read it).
+- Docs: the ONE sentence in `guide/core.md`, both MCP instruction copies (identical): "A step's `inputs:` key or a batch
+  alias bound to one whole reference to such an input (`doc: ${input}`, `items: ${input}`) keeps that protection; a
+  binding with `??` or text around the reference is parsed like a step output." D16 in `guide/features/sub-workflows.md`.
+  CLAUDE.md: `runtime/engine`, `core`, `core/workflow`, `runtime`, `runtime/compilation`, `runtime/template_validation`.
+  `docs/how-it-works/template-variables.mdx:125` left (still true: it speaks of a reference rooted in an input).
+  Task-159 `verify.sh`: 1 drift, only `12/04-guide-auto-detect`, only my sub-workflows line → re-recorded with
+  `run-case.sh … --write` (+1 line); re-run **87/0/0**.
+- Changed: `core/{templates.py,workflow/declared_inputs.py,workflow/validator.py}`, `runtime/engine/{template_resolution,
+  batch_executor,template_errors}.py`, `runtime/compilation/ir_preparation.py`, `runtime/template_validation/type_validation.py`,
+  `execution/plan.py`, guide ×2 + MCP ×2, 6 CLAUDE.md, Task-159 case `12/04` expected-stdout; tests:
+  `test_runtime/test_declared_input_resolution.py`, `test_runtime/test_template_validation/test_declared_input_rules.py`,
+  `test_integration/test_template_parity.py` (+7 rows; `_drive_batch_param` now builds the item store with
+  `bind_batch_item`), `test_execution/test_plan_drift.py`, `test_runtime/test_workflow_executor/test_child_input_boundary.py`.
+- Tests flipped: **none** — no existing test asserted env/settings satisfying a required child input (full suite green
+  after D16; grep of env-using child tests found only root/defaulted cases), and no test pinned W1's parse. Touched, not
+  flipped: `test_plan_and_engine_hand_a_batched_child_the_same_text_inputs` (engine side now builds its item store with
+  `bind_batch_item` instead of a hand-made dict). New: `TestABindingKeepsItsInputsProtection` (6 binding shapes +
+  same-named), `test_a_batch_alias_is_protected_by_where_its_items_came_from` (seq/par), `test_a_protected_item_into_a_
+  container_param_says_where_the_text_came_from`, `test_a_carried_key_is_protected_in_round_one_and_local_once_carried`,
+  `test_the_parallel_compile_prewarm_reads_item_zero_as_the_run_does`; `TestABindingCarriesTheDeclaration` (6);
+  parity rows `bound_declared_string_field`, `bound_declared_object_descendant`, `bound_node_output_is_local`,
+  `bound_coalesce_is_local`, `alias_of_a_declared_array`, `alias_of_a_declared_array_path`, `alias_inline_follows_each_element`;
+  drift `test_plan_and_run_refuse_a_walk_into_a_batch_items_declared_text` (×4), `test_plan_keeps_every_item_of_a_child_
+  per_item_batch_when_one_cannot_resolve`, `test_plan_reports_every_item_when_no_child_per_item_survives`; D16 ×6
+  (incl. `default: null` both verdicts), D17 seq/par.
+- **Mutation ledger** (`pg/mutate.py` = G1's harness: content restore, `PYTHONDONTWRITEBYTECODE=1`, every `__pycache__`
+  purged before/after, kill = counted failures; `pg/mutants*.json|txt`): **33 killed / 0 surviving**. P1-P20 (D15: drop
+  provenance, second merge, path→type, `??` inherits, alias whole/inline, `bind_batch_item` map, per-attempt site, prewarm
+  site, the 3 planner sites, protection-only message, validator unanimity/carry/inputs-param/naming/alias/container),
+  D16a-f, D17, Z1-Z3 (planner zip/report), R1-R4 (review fixes). First pass had 4 survivors → each resolved: P9 (parallel
+  worker binding) was redundant with the per-attempt binding → **deleted the redundant site**; P10 (prewarm) → new test
+  where the prewarm would compile a child the run never calls; P11/P13 → sharpened drift assertions per mode.
+- **Re-review** (pflow fan-out, codex, 2 lenses with per-lens targets `pg/lenses.json`, scope `git diff 151d703a`
+  incl. uncommitted; run under an isolated HOME + isolated `CODEX_HOME` symlinked to the auth/config; report
+  `pg/review.md`, read in full; **coverage 2/2**, 290 s):
+
+  | # | Lens · sev | Finding (verified) | Disposition |
+  |---|---|---|---|
+  | C1 | VC · C | Inline alias `["${s}", "${t}"]` (both `string`): validator dropped the alias (unanimity compared input AND type), run protects each item → `${item.a}` certain miss, validator silent (read `_item_binding`; my own test encoded it) | **Fixed — class: the mirror is certain exactly when every case shares one ENTRY, whatever inputs supply it** (`_agree` keys on the entry, keeps every input; `_declared_reads` emits one error per input, each certain for its items; carry agreement uses the same `_agree`). Test rewritten (`…_of_one_type_is_checked_for_each_input`: two errors s/t; `${s}`+`${n}` none; literal none). R1-R3 killed. |
+  | C2 | FI · C | Batch memo key = config + items only, so a declaration change (`rows: any`→`array`) serves the stale per-item result | **Handed back — #675's class.** Executed: on the PRE-PG source a batched `y: ${s}` with `s: any`→`string` already serves stale `dict` (`pg/w/memo2.pflow.md`), and a VALUE change of `s` is stale too (#675 itself). PG adds the alias as one more read the key misses. #675's closing mechanism ("the key covers every resolved input the item execution reads") closes it; it changes every batch node's memo key, so not in PG. Note for #675: Task 120 (PC, and now D15) made a DECLARATION change alter item semantics — a new dimension of that issue. |
+  | W1 | FI · W | All items of a child-per-item batch rejected → empty roll-up drops every per-item diagnostic (my zip fix had turned a crash into silence) | **Fixed — class: every per-item planner rejection reaches the plan, whether or not a child plan survives** (`_aggregate_batch_child_plans` empty branch keeps `extra_diagnostics`). Test + R4 killed. |
+  | Clean | both | Whole-root/path/`??`/text-around/same-named/carry/whole-map/D16/D17/analyzer scope/nested isolation/seq-par-retry-prewarm/output readers | Recorded clean by the lenses (read-only; they executed nothing — my tests/probes cover execution). Lens "testing limitations": retries and resumed loops have no PG-specific test — by construction (`_run_batch_item_once` rebinds from the parent map every attempt; a resumed loop resolves through `carry_effective_config` at its saved iteration, read `loop_control.py:96-119`); no discriminating test exists to add. |
+- **W1 probes** (`falsifier/p.sh`, isolated HOME; `pg/w1-before.txt` → `pg/probes-final.txt`): `alias3` — `each` and
+  `direct` now both fail `Input 'x' expects dict but received str` (before: `each` parsed); `agent2` — validate-only
+  `Input 'v' (as 'doc') is declared \`- type: string\`, so \`${doc.a}\` cannot read a field of it…` (before ✓ + `doc.a=1`),
+  and the resolver leaves `${doc.a}` unresolved (`TestABindingKeepsItsInputsProtection`); `agent` (same-named) refused;
+  `alias2` `${item.payload.a ?? "fb"}` now fails like `alias`'s `${rows[0].payload.a ?? "fb"}` (before: `item=1`);
+  `pmut` → `seen` 1,1,1 + again 1 (before 1,2,3); D16 run-time child with `n` exported → each item refused with the
+  remedy, static twin refused at validation.
+- **Scans**: G1's `scan_w1.py` on the built code — byte-identical to `gate2/scan_w1.txt` (168 rebindings, static).
+  New `pg/scan_w1_impact.py` (the BUILT `bound_declaration`/`batch_item_declaration`): 169 inheriting bindings, 20 reads
+  of a bound name — 11 `${item.text}` over arrays of objects (verify.sh feeds `{"text": …}` objects; a field of a dict,
+  no parse), 1 `${item}` into a workflow step's `inputs:` (always text), 8 `cwd: ${repo_dir}` (a `str` param, never
+  parsed) → **0 behaviour changes**. New `pg/scan_w1_validate.py`: `--validate`-equivalent over all 186 in-tree
+  workflows, built vs pre-PG source (`git archive 151d703a` on `PYTHONPATH`, isolated HOME) → **identical** (326 lines),
+  re-run after the review fixes → identical.
+- Verified: baseline `make test` 11478 passed (orchestrator); after: `make check` rc 0; `make test` **11528 passed /
+  0 failed** (before test-reflect; test-reflect then deleted 1 test and deepened 1 — both files re-run green, 108
+  passed; full suite NOT re-run after, see the HOME note); `verify.sh` 87/0/0; mutation 33/33.  |  Assumed: nothing
+  open — analyzer scope, retries and resumed loops verified by reading (cited above).
+- **REAL-HOME WRITE — STOP/hand-back item:** `~/.pflow/registry.json` was rewritten at **17:14:53** with THIS worktree's
+  node paths, inside my final `make test` window (17:14:44–17:15:28). Nothing I ran pointed pflow at the real HOME
+  (probes via `p.sh`, scans/fan-out with `HOME=` set, the fan-out's own trace landed in `pg/home`); the global `pflow`
+  alias uses the MAIN checkout, so a worktree-path registry implies a process importing this worktree under the real
+  HOME — most likely a non-e2e test that spawns a fresh interpreter without HOME isolation (lead, read only:
+  `tests/test_cli/test_ui.py:1205` runs `python -c "import pflow.cli.commands.ui"` with the inherited env; conftest
+  patches `Registry`'s default path in-process only). Not attributed by experiment — I did not re-run `make test` to
+  avoid writing again. Other sessions (loudkult `act`/`screenshot`/… traces) also write `~/.pflow/debug` concurrently.
+- Deviations/surprises: (1) **Validator messages name the input through a binding** (`Input 'v' (as 'doc')`, fix and
+  `context.input` = `v`) — §10 said "the existing rules then fire"; firing with the binding's name would tell an agent
+  to declare a type on an input that does not exist. New user-visible text → needs your ruling (show-before-code).
+  (2) **A protection-only runtime type error has its own message**: `Parameter 'output_schema' expects dict but
+  ${item} is text taken from a declared input — a declared input is never JSON-parsed.` + the text remedies — the
+  existing one would print `declared \`- type: protection-only\`` and "declare object for 'item'". Same ruling.
+  A canonical-type binding at run time still reads "reads input 'doc', declared `- type: string`" — reachable only past
+  the validator's (c) rule, so left. (3) `declared_root_type` → `declared_root` returning `(type, inputs)`.
+  (4) `_check_required_inputs`: `default: null` is no default (closes a static/run mismatch inside D16's class).
+  (5) **Planner, pre-existing on `origin/main` (read): a child-per-item batch with any item failing its params crashed
+  `--dry-run` (`zip() … shorter`)** — exposed by the D15 drift test; fixed (empty output slot per skipped item; a
+  skipped child's problem becomes a per-item WARNING; the empty roll-up keeps diagnostics — W1). (6) The parallel batch
+  worker's own alias assignment removed (redundant with the per-attempt binding). (7) C2 → #675 (above).
+- Self-checks: fully-happy — doubts raised and resolved: the inline alias unanimity was wrong (C1, fixed); the zip fix
+  briefly silenced an all-rejected batch (W1, fixed); two planner/prewarm sites were unpinned (now pinned). Remaining
+  doubt: the real-HOME registry write (handed back). test-reflect (directed): **deleted**
+  `test_a_bound_whole_read_is_the_inputs_text` (a `str` prompt is never parsed with or without D15 — it could not
+  fail); **deepened** `test_a_binding_that_carries_no_type_is_not_checked` (presence half: the same `${doc[0]}` read
+  through a typed binding errors); labelled `test_a_named_child_refuses_the_same_omission_statically` a regression
+  guard (passes on pre-PG code; the static verdict §10 asked to keep pinned). Every other new test is mutation-killed.
+- Next: hand back — rulings on deviations (1)(2); the real-HOME write; C2/#675 routing; ADR-0017 line in the handback.
+
+## [2026-10-12 02:30] task-orchestrator — PARKED: real-HOME write reported by I5 (packet stop condition); PG committed unverified-by-me
+- Did: read I5's [17:19] entry; committed PG as-is (D15 W1 binding provenance, D16 H1, D17 #790, re-review fixes C1/W1,
+  guide sentence + the one-case re-record of `12/04-guide-auto-detect`) so nothing is lost while parked. I did NOT re-run
+  `make test` (it is the suspected writer). `origin/main` NOT yet merged (#783 `e0f3af7d` pending — acknowledged: after
+  merging, re-run `regenerate.sh` on `12/04-guide-auto-detect` so this branch's guide text wins on top of #784's
+  recording, run the fixed `verify.sh` once, and name both causes in the PR body).
+- Stop condition (packet §Claims 3): I5 observed `~/.pflow/registry.json` (REAL home) rewritten at 17:14:53 with THIS
+  worktree's paths inside its final `make test` window (17:14:44–17:15:28). Every probe of I5 ran under an isolated HOME;
+  its fan-out ran with a separate HOME/CODEX_HOME. Read by me (not executed): I5's lead
+  `tests/test_cli/test_ui.py:1203-1207` (`TestLazyImportBoundary`, pre-existing since `0b246c3d` Task 94, not in this
+  diff) runs `subprocess.run([sys.executable, "-c", "import … pflow.cli.commands.ui"])` with the inherited environment —
+  whether that environment carries the isolated HOME, and whether the import writes the registry, is UNVERIFIED.
+  Current `ls -la ~/.pflow/registry.json` → mtime **17:19** (after I5's window — another writer exists too; G1 saw a
+  15:11 rewrite with MAIN-checkout paths, "another session"). Earlier fan-outs (mid-reviews #1/#2, G1) ran `uv run pflow
+  workflows/review/run-review-lenses.pflow.md` under the real HOME by the skill's design — any such run rescans/rewrites
+  the registry with the running checkout's paths.
+- Also asked: C2 (batch memo key covers items only — #675; Task 120 adds a trigger: a declaration change alters what each
+  item receives) — rec: leave to #675, append Task 120's trigger as evidence; two new message shapes (validator names the
+  source input through the binding `Input 'v' (as 'doc') is declared …`; protected item/path binding into a container
+  param `… but ${item} is text taken from a declared input …`) — rec accept; two out-of-§10 changes accepted at 2/5
+  (pre-existing `--dry-run` crash on a per-item child batch fixed; validator treats `default: null` as no default —
+  static == run-time).
+- Exact resume point: on the ruling about the real-HOME write — (1) if a test is the writer: fix it in this PR only if
+  ruled (it is pre-existing), else proceed; (2) merge `origin/main` (#783), regenerate `12/04`, `make check` +
+  `make test` + `make test-all-local`, fixed `verify.sh` (all 87 ran), `capture.py --check` vs P0's 5; (3) spec Status
+  done + Completed; `create-task-review`; `create-pr` closing #686 #687 #188 #790 (Refs #297 #742 #743); check
+  `closingIssuesReferences`; `gh pr checks` incl. `tests-windows`.

@@ -1949,7 +1949,7 @@ class WorkflowValidator:
         # Missing-required direction.
         for input_name, input_spec in child_inputs.items():
             is_required = input_spec.get("required", True)
-            has_default = "default" in input_spec
+            has_default = input_spec.get("default") is not None  # `default: null` is no value (prepare_inputs)
             if is_required and not has_default and input_name not in supplied_keys:
                 sorted_inputs = sorted(child_inputs.keys())
                 diagnostics.append(

@@ -8,6 +8,7 @@ real run, with the store carrying the compiled ``input_types`` as the engine ins
 """
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, ClassVar
@@ -758,3 +759,301 @@ def test_planner_prompt_cache_setup_sees_the_declarations(monkeypatch: pytest.Mo
     )
     plan_module.create_planner_shared(compiled, {"s": "x"}, MemoizationCache(db_path=tmp_path / "c.db"), None)
     assert [dict(m) for m in seen] == [{"s": "string"}]
+
+
+# ── A name bound to a declared input keeps its protection (D15, W1) ─────────────────────────────
+
+
+def _sibling_read(binding: str, read: str, inputs: dict[str, Any], params: dict[str, Any], key: str = "doc") -> Any:
+    """Resolve an agent step whose own ``inputs: {<key>: <binding>}`` a sibling param (``prompt``) then reads
+    as ``read`` — the engine's per-step resolution; ``"<unresolved>"`` when strict mode refuses it. The
+    compiler refuses a read certain to miss before anything runs (the validator's twin, pinned there), so the
+    step compiles with a whole read and resolves ``read`` — what the resolver would do past that check."""
+    node = {"id": "ask", "type": "agent", "params": {"inputs": {key: binding}, "prompt": f"${{{key}}}"}}
+    compiled = compile_workflow(_ir([node], inputs), Registry(), dict(params))
+    config = compiled.node_configs["ask"].template_config
+    assert config is not None
+    config = replace(config, template_params={**config.template_params, "prompt": read})
+    shared = {**params, **UPSTREAM, DECLARED_INPUT_TYPES_KEY: MappingProxyType(compiled.input_types)}
+    try:
+        return resolve_templates(config, shared, "ask")[0]["prompt"]
+    except ValueError as exc:
+        assert getattr(exc, "_pflow_template_diagnostic", None) is not None, exc
+        return "<unresolved>"
+
+
+class TestABindingKeepsItsInputsProtection:
+    """A step ``inputs:`` key whose AUTHORED value is one whole reference to a declared input is that input for
+    the step's other params — its text is never re-parsed, whatever name reads it. Anything else is local."""
+
+    STRING: ClassVar[dict[str, Any]] = {"v": {"type": "string"}}
+    OBJECT: ClassVar[dict[str, Any]] = {"d": {"type": "object"}}
+
+    @pytest.mark.parametrize(
+        ("binding", "inputs", "params", "expected"),
+        [
+            pytest.param("${v}", STRING, {"v": JSON_TEXT}, "<unresolved>", id="whole-input"),
+            pytest.param("${d.payload}", OBJECT, {"d": {"payload": JSON_TEXT}}, "<unresolved>", id="text-inside-one"),
+            pytest.param("${v}", {"v": {"type": "any"}}, {"v": JSON_TEXT}, "a=1", id="presence-any-parses"),
+            pytest.param("${up.stdout}", STRING, {"v": JSON_TEXT}, "a=1", id="presence-node-output-is-local"),
+            pytest.param("${v ?? up.stdout}", STRING, {"v": JSON_TEXT}, "a=1", id="a-coalesce-is-local"),
+            pytest.param('{"a": ${n}}', {"n": {"type": "integer"}}, {"n": 1}, "a=1", id="text-around-is-local"),
+        ],
+    )
+    def test_a_sibling_reads_through_the_binding(
+        self, binding: str, inputs: dict[str, Any], params: dict[str, Any], expected: str
+    ) -> None:
+        assert _sibling_read(binding, "a=${doc.a}", inputs, params) == expected
+
+    def test_a_same_named_binding_is_the_input(self) -> None:
+        """`inputs: {v: ${v}}` then `${v.a}` — the falsifier's `agent.pflow.md`."""
+        assert _sibling_read("${v}", "a=${v.a}", self.STRING, {"v": JSON_TEXT}, key="v") == "<unresolved>"
+        assert _sibling_read("${up.stdout}", "a=${v.a}", self.STRING, {"v": JSON_TEXT}, key="v") == "a=1"
+
+
+ALIASES = """# Aliases
+
+Items taken from declared inputs, per element, and from a step's output.
+
+## Inputs
+
+### rows
+
+JSON texts.
+
+- type: array
+
+### s
+
+JSON text.
+
+- type: string
+
+## Steps
+
+### emit
+
+Print a JSON list of JSON texts.
+
+- type: shell
+
+```shell command
+printf '%s' '["{\\"a\\":1}"]'
+```
+
+### over-input
+
+Each item of a declared array.
+
+- type: code
+- inputs:
+    x: ${item}
+- batch:
+    items: ${rows}
+    parallel: @PARALLEL@
+
+```python code
+from typing import Any
+x: Any
+
+result: str = type(x).__name__
+```
+
+### inline
+
+An inline list: a declared input, then a node output.
+
+- type: code
+- inputs:
+    x: ${item}
+- batch:
+    items: ["${s}", "${emit.stdout[0]}"]
+    parallel: @PARALLEL@
+
+```python code
+from typing import Any
+x: Any
+
+result: str = type(x).__name__
+```
+
+### over-output
+
+Each item of a node output's list.
+
+- type: code
+- inputs:
+    x: ${item}
+- batch:
+    items: ${emit.stdout}
+    parallel: @PARALLEL@
+
+```python code
+from typing import Any
+x: Any
+
+result: str = type(x).__name__
+```
+
+## Outputs
+
+### kinds
+
+Per step.
+
+- source: ${over-input.results}
+"""
+
+
+@pytest.mark.parametrize("parallel", ["false", "true"])
+def test_a_batch_alias_is_protected_by_where_its_items_came_from(tmp_path: Path, parallel: str) -> None:
+    """The falsifier's `alias3`: an item of a declared array is the input's text (as `${rows[0]}` is); an inline
+    element follows its own authored text; an item of a node output keeps today's parse (the presence half)."""
+    result = _run(
+        _write(tmp_path / "a.pflow.md", ALIASES.replace("@PARALLEL@", parallel)), {"rows": [JSON_TEXT], "s": JSON_TEXT}
+    )
+    kinds = {
+        step: [r["result"] for r in result.shared_after[step]["results"]]
+        for step in ("over-input", "inline", "over-output")
+    }
+    assert kinds == {"over-input": ["str"], "inline": ["str", "dict"], "over-output": ["dict"]}
+
+
+def test_a_protected_item_into_a_container_param_says_where_the_text_came_from() -> None:
+    """A protection-only name has no declaration of its own to name: the message says the text came from a declared
+    input and offers the text remedies — never "declare `- type: object` for 'item'"."""
+    from pflow.runtime.engine.batch_executor import bind_batch_item
+
+    node = {
+        "id": "ask",
+        "type": "agent",
+        "params": {"prompt": "go", "output_schema": "${item}"},
+        "batch": {"items": "${rows}"},
+    }
+    compiled = compile_workflow(_ir([node], {"rows": {"type": "array"}}), Registry(), {"rows": [JSON_TEXT]})
+    config = compiled.node_configs["ask"]
+    assert config.template_config is not None and config.batch_config is not None
+    shared = {"rows": [JSON_TEXT], DECLARED_INPUT_TYPES_KEY: MappingProxyType(compiled.input_types)}
+    item_shared = dict(shared)
+    bind_batch_item(item_shared, shared, config.batch_config, JSON_TEXT, 0)
+    with pytest.raises(ValueError) as info:
+        resolve_templates(config.template_config, item_shared, "ask")
+    assert str(info.value) == (
+        "Parameter 'output_schema' expects dict but ${item} is text taken from a declared input — a declared input "
+        "is never JSON-parsed.\n\n"
+        "Fix: Nest the object in the input, or parse the text in a code step (`json.loads(text)`)."
+    )
+
+
+LOOP = """# Loop
+
+Carry a step's output into a key whose first round reads a declared input.
+
+## Inputs
+
+### data
+
+Text.
+
+- type: string
+
+## Steps
+
+### walk
+
+Read field a of the carried key, then report whether to go on.
+
+- type: shell
+- inputs:
+    doc: ${data}
+- env:
+    X: ${doc.a ?? "fb"}
+- loop:
+    carry:
+      doc: ${walk.stdout}
+    while: ${walk.stdout.more}
+    max_iterations: 2
+
+```shell command
+if [ "$X" = "fb" ]; then printf '{"a": 5, "more": true}'; else printf '{"a": 6, "more": false, "x": "%s"}' "$X"; fi
+```
+
+## Outputs
+
+### out
+
+The last round.
+
+- source: ${walk.stdout}
+"""
+
+
+def test_a_carried_key_is_protected_in_round_one_and_local_once_carried(tmp_path: Path) -> None:
+    """Round 1 binds `doc` to `${data}`: plain text has no field (the fallback), JSON text is never walked into (a
+    failure, not the fallback). Round 2 binds it to `${walk.stdout}`, a node output: walked as JSON (`x` is 5)."""
+    wf = _write(tmp_path / "loop.pflow.md", LOOP)
+    carried = _run(wf, {"data": "plain"})
+    assert json.loads(carried.shared_after["walk"]["stdout"]) == {"a": 6, "more": False, "x": "5"}
+
+    protected = WorkflowRunner().run(str(wf), {"data": JSON_TEXT}, RunnerConfig(trace_enabled=False))
+    assert not protected.success
+    assert any("'doc' is text" in format_diagnostic(d) for d in protected.diagnostics)
+
+
+PREWARMED = """# Prewarmed
+
+A parallel batch of children named inside each row.
+
+## Inputs
+
+### rows
+
+Rows naming a child.
+
+- type: array
+
+## Steps
+
+### call
+
+Call the child each row names.
+
+- type: workflow
+- workflow: ${item.p.wf}
+- batch:
+    items: ${rows}
+    parallel: true
+    error_handling: continue
+"""
+
+SIMPLE_CHILD = """# Child
+
+Say ok.
+
+## Steps
+
+### say
+
+Say it.
+
+- type: shell
+
+```shell command
+printf ok
+```
+"""
+
+
+def test_the_parallel_compile_prewarm_reads_item_zero_as_the_run_does(tmp_path: Path) -> None:
+    """Item 0 names its child inside a declared input's JSON text, which the run never walks into: the prewarm
+    (item 0's compile, ahead of the parallel run) must not either — or it compiles a child the run never calls,
+    and that child's compile error fails the whole batch instead of item 0 alone."""
+    _write(tmp_path / "child.pflow.md", SIMPLE_CHILD)
+    _write(tmp_path / "broken.pflow.md", SIMPLE_CHILD.replace("- type: shell", "- type: no-such-node"))
+    rows = [{"p": json.dumps({"wf": "./broken.pflow.md"})}, {"p": {"wf": "./child.pflow.md"}}]
+    result = WorkflowRunner().run(
+        str(_write(tmp_path / "parent.pflow.md", PREWARMED)), {"rows": rows}, RunnerConfig(trace_enabled=False)
+    )
+    (record,) = result.shared_after["call"]["errors"]
+    assert record["index"] == 0 and "'item.p' is text" in record["error"]
+    assert [r["say"]["stdout"] for r in result.shared_after["call"]["results"] if r] == ["ok"]

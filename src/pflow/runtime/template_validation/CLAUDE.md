@@ -145,5 +145,5 @@ rule are NOT here: they live in `core/workflow/declared_inputs.py`, run by
 `validate_data_flow`, because the compiler must enforce them too (a child chosen at run
 time is only compiled, and those misses are silent at run time). This package's one rule
 is the container check (Passes 6, 9): keyed on the reference's ROOT through
-`declared_inputs.declared_root_type`, never on the matrix (whose `string` row is shared
+`declared_inputs.declared_root`, never on the matrix (whose `string` row is shared
 with code `result: str` and child outputs, which ARE parsed).

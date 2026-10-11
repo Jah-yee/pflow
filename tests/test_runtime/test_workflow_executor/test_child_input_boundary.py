@@ -641,3 +641,225 @@ def test_a_failure_two_levels_down_keeps_the_outer_provenance_when_step_ids_repe
         "In step 'call' sub-workflow: Step 'call' passes 'x' to input 'n' of ./child.pflow.md, declared "
         "`- type: integer`."
     ]
+
+
+# ── D16: a required child input with no default comes from the parent ─────────────────────────────
+
+RUN_TIME_PARENT = """# Parent
+
+Choose the child at run time; item 1 passes nothing.
+
+## Inputs
+
+### wf
+
+The child.
+
+- type: string
+
+## Steps
+
+### call
+
+Call the child per item.
+
+- type: workflow
+- workflow: ${wf}
+- inputs: ${item}
+- batch:
+    items: [{"n": "7"}, {}]
+    error_handling: continue
+    parallel: @PARALLEL@
+"""
+
+STATIC_PARENT = """# Parent
+
+Name the child; pass only its optional input.
+
+## Steps
+
+### call
+
+Call the child.
+
+- type: workflow
+- workflow: ./child.pflow.md
+- inputs:
+    limit: 4
+"""
+
+
+def _run_time_parent(tmp_path: Path, parallel: bool = False) -> Path:
+    path = tmp_path / "parent.pflow.md"
+    path.write_text(RUN_TIME_PARENT.replace("@PARALLEL@", str(parallel).lower()), encoding="utf-8")
+    return path
+
+
+def _run_with(parent: Path, params: dict[str, Any]) -> Any:
+    return WorkflowRunner().run(str(parent), params, RunnerConfig(trace_enabled=False, cache_enabled=False))
+
+
+@pytest.mark.parametrize("parallel", [False, True], ids=["sequential", "parallel"])
+def test_a_required_child_input_is_never_read_from_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parallel: bool
+) -> None:
+    """`n` is exported but a run-time-chosen child's required `n` (no default) must come from the parent: the
+    item that omits it is refused at the child boundary — routed, so `continue` fails only that item."""
+    child = _child(tmp_path)
+    monkeypatch.setenv("n", "5")
+
+    result = _run_with(_run_time_parent(tmp_path, parallel), {"wf": str(child)})
+
+    assert result.status == WorkflowStatus.DEGRADED, result.errors
+    assert _outputs(result) == {0: "7 3"}
+    (record,) = result.shared_after["call"]["errors"]
+    assert record["index"] == 1
+    assert record["error"].splitlines()[0] == f"{child} requires input 'n': A whole number."
+    (diagnostic,) = record["child_failure"]["diagnostics"]
+    assert diagnostic["context"]["path"] == "nodes[id=call].params.inputs.n"
+    assert diagnostic["suggestions"] == [
+        "Pass it under step 'call' `inputs:` (a required sub-workflow input is never read from the environment or "
+        "settings)"
+    ]
+
+
+def test_a_named_child_refuses_the_same_omission_statically(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The static twin: validation never reads the environment, so it refuses what the boundary refuses."""
+    _child(tmp_path)
+    monkeypatch.setenv("n", "5")
+    parent = tmp_path / "parent.pflow.md"
+    parent.write_text(STATIC_PARENT, encoding="utf-8")
+
+    errors = WorkflowRunner().validate(str(parent), {}).errors
+
+    assert [e.message for e in errors] == [
+        "Step 'call': sub-workflow './child.pflow.md' requires input 'n' but it is not provided."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("n_spec", "expected"),
+    [("- required: false", "5 3"), ("- default: 3", "5 3")],
+    ids=["optional", "defaulted"],
+)
+def test_an_optional_or_defaulted_child_input_still_takes_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, n_spec: str, expected: str
+) -> None:
+    """The presence half: only a required input with no default is the parent's alone (env → settings → default
+    otherwise, f₂)."""
+    child = _child(tmp_path, n_spec=n_spec)
+    monkeypatch.setenv("n", "5")
+
+    result = _run_with(_run_time_parent(tmp_path), {"wf": str(child)})
+
+    assert result.status == WorkflowStatus.SUCCESS, result.errors
+    assert _outputs(result) == {0: "7 3", 1: expected}
+
+
+def test_a_null_default_is_no_default_for_the_validator_and_the_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`- default: null` is no value (the boundary's rule), so a required input with it is the parent's to pass —
+    refused statically for a named child and at run time for a chosen one, whatever the environment holds."""
+    child = _child(tmp_path, n_spec="- default: null")
+    monkeypatch.setenv("n", "5")
+    static = tmp_path / "static.pflow.md"
+    static.write_text(STATIC_PARENT, encoding="utf-8")
+
+    static_errors = WorkflowRunner().validate(str(static), {}).errors
+    run_time = _run_with(_run_time_parent(tmp_path), {"wf": str(child)})
+
+    assert [e.message for e in static_errors] == [
+        "Step 'call': sub-workflow './child.pflow.md' requires input 'n' but it is not provided."
+    ]
+    (record,) = run_time.shared_after["call"]["errors"]
+    assert record["error"].splitlines()[0] == f"{child} requires input 'n': A whole number."
+
+
+# ── D17: a container default is fresh on every resolution ───────────────────────────────────────
+
+MUTATING_CHILD = """# Child
+
+Mutates its object input.
+
+## Inputs
+
+### o
+
+An object.
+
+- type: object
+- required: false
+- default: {"k": 1}
+
+## Steps
+
+### show
+
+Count a visit into the object, then show it.
+
+- type: code
+- inputs:
+    o: ${o}
+
+```python code
+o: dict
+
+o["seen"] = o.get("seen", 0) + 1
+result: str = str(o["seen"])
+```
+
+## Outputs
+
+### out
+
+Shown.
+
+- source: ${show.result}
+"""
+
+CALLS_IT = """# Parent
+
+Call the mutating child three times, then once more.
+
+## Steps
+
+### call
+
+Per item.
+
+- type: workflow
+- workflow: ./child.pflow.md
+- batch:
+    items: [1, 2, 3]
+    parallel: @PARALLEL@
+
+### again
+
+Once more.
+
+- type: workflow
+- workflow: ./child.pflow.md
+
+## Outputs
+
+### last
+
+The last call.
+
+- source: ${again.out}
+"""
+
+
+@pytest.mark.parametrize("parallel", [False, True], ids=["sequential", "parallel"])
+def test_every_call_gets_its_own_copy_of_a_container_default(tmp_path: Path, parallel: bool) -> None:
+    """#790: a child that mutates its `object` default never leaks into the next call (it saw 1, 2, 3)."""
+    (tmp_path / "child.pflow.md").write_text(MUTATING_CHILD, encoding="utf-8")
+    parent = tmp_path / "parent.pflow.md"
+    parent.write_text(CALLS_IT.replace("@PARALLEL@", str(parallel).lower()), encoding="utf-8")
+
+    result = _run_with(parent, {})
+
+    assert result.success, result.errors
+    assert sorted(_outputs(result).values()) == ["1", "1", "1"]
+    assert result.shared_after["again"]["out"] == "1"

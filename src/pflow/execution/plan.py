@@ -44,7 +44,7 @@ from pflow.core.workflow.sub_workflow_resolver import resolve_sub_workflow
 from pflow.execution.result import Plan, PlanEntry, PlanSummary, ResumePlanInfo
 from pflow.registry import Registry
 from pflow.runtime.cache import MemoizationCache
-from pflow.runtime.engine.batch_executor import build_batch_output, resolve_batch_items
+from pflow.runtime.engine.batch_executor import bind_batch_item, build_batch_output, resolve_batch_items
 from pflow.runtime.engine.engine import (
     RouteKind,
     assert_carried_inputs_resolved,
@@ -1546,10 +1546,10 @@ def _prepare_batch_sub_workflow_params(
         # about it like any other item.
         template_config = replace(template_config, resolution_mode="permissive")
     try:
-        shared[batch_config.item_alias] = items[0]
-        shared["__index__"] = 0
+        item_shared = dict(shared)
+        bind_batch_item(item_shared, shared, batch_config, items[0], 0)
         if template_config:
-            resolved_params, _, _ = resolve_templates(template_config, shared, config.node_id)
+            resolved_params, _, _ = resolve_templates(template_config, item_shared, config.node_id)
             merged = dict(getattr(curr, "params", {}) or {})
             merged.update(template_config.static_params or {})
             merged.update(resolved_params)
@@ -1560,9 +1560,6 @@ def _prepare_batch_sub_workflow_params(
             return _template_error_entry(config, exc)
         logger.warning("Batch sub-workflow template resolution failed: %s", exc)
         return _sub_workflow_error_entry(config.node_id, config.node_type_name, f"Template resolution failed: {exc}")
-    finally:
-        shared.pop(batch_config.item_alias, None)
-        shared.pop("__index__", None)
 
     raw_inputs = merged.get("inputs")
     if raw_inputs is not None and not isinstance(raw_inputs, dict):
@@ -1604,7 +1601,8 @@ def _resolve_per_item_sub_workflow_inputs(
     """
     resolved_inputs = default_inputs
     if raw_inputs_template is not None:
-        per_item_context = {**shared, batch_config.item_alias: item, "__index__": idx}
+        per_item_context = dict(shared)
+        bind_batch_item(per_item_context, shared, batch_config, item, idx)
         # As the engine resolves a workflow step's `inputs:` — never JSON-parsed (the child's own
         # `## Inputs` types each value), and a whole-map template must already be a dict.
         resolution = resolve(raw_inputs_template, per_item_context)
@@ -1741,10 +1739,10 @@ def _plan_heterogeneous_batch_items(
 
     for idx, item in enumerate(items):
         try:
-            shared[batch_config.item_alias] = item
-            shared["__index__"] = idx
+            item_shared = dict(shared)
+            bind_batch_item(item_shared, shared, batch_config, item, idx)
             if config.template_config:
-                resolved_params, _, _ = resolve_templates(config.template_config, shared, node_id)
+                resolved_params, _, _ = resolve_templates(config.template_config, item_shared, node_id)
                 merged: dict[str, Any] = dict(getattr(curr, "params", {}) or {})
                 merged.update(config.template_config.static_params or {})
                 merged.update(resolved_params)
@@ -1763,10 +1761,8 @@ def _plan_heterogeneous_batch_items(
                 )
             else:
                 logger.warning("Batch item %d template resolution failed: %s", idx, exc)
+            item_outputs.append({})  # the run rejects this item; its slot keeps the per-item output zip aligned
             continue
-        finally:
-            shared.pop(batch_config.item_alias, None)
-            shared.pop("__index__", None)
 
         child_inputs = dict(merged.get("inputs", {})) if isinstance(merged.get("inputs"), dict) else {}
         resolved_path_key = str(merged.get("workflow", ""))
@@ -1783,6 +1779,16 @@ def _plan_heterogeneous_batch_items(
                 per_item=True,
             )
             if isinstance(prepared_or_entry, PlanEntry):
+                if (problem := prepared_or_entry.diagnostic) is not None:
+                    per_item_diagnostics.append(
+                        replace(
+                            problem,
+                            severity=Severity.WARNING,
+                            message=f"Batch item {idx}: {problem.message} Runtime will reject this item.",
+                            context={**(problem.context or {}), "batch_item_index": idx},
+                        )
+                    )
+                item_outputs.append({})
                 continue
             compile_cache[resolved_path_key] = prepared_or_entry
 
@@ -1939,11 +1945,13 @@ def _aggregate_batch_child_plans(
     batch_parallel: bool,
     extra_diagnostics: list[Diagnostic] | None = None,
 ) -> Plan:
-    """Collapse N per-item child plans into one display/rollup plan."""
+    """Collapse N per-item child plans into one display/rollup plan — with every per-item
+    diagnostic, also when no item produced a child plan (each was rejected)."""
     if not child_plans:
         return Plan(
             workflow="<sub-workflow>",
             entries=[],
+            diagnostics=list(extra_diagnostics or []),
             summary=PlanSummary(
                 total=0,
                 cached_count=0,

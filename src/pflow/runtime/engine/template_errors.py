@@ -22,6 +22,7 @@ from pflow.core.diagnostic_render import written_reference
 from pflow.core.exceptions import declared_text_fix, shown_declared_text
 from pflow.core.templates import (
     LIST_TYPES,
+    PROTECTION_ONLY,
     DynamicIndex,
     Field,
     Reference,
@@ -103,6 +104,12 @@ def build_declared_text_error_message(
     (``${v}``) is fixed by its declaration; text INSIDE an input (``${d.payload}``) is not —
     its declaration already admits the container — so the fix names nesting or parsing."""
     reference, declared_type = read
+    if declared_type == PROTECTION_ONLY:  # a name bound to text inside a declared input: no declaration to name
+        return (
+            f"Parameter '{param_key}' expects {expected_type} but {template_str} is text taken from a declared "
+            f"input — a declared input is never JSON-parsed.\n\n"
+            f"Fix: {declared_text_fix(reference.raw, shown_declared_text(reference.raw, text))}"
+        )
     if reference.path:
         shown = shown_declared_text(reference.raw, text)
         return (

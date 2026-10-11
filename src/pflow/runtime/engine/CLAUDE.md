@@ -84,8 +84,11 @@ consumer table `_CONSUMER_TYPES_LEAVES` (`shell.env`, `http.headers`, a workflow
 step's `inputs:`) keyed on `TemplateConfig.node_type`, plus a code `inputs:` key
 annotated text (`TemplateConfig.text_input_keys`). The source-side rule — a
 declared input is never re-parsed — is the resolver's own, read from the store key
-`DECLARED_INPUT_TYPES_KEY`; `_bind_locally` drops a root from that map where the
-step's own `inputs:` key becomes the active binding (the two context merge points). A code body
+`DECLARED_INPUT_TYPES_KEY`. A name bound to a declared input keeps its protection
+(`templates.bound_declaration`, from the AUTHORED template — a loop's carry template
+from round 2): `_bind_locally` sets each step `inputs:` key's entry at the two context
+merge points, `batch_executor.bind_batch_item` the alias's in every per-item store (the
+planner calls it too); a binding that inherits nothing leaves the map. A code body
 (`param_mode` → `"body"`) is static whatever it holds: `split_params` decides it
 before `has_templates`, so callers must pass `node_type`. Embedded code (`"embedded"`)
 is static unless it holds a JSON insert, and resolves with `embedded=True`: only inserts

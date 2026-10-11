@@ -77,7 +77,8 @@ entry is `engine/plan_node.py::plan_node`, using
 accepted host parameters. `type_child_inputs` is the child's input boundary,
 called in `prep` for EVERY call (each batch item): the parent's unparsed values
 typed by the child's `## Inputs`, absent inputs resolved env → settings →
-default — so a compile cached from item 0 never stands in for item N's values.
+default (a required input with no default only from the parent; a container
+default copied per call) — so a compile cached from item 0 never stands in for item N's values.
 Its `WorkflowValidationError` is prep-recoverable (routable), and its
 Diagnostics ride the `child_failure` bundle's `diagnostics` list (a pre-120
 trace's `template_diagnostic` is still read). The dry-run planner calls the same

@@ -9,7 +9,7 @@ from typing import Any
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.templates import CONTAINER_TYPES, LIST_TYPES, Reference, TemplateResolver, is_type_compatible, parse
 from pflow.core.types import outer_base_type
-from pflow.core.workflow.declared_inputs import declared_root_type
+from pflow.core.workflow.declared_inputs import declared_root, input_as
 from pflow.core.workflow.template_surfaces import param_mode, template_params
 from pflow.registry import Registry
 from pflow.runtime.template_validation.type_checker import get_parameter_type, infer_template_type
@@ -152,20 +152,23 @@ def _declared_text_into_container(
     path: str,
     text_fix: str = "",
 ) -> list[Diagnostic]:
-    """An ERROR per whole-root operand of the simple template ``value`` bound to a declared
-    ``string`` input: the resolver hands its text on unparsed, so a container target fails at
+    """An ERROR per whole-root operand of the simple template ``value`` that is a declared
+    ``string`` input or a name bound to one (``declared_root``): the resolver hands its text on
+    unparsed, so a container target fails at
     run time. The type matrix cannot see it — its ``string`` row (shared with code
     ``result: str`` and child outputs) lets text into containers because those ARE parsed."""
     template = parse(value)
     if not template.is_simple:
         return []
-    roots = [
-        operand.root
+    bindings = {
+        (operand.root, input_name): None
         for operand in template.expressions[0].operands
         if isinstance(operand, Reference)
         and not operand.path
-        and declared_root_type(workflow_ir, node, operand.root, surface_kind="param", param_key=param_key) == "string"
-    ]
+        and (bound := declared_root(workflow_ir, node, operand.root, surface_kind="param", param_key=param_key))
+        and bound[0] == "string"
+        for input_name in bound[1]
+    }
     return [
         Diagnostic(
             severity=Severity.ERROR,
@@ -173,19 +176,20 @@ def _declared_text_into_container(
             title="Validation Error",
             node_id=node.get("id"),
             message=(
-                f"`{value}` feeds {feeds}, but input '{root}' is declared `- type: string` and is never JSON-parsed."
+                f"`{value}` feeds {feeds}, but input {input_as(root, input_name)} is declared `- type: string` "
+                "and is never JSON-parsed."
             ),
-            suggestions=[f"Declare `- type: {shape}` for '{root}'{text_fix}."],
+            suggestions=[f"Declare `- type: {shape}` for '{input_name}'{text_fix}."],
             context={
                 "category": "validation",
                 "path": path,
-                "input": root,
+                "input": input_name,
                 "declared_type": "string",
                 "template": value,
                 "expected_type": shape,
             },
         )
-        for root in dict.fromkeys(roots)
+        for root, input_name in bindings
     ]
 
 

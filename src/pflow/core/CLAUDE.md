@@ -116,7 +116,9 @@ so a grammar change edits it in the same step.
 - **A declared input is never re-parsed** (ADR-0017): when the context carries
   `DECLARED_INPUT_TYPES_KEY`, a reference whose root is a declared non-`any` input
   is not JSON-parsed at the `auto_parse` leaf (judged by the `??` operand that
-  supplied the value) nor mid-path (root-wide); `unparsed_declared_text` names the
+  supplied the value) nor mid-path (root-wide), and neither is a name bound to one by a
+  single whole reference (`bound_declaration`; `PROTECTION_ONLY` when its type is
+  unknown — a path into the input, a batch item); `unparsed_declared_text` names the
   text such a walk stopped at. Without the key, behaviour is unchanged — callers
   that resolve against a store get it from the store's installers.
 - The validator walks declared structure over the same parse and rules, not the

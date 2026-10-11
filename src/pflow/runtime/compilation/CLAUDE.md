@@ -59,7 +59,9 @@ Normal file/library resolution already resolves file references, but
 (`_prepare_compilation` does, with its result). Its returned `defaults` contains
 missing-input values **and typed overrides of supplied values**. Per input the first
 value wins: supplied (`None` is no value) → process environment → settings.env →
-declared default; with none, a required input is an error. Every value is typed by
+declared default (a fresh copy); with none, a required input is an error. At a
+sub-workflow boundary (`step=`) a required input with no default takes no fallback —
+only the parent passes it, as `_check_required_inputs` rules statically. Every value is typed by
 `core/param_coercion.coerce_declared_input` with its source (`input_sources`), and
 every problem is its own Diagnostic — `_prepare_compilation` raises them together as
 one `WorkflowValidationError`. `check_supplied_inputs` is the same boundary over the

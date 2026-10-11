@@ -10,7 +10,7 @@ single source of runtime data.
 """
 
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 from pflow.core.param_coercion import coerce_param_for_node
@@ -21,6 +21,8 @@ from pflow.core.templates import (
     Reference,
     Resolution,
     TemplateResolver,
+    bind_declared,
+    bound_declaration,
     lookup,
     parse,
     resolve,
@@ -124,13 +126,13 @@ def parses_leaves(template_config: TemplateConfig, key: str, subkey: str | None 
     return subkey is None or subkey not in template_config.text_input_keys
 
 
-def _bind_locally(context: dict[str, Any], names: Iterable[str]) -> None:
-    """A step's own ``inputs:`` keys enter ``context`` as local bindings: a same-named
-    declared input no longer owns those roots, so they leave the declared-type map."""
+def _bind_locally(context: dict[str, Any], authored: Mapping[str, Any]) -> None:
+    """A step's own ``inputs:`` keys enter ``context`` as local bindings. Each key's entry in the
+    declared-type map follows the value AUTHORED for it (``templates.bound_declaration``, against
+    the map the values resolved under): a single reference to a declared input keeps that
+    input's protection under the key; any other value makes the key a local name."""
     declared: Mapping[str, str] = context.get(DECLARED_INPUT_TYPES_KEY) or {}
-    shadowed = declared.keys() & set(names)
-    if shadowed:
-        context[DECLARED_INPUT_TYPES_KEY] = {k: v for k, v in declared.items() if k not in shadowed}
+    bind_declared(context, {name: bound_declaration(value, declared) for name, value in authored.items()})
 
 
 def split_params(
@@ -470,7 +472,8 @@ def resolve_templates(  # noqa: C901
 
         # After resolving 'inputs', enrich context for subsequent params
         if key == "inputs" and isinstance(resolved_value, dict):
-            _bind_locally(context, resolved_value)
+            # A whole-map `inputs: ${m}` authors no key: every key it yields is local.
+            _bind_locally(context, {k: template.get(k) if isinstance(template, dict) else None for k in resolved_value})
             context.update(resolved_value)
 
     # Build final resolutions for trace capture

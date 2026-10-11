@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import typing
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -502,14 +502,65 @@ _MISS: tuple[bool, Any] = (False, None)
 # The running workflow's declared ``## Inputs`` types (``{name: canonical type}``), carried in
 # the shared store beside ``__pflow_prompt_cache__`` and installed by the same owners (the
 # engine per workflow, the dry-run planner, the runner's root store). A reference whose root
-# is a declared non-``any`` input is never JSON-parsed — at the leaf or mid-path (ADR-0017).
+# is a declared non-``any`` input — or a name bound to one (``bound_declaration``) — is never
+# JSON-parsed, at the leaf or mid-path (ADR-0017).
 DECLARED_INPUT_TYPES_KEY = "__pflow_input_types__"
+
+# A map VALUE: a name bound to a value INSIDE a declared input (``doc: ${d.payload}``, the item
+# of a batch over ``${rows}``) — never re-parsed, its type unknown. Not a canonical type, so the
+# validator applies no type rule to it.
+PROTECTION_ONLY = "protection-only"
 
 
 def _declared_typed(context: Mapping[str, Any], root: str) -> bool:
-    """Whether ``root`` is a declared non-``any`` input of the workflow ``context`` belongs to."""
+    """Whether ``root`` is a declared non-``any`` input of the workflow ``context`` belongs to,
+    or a name bound to one."""
     types: Mapping[str, str] = context.get(DECLARED_INPUT_TYPES_KEY) or {}
     return types.get(root, "any") != "any"
+
+
+def bound_reference(authored: Any) -> Reference | None:
+    """The one Reference an authored binding value IS — a single Expression that is the whole
+    value, with one operand (no ``??``) and no ``|json`` — else ``None``."""
+    if not isinstance(authored, str) or not (template := parse(authored)).is_simple:
+        return None
+    operands = template.expressions[0].operands
+    return operands[0] if len(operands) == 1 and isinstance(operands[0], Reference) else None
+
+
+def bound_declaration(authored: Any, declared: Mapping[str, str]) -> str | None:
+    """What a name bound to ``authored`` (a step ``inputs:`` key, a batch item) inherits from
+    ``declared``, the declared-input map where the value resolves: a single reference to a
+    declared non-``any`` input (``bound_reference``) passes on the root's entry for the whole
+    root (``${v}``) and ``PROTECTION_ONLY`` for a path into it (``${d.payload}``); anything else
+    — a node output, a ``??``, text around it — inherits nothing (``None``: a local name). Read
+    from the authored template, never from the value, so a node output never inherits it."""
+    ref = bound_reference(authored)
+    kind = "any" if ref is None else declared.get(ref.root, "any")
+    if ref is None or kind == "any":
+        return None
+    return PROTECTION_ONLY if ref.path else kind
+
+
+def batch_item_declaration(items_template: Any, index: int, declared: Mapping[str, str]) -> str | None:
+    """What a batch alias inherits for item ``index`` (``bound_declaration``): an inline list's
+    element by its own authored text; any item of a whole ``batch.items`` reference to a
+    declared input is ``PROTECTION_ONLY`` (its element type is unknown)."""
+    if isinstance(items_template, list):
+        return bound_declaration(items_template[index], declared) if 0 <= index < len(items_template) else None
+    if isinstance(items_template, str) and bound_declaration(items_template.strip(), declared) is not None:
+        return PROTECTION_ONLY
+    return None
+
+
+def bind_declared(store: MutableMapping[str, Any], entries: Mapping[str, str | None]) -> None:
+    """Rebind names in ``store``'s declared-input map: each takes its entry, ``None`` removing it
+    (a local name no declared input owns). ``store`` is a step's or an item's own copy."""
+    declared: Mapping[str, str] = store.get(DECLARED_INPUT_TYPES_KEY) or {}
+    updated = {name: kind for name, kind in declared.items() if name not in entries}
+    updated.update({name: kind for name, kind in entries.items() if kind is not None})
+    if updated != dict(declared):
+        store[DECLARED_INPUT_TYPES_KEY] = updated
 
 
 def _json_container(value: Any) -> Any:

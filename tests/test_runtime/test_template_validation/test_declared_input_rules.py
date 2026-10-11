@@ -323,3 +323,85 @@ class TestShadowing:
         reads_input = _shell("show", {"X": "x"}, params={"inputs": "${s.a}"})  # presence half
         errors = _declared_errors(_workflow({"s": "string"}, reads_input))
         assert [e.context["path"] for e in errors if e.context] == ["nodes[id=show].params.inputs"]
+
+
+class TestABindingCarriesTheDeclaration:
+    """A step ``inputs:`` key or batch alias bound to ONE whole reference of a declared input is that input for
+    the rules (D15) — as the runtime binds it — and the message names the input it reads through the binding."""
+
+    @staticmethod
+    def _bound(binding: str, read: str, inputs: dict[str, str | None], **extra: Any) -> dict[str, Any]:
+        node = _shell("show", {"X": read}, params={"inputs": {"doc": binding}}, **extra)
+        return _workflow(inputs, _shell("up", {"X": "x"}), node)
+
+    def test_a_path_on_a_bound_declared_string_is_an_error_naming_the_input(self) -> None:
+        error = _one(self._bound("${s}", "${doc.a}", {"s": "string"}))
+        assert error.message == (
+            "Input 's' (as 'doc') is declared `- type: string`, so `${doc.a}` cannot read a field of it — a string "
+            "input is never JSON-parsed."
+        )
+        assert error.suggestions == [
+            "Declare `- type: object` if 's' holds a JSON object, or reference `${doc}` whole."
+        ]
+        assert error.context is not None
+        assert (error.context["input"], error.context["path"]) == ("s", "nodes[id=show].params.env.X")
+
+    @pytest.mark.parametrize(
+        ("binding", "inputs"),
+        [
+            pytest.param("${up.stdout}", {"s": "string"}, id="node-output"),
+            pytest.param("${s ?? up.stdout}", {"s": "string"}, id="coalesce"),
+            pytest.param("${s}", {"s": "any"}, id="any-input"),
+            pytest.param("${d.payload}", {"d": "object"}, id="protection-only"),
+        ],
+    )
+    def test_a_binding_that_carries_no_type_is_not_checked(self, binding: str, inputs: dict[str, str | None]) -> None:
+        """A local name, or text inside an input (protected at run time, its type unknown): `${doc[0]}` may resolve.
+        The same read through a binding that does carry a type is an error (the presence half)."""
+        assert [e.context["input"] for e in _declared_errors(self._bound("${s}", "${doc[0]}", {"s": "string"}))] == [
+            "s"
+        ]
+        assert _declared_errors(self._bound(binding, "${doc[0]}", inputs)) == []
+
+    def test_an_alias_over_inline_elements_of_one_type_is_checked_for_each_input(self) -> None:
+        """Every element a declared `string`: `${item.a}` misses for every item — one error per input behind the
+        alias, each certain for its items. A local element makes nothing certain."""
+
+        def ir(items: list[str]) -> dict[str, Any]:
+            node = _shell("show", {"X": "${item.a}"}, batch={"items": items})
+            return _workflow({"s": "string", "t": "string", "n": "integer"}, node)
+
+        (error,) = _declared_errors(ir(["${s}", "${s}"]))
+        assert error.message.startswith("Input 's' (as 'item') is declared `- type: string`, so `${item.a}`")
+        assert [e.context["input"] for e in _declared_errors(ir(["${s}", "${t}"])) if e.context] == ["s", "t"]
+        assert _declared_errors(ir(["${s}", "${n}"])) == []  # two types: no one rule
+        assert _declared_errors(ir(["${s}", "x"])) == []  # the literal item is local
+
+    def test_an_alias_over_a_whole_declared_input_is_protection_only(self) -> None:
+        node = _shell("show", {"X": "${item.a}"}, batch={"items": "${rows}"})
+        assert _declared_errors(_workflow({"rows": "array"}, node)) == []
+
+    def test_a_carried_key_is_checked_only_when_every_round_binds_the_same_input(self) -> None:
+        """Round 1 binds `doc` to its `inputs:` value; from round 2 the carry template does (the runtime's
+        `apply_carry_overrides`)."""
+
+        def ir(carried: str) -> dict[str, Any]:
+            loop = {"carry": {"doc": carried}, "while": "${show.stdout}", "max_iterations": 2}
+            return self._bound("${s}", "${doc.a}", {"s": "string"}, loop=loop)
+
+        assert _declared_errors(ir("${show.stdout}")) == []
+        assert [e.context["input"] for e in _declared_errors(ir("${s}")) if e.context] == ["s"]
+
+    def test_a_bound_string_into_a_container_param_names_the_input(self) -> None:
+        node = {
+            "id": "get",
+            "type": "http",
+            "purpose": "Fetch.",
+            "params": {"inputs": {"doc": "${s}"}, "url": "https://example.com", "params": "${doc}"},
+        }
+        (error,) = _declared_errors(_workflow({"s": "string"}, node))
+        assert error.message == (
+            "`${doc}` feeds param 'params' (type dict), but input 's' (as 'doc') is declared `- type: string` and is "
+            "never JSON-parsed."
+        )
+        assert error.suggestions == ["Declare `- type: object` for 's'."]
