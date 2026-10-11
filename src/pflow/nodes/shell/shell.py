@@ -148,8 +148,8 @@ def _communicate_with_cleanup(
 
     A timeout stops the step politely (``stop``), gives it
     ``TIMEOUT_GRACE_SECONDS`` to exit, then ``kill``s whatever is left; with no
-    ``stop`` (Windows) it kills at once. An interruption (Ctrl-C/SystemExit) —
-    also one arriving during the grace — always kills at once: pflow is exiting.
+    ``stop`` (Windows) it kills at once. An interruption (Ctrl-C/SystemExit)
+    raised in this call — also during the grace — kills at once: pflow is exiting.
     """
     try:
         try:
