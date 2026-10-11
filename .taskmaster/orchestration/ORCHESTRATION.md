@@ -111,7 +111,9 @@ until you hit a substantive one** — plus the previous THREE sessions'
 end in a **`## Braindump`** section written as the close ritual's last content step: tacit
 residue, not a summary of events (sessions 01–07 predate this and carry none; session-01 is the
 converted pre-restructure log). Log entries use a small tag vocabulary so a successor can scan:
-`[GRANT]` / `[RULING]` quote the user verbatim; `ESCALATED (n/5)`; `MERGED`; `SHIPPED`.
+`[GRANT]` / `[RULING]` state what the user decided; quote them verbatim ONLY when the wording itself is operative
+(a lens, a rule, a boundary whose phrasing does work downstream) — a bare approval is written as "the user accepted
+the recommendations", never quoted; `ESCALATED (n/5)`; `MERGED`; `SHIPPED`.
 **Work done outside a numbered session** appends a dated block at the TOP of CURRENT-STATE under
 `## Outside-session — folded at next rewrite`; the next boot's reality diff folds it into the
 body and removes the block (this is a successor handoff, not the mid-session patching ruled out above).

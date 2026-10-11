@@ -59,7 +59,9 @@ deduplication. Use `deduplicate_diagnostics()` rather than inventing a second ke
 and Diagnostics; preserve catalog IDs, severity, and suggestions.
 
 Text rendering belongs in `diagnostic_render.py::format_diagnostic`; the model
-must not depend on the renderer. Template errors carry `unresolved_references`,
+must not depend on the renderer. A block renders from the redacted `context` that
+`format_diagnostic` passes down, never `diagnostic.context` (ratchet:
+`tests/test_core/test_diagnostic_render_redaction.py`). Template errors carry `unresolved_references`,
 including permissive-mode warnings. `OutputResolutionError` carries per-output
 `output_failures` with their own source locations and no node attribution. Keep
 these structures rather than canned suggestions. Context-key conventions live in

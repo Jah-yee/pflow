@@ -225,8 +225,11 @@ like a grant.
 - **A lane/task recommendation carries 2–4 plain-language sentences** — what it IS (most
   important), why it matters, why now. An issue number and a shape verdict alone tell them
   nothing.
-- **Quote the user VERBATIM as a blockquote into specs and packets — never a paraphrase.** Their
-  wording is what does the work downstream; a paraphrase loses the operative clause.
+- **Quote the user verbatim only when their wording is operative** — a lens, a rule, a boundary whose
+  phrasing does work downstream (then as a blockquote, never paraphrased: a paraphrase loses the
+  operative clause). A bare approval or a yes carries no wording worth keeping: write "the user
+  accepted the recommendations". Their rule: they are not quoted unless it has specific meaning and
+  carries weight.
 - **Concise, high-signal docs** — better write nothing than a word-dump. **Don't default to
   sounding insightful**: a simple answer beats a complex uncertain one; elaborate phrasing hides
   what you don't know, from yourself and from the user.
