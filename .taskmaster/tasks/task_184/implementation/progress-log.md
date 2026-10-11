@@ -164,3 +164,22 @@ Append-only. Spec: `../task-184.md` · Plan: `implementation-plan.md` · Checkpo
   runs green at P1's end (the tree is import-red in `cli/`/`mcp_server/` until P2/P3 by plan design; do NOT commit P1 alone
   — the mid-task review (impact-completeness + silent-failures) runs on the uncommitted P1 diff, then P2+P3 bundle).
   Nothing in flight; tree clean at `9f6cb424` except this entry.
+
+## [2026-10-11 23:40] task-orchestrator (Opus) — unparked: #799 merged, F20 ruled, main merged again
+- Did: read the main orchestrator's addendum (`scratchpads/session-15/addendum-p1.md`); `git merge origin/main` `93798a80`
+  (#809 = #799, #808 = #755; clean, no hand resolution); `make install`; `make check` green; `make test` 11586 passed.
+- [RULING] F20 → A (user, 2026-10-11): `success` = the run completed (true iff exit 0); paused/denied stay `false`, `status`
+  says why; no code change; P4 rewords `docs/reference/cli/index.mdx:331` + `guide/features/approval.md:12`. Plan header updated.
+- Claims verified: (1) #755's fifth head-only site — READ `success_formatter.py:638-641` (`stderr[:300]` + `...`) and
+  `core/diagnostic_render.py:733 head_tail_preview` → in scope for P1 (the function moves into `run_outcome.py`); PR body states
+  it. (2) #799 compactor split — printing names unchanged (`compact_batch_error_detail`, `compact_batch_output_value`), the raw
+  `archive_batch_output_value` is the runtime's only — the `git mv` carries the printing call sites as-is. (3) #799 Residual 1
+  (raw `child_failure` via `-o each.errors`, declared `${each.errors}`, child batch output in a successful parent) — scope note
+  for the task-review as a member of #801's whole-document pass; not built.
+- Text-tier observations (addendum, consumer report) — evaluated against ruled Q1: (a) warnings print after the error block, so
+  `tail -3` shows a warning, not the cause → a one-line ORDER choice inside `render_cli_stderr` (P2): carried to P2's brief —
+  warnings/advisories render BEFORE the errors block on FAILED; logged when built. (b) shell-failure text repeats the reason
+  (headline + `Stderr:`) with `Env:` between → that is `format_diagnostic`'s rendering of ONE diagnostic (`core/diagnostic_render.py`),
+  not a separable renderer section → design choice, task-review note, not built. The resume hint on a no-side-effect workflow
+  is `has_resumable_step()` policy (the one resumability suppressor) → task-review note, not built.
+- Next: resume I1 (Opus, high) with P1.
