@@ -653,7 +653,7 @@ pflow my-llm-workflow  # No need to pass --param
 
 ## Sensitive parameter detection
 
-Values under these names are automatically masked in output:
+Values under these names are masked as `<REDACTED>` when pflow displays them:
 
 - `password`, `passwd`, `pwd`
 - `token`, `api_token`, `access_token`, `auth_token`
@@ -664,6 +664,8 @@ Values under these names are automatically masked in output:
 - `cookie`, `cookies` (so the HTTP `Cookie` and `Set-Cookie` headers)
 
 Matching is case-insensitive and by whole word, across `snake_case`, `kebab-case` and `camelCase`: `GITHUB_TOKEN`, `X-API-Key` and `sessionCookie` are masked, while `author` and `tokens` are not.
+
+Masking applies to `pflow report`, the web UI, approval previews and error output. Execution always uses the real value, and declared workflow outputs are returned as-is.
 
 ## File locations
 
