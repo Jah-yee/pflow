@@ -97,7 +97,7 @@ An [approval gate](/how-it-works/approval-gates) reached in a non-interactive ru
 Paused at 'notify-slack'. Resume token: 7a9e4afb-2095-447e-8043-0660438104f9 (exit 4)
 ```
 
-The gate's content follows on stderr — an approval's resolved preview, or an escalation's question, options, and recommendation — so a calling process can compose the answer from the output alone. With `--output-format json`, the paused document carries `status: "paused"`, `execution_id`, `paused_node_id`, `gate_request`, and `resume_command`.
+The gate's content follows on stderr — an approval's resolved preview, or an escalation's question, options, and recommendation — so a calling process can compose the answer from the output alone. With `--output-format json`, the paused document carries `status: "paused"`, `execution_id`, `paused_node_id`, `gate_request`, `resume_command`, an empty `errors`, and the run's `diagnostics` (same entry shape as a run's result document).
 
 Answer it later — hours or days on — and the run continues from the gated step without re-running anything upstream:
 
@@ -336,7 +336,7 @@ All workflow results, metrics, and errors serialize to a single JSON object on s
 | `errors[]` | The failure's error diagnostics: `message`, `title`, `suggestions`, `node_id`, and the details under `context` (e.g. `context.available_fields` — valid fields for a template variable) |
 | `diagnostics[]` / `warnings[]` / `advisories[]` | Every diagnostic, the warnings, and the non-degrading notes — same entry shape as `errors[]` |
 
-Values under a sensitive name (`token`, `password`, `authorization`, `cookie`, …) print as `<REDACTED>` at any depth of a diagnostic. The trace keeps them raw for `pflow resume`; `pflow report` masks them too.
+Values under a sensitive name (`token`, `password`, `authorization`, `cookie`, …) print as `<REDACTED>` at any depth of a diagnostic, in every JSON document — a run's result, a pause, a denial, `--validate-only`, and `--dry-run`. The trace keeps them raw for `pflow resume`; `pflow report` masks them too.
 
 </Expandable>
 

@@ -27,7 +27,7 @@ def format_plan_json(plan: Plan) -> dict[str, Any]:
         "workflow": plan.workflow,
         "plan": [_entry_to_dict(entry) for entry in plan.entries],
         "summary": _summary_to_dict(plan.summary),
-        "diagnostics": [diagnostic.to_dict() for diagnostic in plan.diagnostics],
+        "diagnostics": [diagnostic.to_output_dict() for diagnostic in plan.diagnostics],
     }
     # Task 164: a resumed plan covers the tail from K onward only; expose the
     # resume context so a programmatic consumer knows the cost is not whole-run.
@@ -450,7 +450,7 @@ def _entry_to_dict(entry: PlanEntry) -> dict[str, Any]:
     if entry.sub_plan is not None:
         result["sub_plan"] = format_plan_json(entry.sub_plan)
     if entry.diagnostic is not None:
-        result["diagnostic"] = entry.diagnostic.to_dict()
+        result["diagnostic"] = entry.diagnostic.to_output_dict()
     if entry.approval:
         # Task 125: JSON dry-run is the gate-discovery surface for agent
         # operators (discover gates → ask your human → --auto-approve).
