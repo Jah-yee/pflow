@@ -41,7 +41,7 @@ from pflow.core.templates import (
 from pflow.core.types import is_template_reserved_internal_key
 from pflow.core.workflow.gate_validation import check_approval_allowed
 from pflow.core.workflow.loop_validation import check_loop_polarity
-from pflow.core.workflow.template_surfaces import BodyLanguage, code_bodies, iter_node_surfaces
+from pflow.core.workflow.template_surfaces import BodyLanguage, code_bodies, iter_node_surfaces, iter_template_surfaces
 
 logger = logging.getLogger(__name__)
 
@@ -534,6 +534,7 @@ def validate_data_flow(
             diagnostics,
         )
         diagnostics.extend(_validate_bodies(workflow_ir, node))
+    diagnostics.extend(_validate_embedded_code(workflow_ir))
 
     # Cache-block validation (Task 159): ## Cache references, prompt_cache: order,
     # invalid-on-non-llm, unused chunks, batch-scoped rejection, prompt-body
@@ -981,12 +982,37 @@ def body_reference_roots(workflow_ir: dict[str, Any]) -> set[str]:
     }
 
 
+def template_reads(workflow_ir: dict[str, Any]) -> set[str]:
+    """Every reference the workflow's templates read, as written (``fetch.stdout``, ``x``):
+    node params (embedded code: its JSON inserts only), ``batch.items``, loop fields, a
+    carry's dynamic-index sources (its own reference is the carry check's), cache vars,
+    and output sources read as the runtime reads them — plus code-body leftover roots. The
+    one answer to "is this input used?" (the unused-input check, embedded code's ERROR)."""
+    from pflow.runtime.output_resolver import normalize_output_source  # runtime helper; lazy like validator.py
+
+    reads = body_reference_roots(workflow_ir)
+    for surface in iter_template_surfaces(workflow_ir):
+        if surface.kind == "cache_prose":
+            continue
+        if surface.kind == "output_source":
+            templates = [parse(normalize_output_source(surface.value))]
+        else:
+            templates = [template for _, template in surface.templates()]
+        for template in templates:
+            for expression in template.expressions:
+                for operand in expression.operands:
+                    if isinstance(operand, Reference):
+                        refs = operand.index_sources if surface.kind == "carry" else operand.references
+                        reads.update(ref.raw for ref in refs)
+    return reads
+
+
 def _leftover(segment: Expression | Issue, scope: StepScope) -> tuple[str, str, tuple[str, ...], bool] | None:
     """``(reference, owner, in-scope roots, is_expression)`` when ``segment`` names something in scope."""
     if isinstance(segment, Expression):
         owned = [(ref.root, owner) for ref in segment.references if (owner := _owner(scope, ref))]
         if owned:
-            return segment.raw, owned[0][1], tuple(dict.fromkeys(root for root, _ in owned)), True
+            return segment.bare_raw, owned[0][1], tuple(dict.fromkeys(root for root, _ in owned)), True
         first = segment.operands[0]
         leading = first if isinstance(first, Reference) else None
     else:
@@ -1485,8 +1511,8 @@ def _foreign_shape_warning(node: dict[str, Any], param: str, text: str, scope: S
 
 # ------------------------------------------------------------------------------
 # Embedded code: JavaScript an MCP tool runs (``template_surfaces.param_mode`` →
-# ``"embedded"``). A bare ${…} there is JavaScript, sent as written; the template
-# validator reports the ones that name a pflow value, and inserts left inside quotes.
+# ``"embedded"``). A bare ${…} there is JavaScript, sent as written; this section
+# reports the ones that name a pflow value, and inserts left inside quotes.
 # ------------------------------------------------------------------------------
 
 _QUOTES = ("'", '"')
@@ -1593,6 +1619,150 @@ def js_value_name(expression: Expression) -> str:
     fields = [seg.name for seg in ref.path if isinstance(seg, Field)]
     name = (fields[-1] if fields else ref.root).replace("-", "_")
     return name if name.isidentifier() else "value"
+
+
+def _validate_embedded_code(workflow_ir: dict[str, Any]) -> list[Diagnostic]:
+    """Bare pflow names and quoted inserts in embedded code (``embedded_references``).
+
+    A bare reference to a workflow input used nowhere else is an ERROR naming ``|json``
+    (the unused-input check counts it as used: one mistake, one diagnostic); every other
+    bare reference in a param shares one WARNING (the name may be the author's own
+    JavaScript variable); an insert wrapped in quotes is a WARNING. Here, not in the
+    template validator, because the compiler runs data flow: a child workflow chosen at
+    run time gets the ERROR too.
+    """
+    references = embedded_references(workflow_ir)
+    if not references:
+        return []
+    used_roots = {TemplateResolver.extract_root_node_id(var) for var in template_reads(workflow_ir)}
+    diagnostics: list[Diagnostic] = []
+    warned: dict[tuple[str, str], list[EmbeddedReference]] = {}
+    errored: set[tuple[str, str, str]] = set()
+    for ref in references:
+        if ref.is_insert:
+            diagnostics.append(_quoted_insert_warning(ref))
+        elif ref.root_kind == "input" and ref.root not in used_roots:
+            if (ref.node_id, ref.param, ref.root) not in errored:
+                errored.add((ref.node_id, ref.param, ref.root))
+                diagnostics.append(_never_inserted_error(ref))
+        else:
+            warned.setdefault((ref.node_id, ref.param), []).append(ref)
+    diagnostics.extend(_bare_reference_warning(refs) for refs in warned.values())
+    return diagnostics
+
+
+_JS_VALUE_PLACE = "where a JavaScript value goes, outside any quotes or `…`"
+
+
+def _insert_fix(ref: EmbeddedReference) -> str:
+    """How to turn ``ref`` into an insert, phrased for where it sits (no leading verb case)."""
+    if ref.whole_value:
+        return f"A program produced by a step is text, not code: run it with eval — {ref.replacement}"
+    if ref.quote:
+        return (
+            f"Replace {ref.written} (the quotes too) with {ref.insert} — the value arrives already quoted: "
+            f"const {ref.name} = {ref.insert};"
+        )
+    return f"Put {ref.insert} {_JS_VALUE_PLACE}: const {ref.name} = {ref.insert};"
+
+
+def _embedded_context(ref: EmbeddedReference, refs: list[EmbeddedReference]) -> dict[str, Any]:
+    return {
+        "category": "template_error",
+        "path": f"nodes[id={ref.node_id}].params.{ref.param}",
+        "embedded_references": [
+            {"reference": r.expression, "root_kind": r.root_kind, "replacement": r.replacement} for r in refs
+        ],
+    }
+
+
+def _never_inserted_error(ref: EmbeddedReference) -> Diagnostic:
+    return Diagnostic(
+        severity=Severity.ERROR,
+        source="validator",
+        title="Template Error",
+        node_id=ref.node_id,
+        message=(
+            f"Input '{ref.root}' is never inserted: its only use, '{ref.expression}' in '{ref.param}', "
+            "is JavaScript text that pflow sends to the MCP tool unchanged."
+        ),
+        suggestions=[_insert_fix(ref)],
+        context=_embedded_context(ref, [ref]),
+    )
+
+
+def _owner_noun(ref: EmbeddedReference) -> str:
+    match ref.root_kind:
+        case "batch_item":
+            return "the batch item"
+        case "batch_index":
+            return "the batch index"
+        case "iteration":
+            return "the loop iteration"
+        case "inputs_key":
+            return f"this step's inputs: key '{ref.root}'"
+        case "step":
+            return f"the output of step '{ref.root}'"
+        case _:
+            return f"workflow input '{ref.root}'"
+
+
+def _and_list(items: list[str], word: str = "and") -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} {word} {items[-1]}"
+
+
+def _bare_reference_warning(refs: list[EmbeddedReference]) -> Diagnostic:
+    first = refs[0]
+    per_expression: dict[str, EmbeddedReference] = {}  # one fix per expression, however many roots
+    for ref in refs:
+        per_expression.setdefault(ref.expression, ref)
+    nouns = list(dict.fromkeys(_owner_noun(ref) for ref in refs))
+    roots = list(dict.fromkeys(f"'{ref.root}'" for ref in refs))
+    one = len(per_expression) == 1
+    message = (
+        f"{_and_list(list(per_expression))} in '{first.param}' {'is' if one else 'are'} JavaScript: "
+        f"pflow sends {'it' if one else 'them'} unchanged, "
+        f"so {_and_list(nouns)} {'is' if len(nouns) == 1 else 'are'} not inserted."
+    )
+    spaced = "${ " + first.expression[2:-1] + " }"
+    if one and len(roots) == 1:
+        closing = (
+            f"If {roots[0]} here is your JavaScript variable, the code is correct — write {spaced} "
+            "(spaces inside the braces) to clear this warning."
+        )
+    else:
+        closing = (
+            f"If {_and_list(roots, 'or')} here is your JavaScript variable, the code is correct — write it with "
+            f"spaces inside the braces ({spaced}) to clear this warning."
+        )
+    fixes = [
+        _insert_fix(ref) if ref.whole_value else "To insert it, " + _insert_fix(ref)[0].lower() + _insert_fix(ref)[1:]
+        for ref in per_expression.values()
+    ]
+    return Diagnostic(
+        severity=Severity.WARNING,
+        source="validator",
+        title="Template Warning",
+        node_id=first.node_id,
+        message=message,
+        suggestions=[*fixes, closing],
+        context=_embedded_context(first, refs),
+    )
+
+
+def _quoted_insert_warning(ref: EmbeddedReference) -> Diagnostic:
+    return Diagnostic(
+        severity=Severity.WARNING,
+        source="validator",
+        title="Template Warning",
+        node_id=ref.node_id,
+        message=(
+            f"{ref.written} in '{ref.param}': the insert is already a quoted JavaScript value, "
+            "so these quotes wrap it a second time."
+        ),
+        suggestions=[f"Remove the quotes around it: {ref.insert}"],
+        context=_embedded_context(ref, [ref]),
+    )
 
 
 # ------------------------------------------------------------------------------

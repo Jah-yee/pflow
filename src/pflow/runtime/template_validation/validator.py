@@ -36,13 +36,12 @@ from pflow.core.templates import (
     resolve,
 )
 from pflow.core.workflow.data_flow import (
-    EmbeddedReference,
     binding_phrase,
-    body_reference_roots,
     body_references,
     embedded_references,
     js_value_name,
     step_scope,
+    template_reads,
 )
 from pflow.core.workflow.template_surfaces import (
     EMBEDDED_CODE,
@@ -122,33 +121,20 @@ def validate_workflow_templates(
     operands = list(iter_template_operands(workflow_ir))
     output_operands = list(iter_output_source_operands(workflow_ir))
     all_templates = {operand.ref.raw for operand in operands}
-    cache_templates = _extract_cache_templates_for_unused_check(workflow_ir)
 
-    if all_templates or cache_templates:
+    if all_templates:
         logger.debug(
-            f"Found {len(all_templates)} node-param + {len(cache_templates)} cache template(s) to validate",
-            extra={"templates": sorted(all_templates), "cache_templates": sorted(cache_templates)},
+            f"Found {len(all_templates)} node-param template(s) to validate",
+            extra={"templates": sorted(all_templates)},
         )
     else:
         logger.debug("No template variables found in workflow")
 
-    # Check for unused inputs — the union ensures inputs declared ONLY for use
-    # in ``## Cache`` or an output ``source:`` aren't flagged as unused. Cache vars
-    # never reach ``validate_template_paths`` below (see
-    # ``_extract_cache_templates_for_unused_check``). A leftover ``${…}`` in a code
-    # body counts too: data flow reports it, one diagnostic for one mistake. So does
-    # a bare reference in embedded code: its own ERROR names ``|json``.
-    used = (
-        all_templates
-        | cache_templates
-        | {operand.ref.raw for operand in output_operands}
-        | body_reference_roots(workflow_ir)
-    )
-    embedded = embedded_references(workflow_ir)
-    diagnostics.extend(_validate_embedded_references(embedded, used))
-    unused_input_diagnostics = _validate_unused_inputs(
-        workflow_ir, used | {ref.root for ref in embedded if not ref.is_insert}
-    )
+    # Check for unused inputs (``template_reads``: every surface, cache vars and output
+    # sources included). A bare reference in embedded code counts as a use too: data
+    # flow reports it, with its own ERROR naming ``|json`` — one diagnostic for one mistake.
+    bare_roots = {ref.root for ref in embedded_references(workflow_ir) if not ref.is_insert}
+    unused_input_diagnostics = _validate_unused_inputs(workflow_ir, template_reads(workflow_ir) | bare_roots)
     diagnostics.extend(unused_input_diagnostics)
     diagnostics.extend(_validate_unread_step_inputs(workflow_ir))
 
@@ -666,145 +652,6 @@ def _validate_unused_inputs(workflow_ir: dict[str, Any], all_templates: set[str]
     return diagnostics
 
 
-def _validate_embedded_references(references: list[EmbeddedReference], used: set[str]) -> list[Diagnostic]:
-    """Bare pflow names and quoted inserts in embedded code (``embedded_references``).
-
-    A bare reference to a workflow input used nowhere else is an ERROR naming ``|json``
-    (it replaces the unused-input report: one mistake, one diagnostic); every other bare
-    reference in a param shares one WARNING (the name may be the author's own JavaScript
-    variable); an insert wrapped in quotes is a WARNING.
-    """
-    used_roots = {TemplateResolver.extract_root_node_id(var) for var in used}
-    diagnostics: list[Diagnostic] = []
-    warned: dict[tuple[str, str], list[EmbeddedReference]] = {}
-    errored: set[tuple[str, str, str]] = set()
-    for ref in references:
-        if ref.is_insert:
-            diagnostics.append(_quoted_insert_warning(ref))
-        elif ref.root_kind == "input" and ref.root not in used_roots:
-            if (ref.node_id, ref.param, ref.root) not in errored:
-                errored.add((ref.node_id, ref.param, ref.root))
-                diagnostics.append(_never_inserted_error(ref))
-        else:
-            warned.setdefault((ref.node_id, ref.param), []).append(ref)
-    diagnostics.extend(_bare_reference_warning(refs) for refs in warned.values())
-    return diagnostics
-
-
-_JS_VALUE_PLACE = "where a JavaScript value goes, outside any quotes or `…`"
-
-
-def _insert_fix(ref: EmbeddedReference) -> str:
-    """How to turn ``ref`` into an insert, phrased for where it sits (no leading verb case)."""
-    if ref.whole_value:
-        return f"A program produced by a step is text, not code: run it with eval — {ref.replacement}"
-    if ref.quote:
-        return (
-            f"Replace {ref.written} (the quotes too) with {ref.insert} — the value arrives already quoted: "
-            f"const {ref.name} = {ref.insert};"
-        )
-    return f"Put {ref.insert} {_JS_VALUE_PLACE}: const {ref.name} = {ref.insert};"
-
-
-def _embedded_context(ref: EmbeddedReference, refs: list[EmbeddedReference]) -> dict[str, Any]:
-    return {
-        "category": "template_error",
-        "path": f"nodes[id={ref.node_id}].params.{ref.param}",
-        "embedded_references": [
-            {"reference": r.expression, "root_kind": r.root_kind, "replacement": r.replacement} for r in refs
-        ],
-    }
-
-
-def _never_inserted_error(ref: EmbeddedReference) -> Diagnostic:
-    return Diagnostic(
-        severity=Severity.ERROR,
-        source="validator",
-        title="Template Error",
-        node_id=ref.node_id,
-        message=(
-            f"Input '{ref.root}' is never inserted: its only use, '{ref.expression}' in '{ref.param}', "
-            "is JavaScript text that pflow sends to the MCP tool unchanged."
-        ),
-        suggestions=[_insert_fix(ref)],
-        context=_embedded_context(ref, [ref]),
-    )
-
-
-def _owner_noun(ref: EmbeddedReference) -> str:
-    match ref.root_kind:
-        case "batch_item":
-            return "the batch item"
-        case "batch_index":
-            return "the batch index"
-        case "iteration":
-            return "the loop iteration"
-        case "inputs_key":
-            return f"this step's inputs: key '{ref.root}'"
-        case "step":
-            return f"the output of step '{ref.root}'"
-        case _:
-            return f"workflow input '{ref.root}'"
-
-
-def _and_list(items: list[str], word: str = "and") -> str:
-    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} {word} {items[-1]}"
-
-
-def _bare_reference_warning(refs: list[EmbeddedReference]) -> Diagnostic:
-    first = refs[0]
-    per_expression: dict[str, EmbeddedReference] = {}  # one fix per expression, however many roots
-    for ref in refs:
-        per_expression.setdefault(ref.expression, ref)
-    nouns = list(dict.fromkeys(_owner_noun(ref) for ref in refs))
-    roots = list(dict.fromkeys(f"'{ref.root}'" for ref in refs))
-    one = len(per_expression) == 1
-    message = (
-        f"{_and_list(list(per_expression))} in '{first.param}' {'is' if one else 'are'} JavaScript: "
-        f"pflow sends {'it' if one else 'them'} unchanged, "
-        f"so {_and_list(nouns)} {'is' if len(nouns) == 1 else 'are'} not inserted."
-    )
-    spaced = "${ " + first.expression[2:-1] + " }"
-    if one and len(roots) == 1:
-        closing = (
-            f"If {roots[0]} here is your JavaScript variable, the code is correct — write {spaced} "
-            "(spaces inside the braces) to clear this warning."
-        )
-    else:
-        closing = (
-            f"If {_and_list(roots, 'or')} here is your JavaScript variable, the code is correct — write it with "
-            f"spaces inside the braces ({spaced}) to clear this warning."
-        )
-    fixes = [
-        _insert_fix(ref) if ref.whole_value else "To insert it, " + _insert_fix(ref)[0].lower() + _insert_fix(ref)[1:]
-        for ref in per_expression.values()
-    ]
-    return Diagnostic(
-        severity=Severity.WARNING,
-        source="validator",
-        title="Template Warning",
-        node_id=first.node_id,
-        message=message,
-        suggestions=[*fixes, closing],
-        context=_embedded_context(first, refs),
-    )
-
-
-def _quoted_insert_warning(ref: EmbeddedReference) -> Diagnostic:
-    return Diagnostic(
-        severity=Severity.WARNING,
-        source="validator",
-        title="Template Warning",
-        node_id=ref.node_id,
-        message=(
-            f"{ref.written} in '{ref.param}': the insert is already a quoted JavaScript value, "
-            "so these quotes wrap it a second time."
-        ),
-        suggestions=[f"Remove the quotes around it: {ref.insert}"],
-        context=_embedded_context(ref, [ref]),
-    )
-
-
 def _validate_malformed_templates(workflow_ir: dict[str, Any]) -> list[Diagnostic]:
     """The ONE Issue pass: an unescaped ``${`` that opens no valid expression is an
     ERROR on every template-bearing surface (``iter_template_surfaces``), and so is a
@@ -882,7 +729,7 @@ def _misplaced_insert_diagnostic(
     surface: TemplateSurface, location: str, insert: tuple[str, Expression], *, bare: bool
 ) -> Diagnostic:
     written, expression = insert
-    body = expression.raw[: expression.raw.rindex("|")].rstrip()  # the expression without `|json`
+    body = expression.bare_raw
     message = f"{written} is accepted only in JavaScript passed to an MCP tool: {_embedded_places()}."
     fix = (
         f"Remove '|json': write {body if bare else '${' + body + '}'}. A dict or list is already inserted as JSON text."
@@ -997,39 +844,6 @@ def _extract_all_templates(workflow_ir: dict[str, Any]) -> set[str]:
     ``FIELD_CHECK`` ones (``operands.iter_template_operands``).
     """
     return {operand.ref.raw for operand in iter_template_operands(workflow_ir)}
-
-
-def _extract_cache_templates_for_unused_check(workflow_ir: dict[str, Any]) -> set[str]:
-    """Extract template variables from the workflow-level ``## Cache`` block.
-
-    Cache chunks reference workflow inputs / step outputs via their ``var``
-    field; without registering these the unused-input check (``_validate_unused_inputs``)
-    would flag inputs declared ONLY for use inside ``## Cache`` as unused —
-    spurious ERROR even when the input IS used in cache.
-
-    Cache vars are validated FOR RESOLUTION in
-    ``core/workflow/data_flow.py::_validate_cache_block``, which emits richer
-    "Cache chunk 'X' references..." diagnostics with similar-name suggestions
-    and source-line metadata. The path-validation pass (``validate_template_paths``)
-    in this package MUST NOT receive cache vars — it would emit a parallel
-    generic "Template variable ${X} has no valid source" diagnostic and the
-    user gets two errors for the same problem.
-
-    Split-extractor contract: keep this function's output OUT of the
-    ``all_templates`` set passed to ``validate_template_paths`` and friends.
-    Only ``_validate_unused_inputs`` consumes the union.
-    """
-    return _surface_references(workflow_ir, "cache_var")
-
-
-def _surface_references(workflow_ir: dict[str, Any], kind: str) -> set[str]:
-    return {
-        ref.raw
-        for surface in iter_template_surfaces(workflow_ir)
-        if surface.kind == kind
-        for _, template in surface.templates()
-        for ref in template.references
-    }
 
 
 # ---------------------------------------------------------------------------

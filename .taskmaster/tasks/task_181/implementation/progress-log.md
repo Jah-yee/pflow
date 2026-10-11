@@ -473,3 +473,50 @@
   - Verified the fix holds: mtimes of `~/.pflow/mcp-servers.json` + `registry.json` unchanged across a run of all four embedded-code test files + the parity corpus (478 passed).
   - Exposure: any sibling worktree's chrome-devtools run between 02:42 and 03:20 saw the stub. Handback names it.
 - Next: commit I3; falsifier report → G1 for evaluation.
+
+## [2026-10-11 03:30] gate-runner G1 — falsifier report evaluated: 3 findings — fixed 2, skipped 1, handed back 0
+- Did: read `implementation/review-falsifier.out` in full; re-ran its W1/W2 probes with its isolated HOME (`<scratch>/t181/falsifier/home`); verified, fixed with tests written red first, mutation-checked.
+- Findings and dispositions:
+  1. **W1 — a dynamic child (`workflow: ${which}`) sends a stale `'${selector}'` as JavaScript and exits 0.** CONFIRMED: reproduced as a red test before any edit (`test_a_dynamic_child_with_an_input_used_only_bare_fails_before_the_tool_is_called` — the run succeeded and the stubbed tool was called). Cause: the §4a ERROR lived in the template validator, which `WorkflowExecutor._validate_and_compile_child` never runs. FIXED as the orchestrator proposed, following 118's body-leftover precedent (task-review invariant 6). **Data flow now owns the embedded-code report**; the compiler's data-flow check (`check_inputs=False`, errors only) refuses the child.
+     - `data_flow._validate_embedded_code(workflow_ir)` is called once from `validate_data_flow`. It holds the §4a ERROR **and** the §4b/§4c/§4d WARNINGs, plus their message builders, moved verbatim from `runtime/template_validation/validator.py` (−200 lines there).
+     - **Deviation from the orchestrator's suggested split** (data flow = ERROR, template validator = WARNINGs): splitting needs the same "used elsewhere" predicate in both modules, so one decides and the other mirrors it. Moving the whole consumer gives one detector and one consumer. A WARNING on the compile-only path is dropped anyway: compile raises on errors only. Ruled text is unchanged; every §4 CLI test is green unedited.
+     - **One answer to "is this input used?"** is the new `data_flow.template_reads(workflow_ir)`: every surface (embedded code = its inserts), a carry's index sources, cache vars, output sources read as the runtime reads them, plus body-leftover roots. It reproduces the template validator's old 4-way union. The validator now calls `template_reads(...) | bare embedded roots` for the unused-input check.
+     - Deleted: `_extract_cache_templates_for_unused_check` / `_surface_references` (its test now asserts `template_reads` holds the cache var).
+     - Not done: dynamic children still skip full template validation (the orchestrator forbade widening the engine path). §7a/§7b hidden and near-miss inserts in a dynamic child still reach the tool verbatim, but that failure is loud (a JS Reference/SyntaxError) and was already listed as held in the falsifier's report ("dynamic-child run-time outcomes as ruled in D4").
+     - Real surface: the falsifier's own `n/parent_dynamic.pflow.md selector="#main" which=…/child.pflow.md` (isolated HOME) now fails before the tool with the ruled §4a text plus `Sub-workflow: …/child.pflow.md`.
+  2. **W2 — the body-leftover fix for `${x|json}` in a shell/code body binds `${x|json}` in `env:`/`inputs:`, which validation rejects (§5).** CONFIRMED (executed on the falsifier's `m/shell_body`, `m/code_body`). Cause: `BodyReference.reference` was `Expression.raw`, which after D1 carries the suffix.
+     - FIXED at the source: new `Expression.bare_raw` (`raw` without `|json`). `_leftover` uses it, so the fix reads `- env: {X: ${x}}` … replace `${x|json}` with "$X", and `- inputs: {x: ${x}}`.
+     - The same property replaces the two hand-written `raw[: raw.rindex("|")].rstrip()` copies (validator §5 fix, runtime `classify_unresolved_references`): one rule, three call sites.
+     - Test `test_a_json_insert_left_in_a_body_is_bound_without_its_suffix_and_the_fix_validates` (in `test_code_body_leftovers.py`) asserts the exact fix line, then applies it (shell and code) and checks it validates clean. Its presence pair is the old suffixed binding validating to the §5 ERROR.
+  3. **S1 — `|json`-shaped text that is not an insert** (`${[1, "a"]|json}`, `${title|json|json}`, `${row["full name"]|json}`) passes validation and fails at the tool. CONFIRMED by reading (`near_miss_insert` claims only end-trim + case, R4). SKIPPED, agreeing with the orchestrator:
+     - the failure is loud (a JS SyntaxError naming the text);
+     - it is outside R4's ruled scope;
+     - a diagnostic would need unruled message text (no "meant" form exists to suggest).
+     - Recorded as a known limit for the task-review.
+- Changed:
+  - `src/pflow/core/templates.py` (`Expression.bare_raw`);
+  - `src/pflow/core/workflow/data_flow.py` (`template_reads`, `_validate_embedded_code` + builders, `_leftover`);
+  - `src/pflow/runtime/template_validation/validator.py` (consumer and cache extractor removed; unused-input via `template_reads`);
+  - `src/pflow/runtime/engine/template_errors.py` (`bare_raw`);
+  - `src/pflow/runtime/template_validation/CLAUDE.md`, `src/pflow/core/workflow/CLAUDE.md` (where the report and the used-set live);
+  - tests: `test_runtime/test_embedded_code_runtime.py` (+1, dynamic child), `test_integration/test_code_body_leftovers.py` (+1), `test_core/test_cache_block_parser.py` (mechanism assertion re-pointed).
+- Verified:
+  - `make check` rc 0; `make test` 10955 passed (+2); `make test-all-local` 11008 passed, 2 skipped.
+  - All seven screenshot workflows `--validate-only` ✓.
+  - **Mutation ledger** (byte-copy restore, counted):
+    - W1a: `validate_data_flow` drops `_validate_embedded_code` → 14 red, the dynamic-child test included;
+    - W1b: `template_reads` skips output sources → red (`test_a_bare_coalesce_output_source_names_real_roots`);
+    - W1c: skips cache vars → red (`test_inputs_referenced_only_in_cache_not_flagged_unused`);
+    - W1e: no body roots → red (`test_consumer_skips_a_body_and_still_reads_env[unused_input]`);
+    - W1d: a carry's own reference counted → 0 red. Equivalent in practice: a carry may only reference its loop node, so its own reference never roots at an input. Kept the old rule rather than test a dead branch.
+    - W2a: `_leftover` back to `raw` → 1 red;
+    - W2b: `bare_raw` returns `raw` → 9 red (§5 fix rows, the coalesce fix, the body-binding test).
+  - | Assumed: nothing about shipped behaviour; the compile-path `CompilationError` carries the ruled message verbatim (asserted).
+- Deviations/surprises:
+  - The whole embedded report moved to data flow, not only the ERROR (reason above).
+  - A §4a ERROR is no longer suppressed by the Issue pass's early return. A workflow with both a malformed template and an input used only bare now shows both errors, where it showed only the malformed one. These are two separate mistakes, so it is still one diagnostic per mistake. No ruled text covered the combination.
+  - §4 diagnostics now also appear on paths that run data flow without template validation (`WorkflowValidator.validate` with `extracted_params=None`, the compiler).
+- Self-checks: fully happy.
+  - Doubt checked: is `template_reads` exactly the old union? The three killed mutations pin its three non-param members (outputs, cache, bodies); the param/batch/loop member is pinned by the whole unused-input suite. The one surviving mutant (W1d) is dead in practice.
+  - test-reflect: both new tests have same-medium presence pairs (the converted child runs and the tool receives `"#main"`; the suffixed binding is the §5 error). Nothing deleted beyond the moved code.
+- Next: orchestrator.

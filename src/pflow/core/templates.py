@@ -271,6 +271,11 @@ class Expression:
         """Every Reference, dynamic-index inner ones included: the DEPENDENCY view."""
         return tuple(ref for op in self.operands if isinstance(op, Reference) for ref in op.references)
 
+    @property
+    def bare_raw(self) -> str:
+        """``raw`` without a ``|json`` suffix: the text of ``${…}`` read as a plain Template."""
+        return self.raw[: self.raw.rindex("|")].rstrip() if self.as_json else self.raw
+
 
 IssueKind = typing.Literal["malformed", "bad_literal"]
 

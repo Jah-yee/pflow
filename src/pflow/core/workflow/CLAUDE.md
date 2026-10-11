@@ -66,7 +66,10 @@ fields), a dynamic index's inner references included. Bash expansions such as
 `${var:-default}` in a Template param open no Expression — they are Issues,
 reported by the template validator's Issue pass, never dependencies here. A code
 body is no surface: the "Code bodies" section reads it once for leftovers and
-`$${`, scoped per step (`step_scope`).
+`$${`, scoped per step (`step_scope`). Embedded code's bare pflow names and quoted
+inserts ("Embedded code") are reported here for the same reason as body leftovers:
+the compiler runs this check, the template validator does not (a child workflow
+chosen at run time is only compiled). Whether an input is used is `template_reads`.
 
 `check_inputs=True` checks undeclared workflow inputs. The compiler passes False
 because its `initial_params` can contain values unavailable to this validator;

@@ -121,3 +121,51 @@ def test_dry_run_plans_an_embedded_step_without_a_template_error(tool: str) -> N
     plan = WorkflowRunner().plan(ir, {"title": "T"}, RunnerConfig(cache_enabled=False, trace_enabled=False))
     assert [(entry.node_id, entry.status, entry.diagnostic) for entry in plan.entries] == [("s", "execute", None)]
     assert plan.diagnostics == []
+
+
+def _dynamic_child_run(tool: str, tmp_path: Any, function: str) -> tuple[Any, list[dict[str, Any]]]:
+    """A parent that picks its child at run time (``workflow: ${which}``) — the child is
+    never seen by the parent's validation, only by the compiler's data-flow check."""
+    child = tmp_path / "child.pflow.md"
+    child.write_text(
+        "# Child\n\nEvaluate.\n\n## Inputs\n\n### selector\n\nA selector.\n\n- type: string\n- required: true\n\n"
+        f"## Steps\n\n### probe\n\nEvaluate it.\n\n- type: {tool}\n- function: {function}\n",
+        encoding="utf-8",
+    )
+    string_input = {"type": "string", "required": True, "description": "An input."}
+    parent = {
+        "ir_version": "0.1.0",
+        "inputs": {"selector": string_input, "which": string_input},
+        "nodes": [
+            {
+                "id": "call",
+                "type": "workflow",
+                "params": {"workflow": "${which}", "inputs": {"selector": "${selector}"}},
+            }
+        ],
+        "edges": [],
+    }
+    with stub_mcp_calls() as calls:
+        result = WorkflowRunner().run(
+            parent, {"selector": "#main", "which": str(child)}, RunnerConfig(cache_enabled=False, trace_enabled=False)
+        )
+    return result, calls
+
+
+def test_a_dynamic_child_with_an_input_used_only_bare_fails_before_the_tool_is_called(tool: str, tmp_path: Any) -> None:
+    """A child chosen at run time skips template validation; data flow, which the compiler
+    runs, owns the §4a ERROR — so the stale ``'${selector}'`` is never sent as JavaScript."""
+    result, calls = _dynamic_child_run(tool, tmp_path, "() => { const sel = '${selector}'; return sel; }")
+    assert not result.success
+    assert calls == []
+    assert [(error.node_id, error.message) for error in result.errors] == [
+        (
+            "probe",
+            "Input 'selector' is never inserted: its only use, '${selector}' in 'function', is JavaScript text "
+            "that pflow sends to the MCP tool unchanged.",
+        )
+    ]
+    # Presence pair: the converted child runs and the tool receives the inserted value.
+    result, calls = _dynamic_child_run(tool, tmp_path, "() => { const sel = ${selector|json}; return sel; }")
+    assert result.success, [error.message for error in result.errors]
+    assert [call["function"] for call in calls] == ['() => { const sel = "#main"; return sel; }']

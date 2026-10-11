@@ -168,7 +168,7 @@ def classify_unresolved_references(
         operands = [op for op in parsed[0].operands if isinstance(op, Reference)]
         is_coalesce = len(parsed[0].operands) > 1
         as_json = parsed[0].as_json
-        body = expr[: expr.rindex("|")].rstrip() if as_json else expr
+        body = parsed[0].bare_raw
 
         for operand in operands:
             # An inner that resolved is not a cause, whatever its root's node status
