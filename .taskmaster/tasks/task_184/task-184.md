@@ -23,9 +23,10 @@ medium
 next
 
 > Drafted 2026-10-11 by the main orchestrator (session-14) from two independent searcher passes (native + codex offload)
-> over `main` `3a7643c8` that converged on every claim. Every `file:line` below is point-in-time — **re-verify at start**;
-> Task 120 (merging next) edits `cli/commands/run.py` and `mcp_server/services/execution_service.py`, so lines there WILL
-> have moved. D1–D4 **DECIDED** by the user 2026-10-11 (*"go ahead with your recommendations for standing decisions"*).
+> over `main` `3a7643c8` that converged on every claim; re-verified by the planner on `05884642` (post-Task-120 — the
+> `runner.py` cites below are the current ones; the rest held). D1–D4 **DECIDED** by the user 2026-10-11 (*"go ahead with
+> your recommendations for standing decisions"*). The plan's embedded checkpoint (`implementation/show-before-code.md`,
+> Q1–Q4) rules the remaining presentation choices before implementation.
 
 ## Problem
 
@@ -54,7 +55,7 @@ paused (`run.py:645`), denied (`run.py:508`) and the MCP text builders (`executi
 lineage, warnings, metrics — has to be added N times, and the four issues above are the N-1 places it was not.
 
 One of the gaps is below presentation: the runner's exception path builds its `ExecutionResult` without `metrics=`
-(`execution/runner.py:907-913`; the normal return passes it at `:428-435`). No document builder can recover what the
+(`execution/runner.py:946-952`; the normal return passes it at `:446-453`). No document builder can recover what the
 result never carried.
 
 ## Solution
@@ -112,9 +113,18 @@ None that block starting. Coordinate-with: **Task 120** edits `cli/commands/run.
   `execution` (step table, `nodes_executed` = completed, `resumed_from` + `nodes_restored` when resumed), `metrics`,
   `duration_ms`, `total_cost_usd`, `warnings`, `advisories`, `diagnostics`.
 - Present by status only: `result` (success; partial resolved outputs on an output-resolution failure, as #754 ruled),
-  `errors` + `error` (failed), `gate` + `resume_command` (paused), `gate` (denied).
+  `error` (failed, denied — the summary string), `gate` + `resume_command` (paused), `gate` (denied), `resume_command`
+  (failed, only when the run is resumable).
+- `errors` is always a list — empty on success and on a pause (a pause carries no error; agents branching on
+  `success == false` iterate it without a guard), the gate diagnostic on a denial.
+- `execution_id` and `trace_path` are present together, exactly when the trace streamed to disk (`--no-trace` and a
+  mid-run stream fault leave both absent — an id with no file to resolve against is not run identity).
 - A key is absent, never `null`, when the run genuinely has no value for it (no trace → no `trace_path`; not resumed →
-  no `resumed_from`).
+  no `resumed_from`; no metrics collector → no `duration_ms`). This binds the document's own optional keys; a `null` that
+  a producer means stays (`total_cost_usd: null` is the pricing tri-state; a `?? null` output; the canonical gate payload's
+  `question`/`recommendation`/`iteration`).
+- A failure raised before the engine ran (a compile-time input error) still carries `execution_id` and `trace_path`: the
+  CLI settles the trace before building the document, as MCP already does, so the two channels never disagree on identity.
 
 ### The result
 - `ExecutionResult` is constructed the same way on the normal and the exception return path of the runner; a run that
@@ -126,7 +136,8 @@ None that block starting. Coordinate-with: **Task 120** edits `cli/commands/run.
   the trace line each appear for every status that has the underlying field — not for a subset of failure kinds.
 - `pflow resume … --approve no` (denied) shows this attempt's completed count AND its lineage.
 - The MCP `workflow_execute` text response is rendered from the document: identity and trace path on every status;
-  warnings on paused; metrics on failure.
+  warnings on paused; metrics on failure. A failed run is still a raised `RuntimeError` carrying that text (the server
+  boundary renders raises); success and a durable pause return it.
 - `-p` suppresses the stderr summary and the trace line as today; it never changes which fields the JSON carries.
 
 ### Guards
@@ -143,10 +154,16 @@ None that block starting. Coordinate-with: **Task 120** edits `cli/commands/run.
 - `format_execution_success` is the seed: it already builds the richest document and already has three callers. The
   likely shape is that it becomes the one builder (taking the `ExecutionResult`) and `format_execution_errors`,
   `_display_paused_result`, `_display_denied_result`, `_build_error_text`, `_format_paused_text` become renderers or go.
-- `Diagnostic.to_display_dict` duplicates every context key (lane #776 is changing that for the failure document — if
-  #776 merges first, this task builds on its representation; if not, this task owns it).
-- `execution_id` on failure is today conditional on resumability (`run.py:620-642`, `_resumable_execution_id`); the
-  document carries identity unconditionally and `resume_command` only when resumable.
+- Every diagnostic in a printed document is `Diagnostic.to_output_dict()` (redacted; #776/#781/#788 shipped) — the
+  builder inherits that representation.
+- `execution_id` on failure is today conditional on resumability (`run.py:629-651`, `_resumable_execution_id`); the
+  document carries identity whenever the trace streamed and `resume_command` only when resumable
+  (`trace.has_resumable_step()`, the one in-memory suppressor).
+- A paused `ExecutionResult` carries the gate's ERROR diagnostic (`exception_to_diagnostics(GateNotInteractiveError)`);
+  it stays on the result — the non-durable-pause fallback renders it as the failure's error — and is dropped from the
+  paused document only.
+- `_build_error_text` also serves the `registry_run` single-node probe (`execution_service.py:791`, the #748 surface);
+  the probe keeps a thin errors+warnings text helper built from the same section functions, not the run document.
 - The guide (`guide/features/resume.md`, `guide/core.md` output sections), `docs/reference/cli/`, and the MCP instruction
   resources describe the JSON shape — all updated by this task; the Task-159 baseline (`.taskmaster/tasks/task_159/
   baseline/verify.sh`) re-records the cases whose output text changes, named per case in the PR body.
@@ -159,21 +176,26 @@ None that block starting. Coordinate-with: **Task 120** edits `cli/commands/run.
   prints lineage and a non-zero completed count only if steps completed in THIS attempt.
 - `make test-all-local` green; Task-159 baseline green after re-record; `tests-windows` green.
 
-## Open questions (resolve at start)
+## Resolved at start (planner, 2026-10-11)
 
-- Whether `--dry-run`'s plan document adopts the identity convention (cheap?) or stays as is.
-- Whether any consumer reads top-level `nodes_executed` as the attempted count (grep `tests/`, `docs/`, the web UI).
-- Whether the text renderer's step table and the JSON `execution.steps` come from the same helper today
-  (`execution/execution_state.py:40`, `build_execution_steps`) — the planner confirms it stays the one source.
+- `--dry-run`'s plan document stays as is: a plan is not a run, so there is no run identity to add (no trace, no
+  execution id exists before a run starts). `tests/test_cli/test_dry_run.py`'s exact key set is unchanged.
+- No consumer reads the attempted count: top-level `nodes_executed` is read by no `src/`, MCP or `web/` code (the web UI
+  reads the trace trailer's own `nodes_executed`, a different field); only four success-run tests and one docs example
+  show it. It is dropped, and so is its source copy `metrics.workflow.nodes_executed` (`core/metrics.py`, derivable from
+  `node_timings`). The trace trailer's per-visit count is the trace format's and is out of scope.
+- The step table has one source already: `execution/execution_state.py:build_execution_steps` serves the JSON `execution.steps`
+  and both text renderers (which call it with `metrics_summary=None`). It stays the one source; the document's `execution`
+  block is built from it for every status.
 
 ## References
 
 - Issues: #695, #699, #737 (owned; closed by this task), #748 (adjacent, out), #754 (partial `result` on failure, ruled),
   #171/Task 171 (identity on MCP success).
-- Builders (main `3a7643c8`): `cli/workflow_output.py:125, 806, 902`; `execution/formatters/success_formatter.py:27, 309`;
-  `cli/error_output.py:55, 131, 174`; `execution/formatters/error_formatter.py:18`; `cli/workflow_errors.py:40`;
-  `cli/commands/run.py:508, 553, 645`; `mcp_server/services/execution_service.py:120, 187, 303-332`;
-  `execution/runner.py:428-435, 907-913`.
+- Builders (main `05884642`): `cli/workflow_output.py:125, 806, 881`; `execution/formatters/success_formatter.py:27, 315`;
+  `cli/error_output.py:55, 129, 172`; `execution/formatters/error_formatter.py:13`; `cli/workflow_errors.py:40`;
+  `cli/commands/run.py:517, 562, 654`; `mcp_server/services/execution_service.py:130, 197, 314-348`;
+  `execution/runner.py:446-453, 946-952`.
 - Tests pinning today's shapes: `tests/test_integration/test_metrics_integration.py:152-189, 713-751`;
   `tests/test_cli/test_unified_error_output.py:83-109, 376-432`; `tests/test_cli/test_enhanced_error_output.py:137-163`;
   `tests/test_cli/test_resume_cli.py:939-959`; `tests/test_cli/test_paused_cli.py:80-123`;
