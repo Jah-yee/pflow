@@ -33,7 +33,7 @@ from typing import Any
 import yaml
 
 from pflow.core.diagnostic import Diagnostic
-from pflow.core.exceptions import CompilationError, WorkflowNotFoundError
+from pflow.core.exceptions import CompilationError, WorkflowFileNotFoundError, WorkflowNotFoundError
 from pflow.core.suggestion_utils import find_similar_items
 from pflow.core.workflow.manager import WorkflowManager
 
@@ -78,6 +78,7 @@ def resolve_workflow(
 
     Raises:
         WorkflowNotFoundError: Workflow not found (with similar_names for suggestions).
+        WorkflowFileNotFoundError: A path-like identifier names no file.
         MarkdownParseError: Invalid markdown content.
         PermissionError: File access denied.
         ValueError: Inline workflow contains file references.
@@ -100,20 +101,16 @@ def resolve_workflow(
         _check_inline_file_references(ir, "content")
         return ResolvedWorkflow(ir=ir, source="content", file_path=None, diagnostics=diagnostics)
 
-    # File path — contains path separator or ends with known extension
+    # File path — contains path separator or ends with known extension.
+    # A path is always a file: it never falls through to the saved-name lookup.
     if _is_path_like(identifier):
-        result = _try_load_from_file(identifier)
-        if result is not None:
-            return result
-        # Fall through to name-based resolution
+        return _load_from_file(identifier, wm)
 
-    # Name-based resolution — try saved workflow library
     if wm is None:
         wm = WorkflowManager()
 
-    result = _try_load_from_library(identifier, wm)
-    if result is not None:
-        return result
+    if wm.exists(identifier):
+        return _load_library_workflow(identifier, wm)
 
     # Not found — build suggestions and raise
     similar = _find_suggestions(identifier, wm)
@@ -134,8 +131,22 @@ def _is_path_like(identifier: str) -> bool:
     )
 
 
-def _try_load_from_file(identifier: str) -> ResolvedWorkflow | None:
-    """Try to load workflow from file path. Returns None if file doesn't exist."""
+def _file_exists(path: Path) -> bool:
+    """``Path.exists`` without its OSError swallowing: on Python 3.14 an unreadable
+    path reads as missing, so a permission error would be reported as "No file at"."""
+    try:
+        path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return True
+
+
+def _load_from_file(identifier: str, wm: WorkflowManager | None) -> ResolvedWorkflow:
+    """Load a workflow from a file path; a missing file raises ``WorkflowFileNotFoundError``.
+
+    One alias survives: a bare ``my-flow.pflow.md`` with no file behind it runs
+    the saved workflow ``my-flow`` (saved names cannot contain ``.`` or a separator).
+    """
     from pflow.core import normalize_ir
     from pflow.core.markdown_parser import parse_markdown
 
@@ -164,8 +175,14 @@ def _try_load_from_file(identifier: str) -> ResolvedWorkflow | None:
             hint="Workflow files use the .pflow.md extension, not .md.",
         )
 
-    if not path.exists():
-        return None
+    if not _file_exists(path):
+        saved_name = identifier.removesuffix(".pflow.md")
+        if saved_name != identifier and Path(identifier).name == identifier:
+            wm = wm or WorkflowManager()
+            if wm.exists(saved_name):
+                return _load_library_workflow(saved_name, wm)
+        cwd = None if Path(identifier).expanduser().is_absolute() else Path.cwd()
+        raise WorkflowFileNotFoundError(workflow_name=identifier, path=path, cwd=cwd)
 
     content = path.read_text(encoding="utf-8")
     result = parse_markdown(content)
@@ -181,21 +198,6 @@ def _try_load_from_file(identifier: str) -> ResolvedWorkflow | None:
         description=result.description,
         diagnostics=tuple(result.warnings),
     )
-
-
-def _try_load_from_library(identifier: str, wm: WorkflowManager) -> ResolvedWorkflow | None:
-    """Try to load workflow from saved library."""
-    name = identifier
-    if not wm.exists(name):
-        # Strip .pflow.md extension and retry
-        if identifier.endswith(".pflow.md"):
-            name = identifier[:-9]  # len(".pflow.md") == 9
-            if not wm.exists(name):
-                return None
-        else:
-            return None
-
-    return _load_library_workflow(name, wm)
 
 
 def _load_library_workflow(name: str, wm: WorkflowManager) -> ResolvedWorkflow:

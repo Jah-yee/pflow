@@ -149,17 +149,6 @@ def test_from_pflow_file_with_whitespace():
         assert "steps" in result.output.lower() or "node" in result.output.lower()
 
 
-def test_from_file_missing():
-    """Test error when file doesn't exist."""
-    runner = click.testing.CliRunner()
-    # File path is detected but file doesn't exist
-    result = runner.invoke(main, ["./nonexistent.pflow.md"])
-
-    assert result.exit_code != 0
-    # Should show workflow not found
-    assert "Workflow './nonexistent.pflow.md' not found" in result.output
-
-
 # Tests for error cases
 def test_markdown_workflow_with_parameters():
     """Test that .pflow.md workflow files can accept parameters."""
@@ -373,12 +362,12 @@ def test_context_storage_verification():
     assert result.exit_code == 0
     assert "Usage:" in result.output
 
-    # Test file input - unsupported paths fall back to normal workflow lookup errors
+    # Test file input - a path-like argument with no file behind it is a file error
+    # (GH #553; full coverage in test_workflow_resolution.py)
     with runner.isolated_filesystem():
         result = runner.invoke(main, ["./test.pflow"])
-        # Non-existent file treated as workflow name
         assert result.exit_code != 0
-        assert "not found" in result.output
+        assert "No file at:" in result.output
 
 
 # Tests for new error handling enhancements
