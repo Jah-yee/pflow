@@ -44,10 +44,6 @@ def subprocess_env(tmp_path_factory, uv_exe):
     env = os.environ.copy()
     set_isolated_home(env, home)
     env.pop("PYTEST_CURRENT_TEST", None)
-    # On 3.14 anyio's from_thread.py:119 prints a SyntaxWarning the first time an environment
-    # compiles it (reached here via the registry's core-node scan); this test pins pflow's own
-    # stderr routing, not a third party's first compile (#752).
-    env["PYTHONWARNINGS"] = "ignore::SyntaxWarning"
     return env
 
 
