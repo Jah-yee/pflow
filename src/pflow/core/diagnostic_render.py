@@ -13,7 +13,7 @@ from pflow.core.diagnostic import (
     Severity,
 )
 from pflow.core.exceptions import declared_text_reason
-from pflow.core.security_utils import is_sensitive_parameter
+from pflow.core.security_utils import is_sensitive_parameter, redact_sensitive
 from pflow.core.templates import parse_path
 
 _CACHE_CATEGORIES: frozenset[str] = frozenset({CACHE_FAILURE_CATEGORY, CACHE_WARNING_CATEGORY, CACHE_ADVISORY_CATEGORY})
@@ -35,17 +35,24 @@ def format_diagnostic(
     verbose: bool = False,
     error_number: int | None = None,
 ) -> str:
-    """Render one diagnostic to text."""
+    """Render one diagnostic to text.
+
+    Every block below draws on ``context`` — the diagnostic's context as a printed JSON document
+    carries it (``Diagnostic.to_output_dict``) — and never on ``diagnostic.context``, so node data
+    a block shows (a failed step's response body, MCP details) is masked by name like the JSON.
+    """
+    context: dict[str, Any] = redact_sensitive(diagnostic.context or {})
     if diagnostic.severity == Severity.ERROR:
         return _format_error_diagnostic(
             diagnostic,
+            context,
             verbose=verbose,
             error_number=error_number,
         )
-    return _format_warning_or_info_diagnostic(diagnostic)
+    return _format_warning_or_info_diagnostic(diagnostic, context)
 
 
-def _format_warning_or_info_diagnostic(diagnostic: Diagnostic) -> str:
+def _format_warning_or_info_diagnostic(diagnostic: Diagnostic, context: dict[str, Any]) -> str:
     """Render one WARNING or INFO diagnostic.
 
     Most warnings are compact one-liners (api warnings, runtime warnings, etc.). The
@@ -63,7 +70,6 @@ def _format_warning_or_info_diagnostic(diagnostic: Diagnostic) -> str:
     batch_size, prefix_tokens_estimated, target_file) so agents reading
     text output can route on the warning ID without parsing JSON.
     """
-    context = diagnostic.context or {}
     if context.get("category") == "template_error" and context.get("unresolved_references"):
         return _format_warning_template_error(diagnostic, context)
 
@@ -138,12 +144,12 @@ def _format_warning_template_error(diagnostic: Diagnostic, context: dict[str, An
 
 def _format_error_diagnostic(
     diagnostic: Diagnostic,
+    context: dict[str, Any],
     verbose: bool,
     error_number: int | None = None,
 ) -> str:
     """Render one ERROR diagnostic in the unified titled format."""
     lines: list[str] = []
-    context = diagnostic.context or {}
 
     # 1. Title line — agent-routing handle. The stable warning ``id``, when
     # present, appears in brackets next to the title so text-mode consumers
@@ -669,15 +675,12 @@ def _render_http_failure_block(data: dict[str, Any]) -> list[str]:
 
 
 def _render_mcp_failure_block(data: dict[str, Any]) -> list[str]:
-    from pflow.core.security_utils import sanitize_parameters
-
-    sanitized_data = sanitize_parameters(data)
     lines: list[str] = []
-    details = sanitized_data.get("error_details")
+    details = data.get("error_details")
     detail_map = details if isinstance(details, dict) else {}
-    if server := sanitized_data.get("server") or detail_map.get("server"):
+    if server := data.get("server") or detail_map.get("server"):
         lines.append(f"        Server: {server}")
-    if tool := sanitized_data.get("tool") or detail_map.get("tool"):
+    if tool := data.get("tool") or detail_map.get("tool"):
         lines.append(f"        Tool: {tool}")
     if (timeout := detail_map.get("timeout")) is not None:
         lines.append(f"        Timeout: {timeout}")
@@ -776,20 +779,17 @@ def _extract_field_path(var: str) -> str:
 
 def _format_api_response_lines(raw_response: dict[str, Any]) -> list[str]:
     """Render HTTP API response details."""
-    from pflow.core.security_utils import sanitize_parameters
-
-    sanitized_raw = sanitize_parameters(raw_response)
     lines = ["", "  API Response:"]
 
-    if errors_list := sanitized_raw.get("errors"):
+    if errors_list := raw_response.get("errors"):
         for api_error in errors_list[:3]:
             field = api_error.get("field", "unknown")
             message = api_error.get("message", api_error.get("code", "error"))
             lines.append(f"    - Field '{field}': {message}")
-    elif message := sanitized_raw.get("message"):
+    elif message := raw_response.get("message"):
         lines.append(f"    {message}")
 
-    if doc_url := sanitized_raw.get("documentation_url"):
+    if doc_url := raw_response.get("documentation_url"):
         lines.append("")
         lines.append(f"  Documentation: {doc_url}")
 
@@ -798,16 +798,13 @@ def _format_api_response_lines(raw_response: dict[str, Any]) -> list[str]:
 
 def _format_mcp_error_lines(mcp_error: dict[str, Any]) -> list[str]:
     """Render MCP tool error details."""
-    from pflow.core.security_utils import sanitize_parameters
-
-    sanitized_mcp = sanitize_parameters(mcp_error)
     lines = ["", "  MCP Tool Error:"]
 
-    if details := sanitized_mcp.get("details"):
+    if details := mcp_error.get("details"):
         lines.append(f"    Field: {details.get('field')}")
         lines.append(f"    Expected: {details.get('expected')}")
         lines.append(f"    Received: {details.get('received')}")
-    elif message := sanitized_mcp.get("message"):
+    elif message := mcp_error.get("message"):
         lines.append(f"    {message}")
 
     return lines
@@ -815,21 +812,18 @@ def _format_mcp_error_lines(mcp_error: dict[str, Any]) -> list[str]:
 
 def _format_mcp_error_details_lines(mcp_error_details: dict[str, Any]) -> list[str]:
     """Render MCP runtime error details carried on non-template diagnostics."""
-    from pflow.core.security_utils import sanitize_parameters
-
-    sanitized_details = sanitize_parameters(mcp_error_details)
     lines = ["", "  MCP Tool:"]
 
-    if server := sanitized_details.get("server"):
+    if server := mcp_error_details.get("server"):
         lines.append(f"    Server: {server}")
-    if tool := sanitized_details.get("tool"):
+    if tool := mcp_error_details.get("tool"):
         lines.append(f"    Tool: {tool}")
-    if (timeout := sanitized_details.get("timeout")) is not None:
+    if (timeout := mcp_error_details.get("timeout")) is not None:
         lines.append(f"    Timeout: {timeout}")
 
     extra_details = {
         key: value
-        for key, value in sanitized_details.items()
+        for key, value in mcp_error_details.items()
         if key not in {"server", "tool", "timeout"} and value is not None
     }
     if extra_details:
