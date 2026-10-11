@@ -100,16 +100,23 @@ def test_top_level_data_blocks_mask_sensitive_named_values(context: dict[str, An
     assert masked_line in rendered
 
 
-def test_long_non_secret_values_are_not_cut_to_twenty_characters() -> None:
+def _api_message_lines(message: str) -> list[str]:
+    rendered = format_diagnostic(
+        Diagnostic(severity=Severity.ERROR, message="HTTP 403", context={"raw_response": {"message": message}})
+    )
+    return rendered.splitlines()
+
+
+def test_api_message_shows_whole_up_to_the_display_cap() -> None:
     # The per-block ``sanitize_parameters`` this replaced cut every string over 100 chars to 20
     # (the #746 blinding the gate preview already dropped); an API's own message is the diagnosis.
     message = "The requested resource requires the 'repo' scope, which the token you supplied lacks."
     message += " Re-issue it with that scope."
-    rendered = format_diagnostic(
-        Diagnostic(severity=Severity.ERROR, message="HTTP 403", context={"raw_response": {"message": message}})
-    )
+    assert f"    {message}" in _api_message_lines(message)
 
-    assert f"    {message}" in rendered
+    # Past 300 characters it is capped like every other data line, so a verbose upstream
+    # message cannot flood stderr or an agent's MCP context.
+    assert f"    {'m' * 300}..." in _api_message_lines("m" * 10_000)
 
 
 def test_only_the_entry_reads_the_raw_diagnostic_context() -> None:

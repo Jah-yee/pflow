@@ -104,3 +104,22 @@ def test_mcp_workflow_execute_error_text_is_masked(workflow: Path) -> None:
         ExecutionService.execute_workflow(str(workflow))
 
     _assert_masked(str(excinfo.value))
+
+
+_INPUT_AS_INDEX = (
+    "# Dry leak\n\nAn input's value used as a list index.\n\n## Inputs\n\n"
+    "### items\n\nA list.\n\n- type: array\n\n### api_key\n\nA secret.\n\n- type: string\n\n## Steps\n\n"
+    '### use\n\nUse an indexed item.\n\n- type: shell\n- env: {X: ${items[${api_key}]}}\n\n```shell command\necho "$X"\n```\n'
+)
+
+
+def test_dry_run_text_masks_an_index_value_from_a_sensitive_input(tmp_path: Path) -> None:
+    # The JSON twin is test_json_diagnostic_redaction.py::TestDryRunDocument (#781).
+    workflow = tmp_path / "dry.pflow.md"
+    workflow.write_text(_INPUT_AS_INDEX, encoding="utf-8")
+    args = ["--dry-run", str(workflow), "items=[1,2]", "api_key=SECRET-KEY-789"]
+
+    result = CliRunner(mix_stderr=False).invoke(main, args)
+
+    assert "SECRET-KEY-789" not in result.stdout + result.stderr
+    assert "Index ${api_key} is '<REDACTED>'" in result.stdout

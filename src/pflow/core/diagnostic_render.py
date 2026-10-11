@@ -665,10 +665,7 @@ def _render_http_failure_block(data: dict[str, Any]) -> list[str]:
     if method := data.get("method"):
         lines.append(f"        Method: {method}")
     if response := data.get("response") or data.get("response_body"):
-        resp_preview = str(response)[:300]
-        if len(str(response)) > 300:
-            resp_preview += "..."
-        lines.append(f"        Response: {resp_preview}")
+        lines.append(f"        Response: {_capped(response)}")
     if not lines:
         lines.append("        (no HTTP details captured)")
     return lines
@@ -690,7 +687,7 @@ def _render_mcp_failure_block(data: dict[str, Any]) -> list[str]:
         if key not in {"server", "tool", "timeout"} and value is not None
     }
     if extra_details:
-        lines.append(f"        Details: {extra_details}")
+        lines.append(f"        Details: {_capped(extra_details)}")
     elif details and not isinstance(details, dict):
         lines.append(f"        Details: {details}")
     if not lines:
@@ -729,6 +726,12 @@ def _render_generic_failure_block(data: dict[str, Any]) -> list[str]:
     if not lines:
         lines.append("        (no additional details captured)")
     return lines
+
+
+def _capped(value: object, limit: int = 300) -> str:
+    """``str(value)`` cut at ``limit`` characters with ``...`` — a data line's display cap."""
+    text = str(value)
+    return text[:limit] + "..." if len(text) > limit else text
 
 
 def _truncate_error_text(error: str, limit: int = 300) -> str:
@@ -787,7 +790,7 @@ def _format_api_response_lines(raw_response: dict[str, Any]) -> list[str]:
             message = api_error.get("message", api_error.get("code", "error"))
             lines.append(f"    - Field '{field}': {message}")
     elif message := raw_response.get("message"):
-        lines.append(f"    {message}")
+        lines.append(f"    {_capped(message)}")
 
     if doc_url := raw_response.get("documentation_url"):
         lines.append("")
@@ -827,7 +830,7 @@ def _format_mcp_error_details_lines(mcp_error_details: dict[str, Any]) -> list[s
         if key not in {"server", "tool", "timeout"} and value is not None
     }
     if extra_details:
-        lines.append(f"    Details: {extra_details}")
+        lines.append(f"    Details: {_capped(extra_details)}")
 
     return lines
 
