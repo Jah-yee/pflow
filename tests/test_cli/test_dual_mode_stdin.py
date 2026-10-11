@@ -193,9 +193,9 @@ class TestDualModeStdinBehavior:
 
         # Should fail with helpful error message
         assert result.exit_code == 1
-        # Error message should explain how to fix it
-        assert "stdin" in result.output.lower()
-        assert "true" in result.output.lower()
+        # The remedy names the `.pflow.md` bullet the author types, never JSON-key syntax (#700's class)
+        assert "add `- stdin: true` to one input declaration" in result.output
+        assert '"stdin": true' not in result.output
 
     def test_stdin_error_when_multiple_stdin_inputs(self, tmp_path):
         """Test that workflow with multiple stdin: true inputs shows validation error.
