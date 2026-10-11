@@ -3,12 +3,12 @@
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from pflow.mcp import MCPRegistrar, MCPServerManager
+from pflow.mcp import MCPDiscovery, MCPRegistrar, MCPServerManager
 from pflow.registry import Registry
 
 
 def _tool(name: str) -> dict:
-    return {"name": name, "description": name}
+    return {"name": name, "description": name, "inputSchema": {"type": "object", "properties": {}}}
 
 
 def _entry(registrar: MCPRegistrar, server: str, tool: str) -> dict:
@@ -21,6 +21,7 @@ def _build(tmp_path: Path, configs: dict[str, dict]) -> tuple[MCPServerManager, 
     registry = Registry(registry_path=tmp_path / "registry.json")
     registry._save_with_metadata({})
     discovery = Mock()
+    discovery.convert_to_pflow_params = MCPDiscovery(manager).convert_to_pflow_params
     registrar = MCPRegistrar(registry=registry, manager=manager, discovery=discovery)
     registrar._settings_manager = Mock()
     registrar._settings_manager.should_include_node.return_value = True
@@ -136,14 +137,14 @@ def test_conversion_failure_preserves_server_while_valid_peer_advances(tmp_path:
         "mcp-good-old": _entry(registrar, "good", "old"),
     })
     discovery.discover_tools.side_effect = [
-        [_tool("broken") | {"inputSchema": {"properties": []}}],
+        [_tool("broken") | {"inputSchema": {"type": "object", "properties": []}}],
         [_tool("new")],
     ]
-    discovery.convert_to_pflow_params.side_effect = AttributeError("invalid properties")
 
     batch = registrar.sync_servers(["bad", "good"], reconcile_all=True)
 
-    assert batch.servers[0].error == "Could not build registry entries for 'bad': invalid properties"
+    assert batch.servers[0].error is not None
+    assert batch.servers[0].error.startswith("Could not build registry entries for 'bad': ")
     assert batch.servers[1].error is None
     assert set(registry.load(include_filtered=True)) == {"mcp-bad-old", "mcp-good-new"}
 

@@ -260,9 +260,15 @@ class TestMCPRegistrarCritical:
 
             # Add some tools to registry
             nodes = {
-                "mcp-github-create-issue": registrar._create_registry_entry("github", {"name": "create-issue"}),
-                "mcp-github-list-issues": registrar._create_registry_entry("github", {"name": "list-issues"}),
-                "mcp-slack-send-message": registrar._create_registry_entry("slack", {"name": "send-message"}),
+                "mcp-github-create-issue": registrar._create_registry_entry(
+                    "github", {"name": "create-issue", "inputSchema": {}}
+                ),
+                "mcp-github-list-issues": registrar._create_registry_entry(
+                    "github", {"name": "list-issues", "inputSchema": {}}
+                ),
+                "mcp-slack-send-message": registrar._create_registry_entry(
+                    "slack", {"name": "send-message", "inputSchema": {}}
+                ),
                 "read-file": {"class_name": "ReadFileNode"},  # Non-MCP node
             }
             registry.save(nodes)

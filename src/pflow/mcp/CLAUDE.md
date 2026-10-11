@@ -29,6 +29,9 @@ contain hyphens. Replacement/removal/listing use exact
 `interface.mcp_metadata.server` ownership. `registrar.py:get_tool_info` still has a
 naive split; its display limitation is separate from mutation and compiler parsing.
 
+Discovery stores tool schemas verbatim and never substitutes a value for an SDK
+attribute it cannot read — why, in `discovery.py:_tool_definition` (#756).
+
 Discovery runs only where a server enters the config (`pflow mcp add`) or on an
 explicit `pflow mcp sync`; workflow start never contacts servers (#751 — a failing
 server used to cost every invocation). Successful servers advance independently;
