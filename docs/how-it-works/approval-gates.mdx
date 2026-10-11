@@ -22,12 +22,12 @@ At a terminal:
 ⏸  Approval required: notify-slack (mcp-composio-slack-SLACK_SEND_MESSAGE)
 
    channel:        #releases
-   markdown_text:  v0.9.0 released with 3 features: …
+   markdown_text:  v0.9.0 released with 3 features: resume tokens, approval gates and the web UI.
 
    Run this step? [y/N]:
 ```
 
-The preview shows **resolved values** — the actual message text, not `${...}` templates. You approve what will happen, not the abstract definition.
+The preview shows **resolved values** — the actual message text, not `${...}` templates — and every value in full, never cut short. A shell step's `env:` values show as the text the command receives (`true` as `True`, null as empty). You approve what will happen, not the abstract definition.
 
 ## Denying
 

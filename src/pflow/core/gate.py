@@ -20,7 +20,9 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+from pflow.core.node_type_display import node_type_tag
 from pflow.core.security_utils import is_sensitive_parameter
+from pflow.core.templates import to_string
 
 GATE_KIND_APPROVAL: Literal["action_approval"] = "action_approval"
 GATE_KIND_ESCALATION: Literal["decision_escalation"] = "decision_escalation"
@@ -74,11 +76,17 @@ def build_approval_request(node_id: str, node_type: str, params: Any, *, iterati
 
     ``_``-prefixed keys are parser/engine bookkeeping (``_source_line``, ...), not
     part of the action — filtered here like every other display surface
-    (node_output_formatter / trace_report convention).
+    (node_output_formatter / trace_report convention). A shell step's ``env:``
+    values are previewed as the text the command receives (``to_string``,
+    ADR-0016 — ``true`` binds as ``True``, null as empty), not as typed values:
+    the approver consents to what runs, on every surface this payload feeds.
     """
     if not isinstance(params, dict):
         return GateRequest(node_id=node_id, node_type=node_type, kind=GATE_KIND_APPROVAL, iteration=iteration)
     preview = {key: json_safe(value) for key, value in params.items() if not key.startswith("_")}
+    env = params.get("env")
+    if node_type_tag(node_type) == "shell" and isinstance(env, dict):
+        preview["env"] = json_safe({name: to_string(value) for name, value in env.items()})
     return GateRequest(
         node_id=node_id, node_type=node_type, kind=GATE_KIND_APPROVAL, preview=preview, iteration=iteration
     )
@@ -127,11 +135,11 @@ def masked_preview(preview: dict[str, Any]) -> dict[str, Any]:
 
     THE masking policy for every gate render surface (TTY prompt, error
     diagnostics); the trace's gate event stays unmasked, consistent with the
-    trace's ``template_resolutions``. Masking only — length truncation belongs
-    to each renderer (the TTY prompt's 200-char step): routing values through
-    ``sanitize_parameters`` here cut long non-secret nested values (an http
-    ``json:`` body, a sub-workflow ``inputs:`` field) to ~20 chars, blinding
-    the approver to what they were approving (PR #554 review warning).
+    trace's ``template_resolutions``. Masking only, and no surface truncates an
+    approval preview (#746): the approver consents to the whole value. Routing
+    values through ``sanitize_parameters`` here once cut long non-secret nested
+    values (an http ``json:`` body, a sub-workflow ``inputs:`` field) to ~20
+    chars, blinding the approver to what they were approving (PR #554).
     """
 
     def mask(key: str | None, value: Any) -> Any:

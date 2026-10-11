@@ -121,6 +121,60 @@ def test_paused_json_document_shape(home, gate_wf):
     assert "gated action" in gate["preview"]["command"]
 
 
+_LONG_ENV_VALUE = "a" * 290 + "END_MARKER"
+
+_ENV_GATE_WF = f"""# Env Preview
+
+A gated shell step whose env values are typed.
+
+## Steps
+
+### gated
+
+Requires approval.
+
+- type: shell
+- env:
+    FLAG: true
+    LONG: {_LONG_ENV_VALUE}
+    AFTER: tail-var
+- approval: required
+
+```shell command
+echo "$FLAG"
+```
+"""
+
+
+def test_pause_surfaces_preview_env_as_the_bound_text_in_full(home, tmp_path):
+    """#746: the text pause output, the JSON document and resume's answer-required error show
+    each env value as the text the command receives (`true` binds as `True`) and never cut."""
+    wf = tmp_path / "env_preview.pflow.md"
+    wf.write_text(_ENV_GATE_WF, encoding="utf-8")
+
+    text = _runner().invoke(cli, [str(wf)])
+    assert text.exit_code == 4, text.stderr
+    assert '"FLAG": "True"' in text.stderr
+    assert '"FLAG": true' not in text.stderr
+    assert f'"LONG": "{_LONG_ENV_VALUE}"' in text.stderr
+    assert '"AFTER": "tail-var"' in text.stderr
+    assert "chars)" not in text.stderr
+
+    document = json.loads(_runner().invoke(cli, [str(wf), "--output-format", "json"]).stdout)
+    assert document["gate_request"]["preview"]["env"] == {
+        "FLAG": "True",
+        "LONG": _LONG_ENV_VALUE,
+        "AFTER": "tail-var",
+    }
+
+    token = _TOKEN_RE.search(text.stdout).group(1)
+    answer_required = _runner().invoke(cli, ["resume", token])
+    combined = answer_required.stdout + answer_required.stderr
+    assert '"FLAG": "True"' in combined
+    assert '"FLAG": true' not in combined
+    assert _LONG_ENV_VALUE in combined
+
+
 def test_no_trace_gate_keeps_hard_failure_with_updated_message(home, gate_wf):
     """--no-trace stays an explicit opt-out whose gates keep the hard error —
     and the error must NAME --no-trace as the removable blocker (plan 1f)."""

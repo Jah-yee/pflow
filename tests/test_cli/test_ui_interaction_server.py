@@ -1124,6 +1124,26 @@ class TestGateEndpoint:
         assert "$pflow_blob" not in response.text
 
     @pytest.mark.trace_files
+    def test_shell_env_preview_is_served_as_the_bound_text(self, tmp_path: Path, monkeypatch) -> None:
+        """#746: the panel renders strings verbatim, so the server must hand it each env value as the
+        text the command receives (`true` binds as `True`), never the typed JSON value."""
+        self._debug_dir(tmp_path, monkeypatch)
+        wf = tmp_path / "env_gate.pflow.md"
+        wf.write_text(
+            "# Env Gate\n\nA gated step with a typed env value.\n\n## Steps\n\n"
+            "### deploy\n\nNeeds approval.\n\n- type: shell\n- approval: required\n"
+            '- env:\n    FLAG: true\n\n```shell command\necho "$FLAG"\n```\n',
+            encoding="utf-8",
+        )
+        run = CliRunner(mix_stderr=False).invoke(cli, [str(wf)])
+        assert run.exit_code == 4, run.stderr
+        token = _TOKEN_RE.search(run.stdout).group(1)
+
+        response = _client().get("/api/gate", params={"run": token})
+        assert response.status_code == 200
+        assert response.json()["gate_request"]["preview"]["env"] == {"FLAG": "True"}
+
+    @pytest.mark.trace_files
     def test_long_escalation_question_is_served_in_full_not_as_a_blob_ref(self, tmp_path: Path, monkeypatch) -> None:
         """#720: the escalation arm — a 2 KB question (interned on the node's output event, referenced
         by the trailer) reaches the panel as text. A ref here crashed the whole viewer (an object as a

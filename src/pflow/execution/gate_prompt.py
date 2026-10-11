@@ -37,10 +37,6 @@ from pflow.core.output_controller import OutputController
 
 GateResolver = Callable[..., GateResolution]
 
-# Display-only truncation for preview values; the trace event carries the full
-# payload (interning handles size — trace_io.intern_event_leaves).
-_PREVIEW_VALUE_CHARS = 200
-
 
 def can_prompt(output_controller: OutputController | None) -> bool:
     """True when a gate prompt can render (stderr) and be answered (stdin).
@@ -240,13 +236,11 @@ def format_gate_lines(gate_request: dict[str, Any]) -> list[str]:
 
 
 def _format_preview(preview: dict[str, Any]) -> list[str]:
-    """Aligned ``key: value`` lines, secret-masked and display-truncated.
+    """Aligned ``key: value`` lines, secret-masked and never truncated.
 
     Values are flattened to one line each (newlines escaped) so the block stays
-    scannable; the full unmasked payload lives in the gate trace event. Masking
-    is the shared ``masked_preview`` (recursive, mask-only); truncation happens
-    ONLY here, at the 200-char display budget — never inside the masking step,
-    so a long non-secret nested value stays reviewable.
+    scannable. Masking is the shared ``masked_preview``; every value is shown in
+    full — the approver consents to the whole value (#746).
     """
     if not preview:
         return ["(no parameters)"]
@@ -255,8 +249,6 @@ def _format_preview(preview: dict[str, Any]) -> list[str]:
     for key, value in masked_preview(preview).items():
         text = value if isinstance(value, str) else _compact_json(value)
         text = text.replace("\n", "\\n")
-        if len(text) > _PREVIEW_VALUE_CHARS:
-            text = f"{text[:_PREVIEW_VALUE_CHARS]}… ({len(text)} chars)"
         lines.append(f"{key}:{' ' * (width - len(key) + 2)}{text}")
     return lines
 
