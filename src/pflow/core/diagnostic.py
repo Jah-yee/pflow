@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from pflow.core.security_utils import redact_sensitive
+
 
 class Severity(Enum):
     """Diagnostic severity levels."""
@@ -103,7 +105,10 @@ class Diagnostic:
         return hash((self.severity, self.source, self.node_id, self.id or self.message))
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to the structured JSON shape."""
+        """Serialize to the structured JSON shape, values RAW — the round-trip form ``from_dict`` reads back.
+
+        For in-process transport and storage only. A document pflow prints uses ``to_output_dict``.
+        """
         result: dict[str, Any] = {
             "severity": self.severity.value,
             "message": self.message,
@@ -138,8 +143,16 @@ class Diagnostic:
             id=data.get("id"),
         )
 
+    def to_output_dict(self) -> dict[str, Any]:
+        """The form every printed JSON document carries: ``to_dict()`` with each sensitive-named value
+        redacted at any depth (``redact_sensitive``), so a token or cookie in ``context`` never reaches stdout."""
+        result: dict[str, Any] = redact_sensitive(self.to_dict())
+        return result
+
     def to_display_dict(self) -> dict[str, Any]:
-        """Serialize with context merged into top-level keys for display consumers."""
+        """Serialize with context merged into top-level keys — a legacy flat shape kept for the trace's
+        ``warnings`` (read by ``type``/``recovered``) and validate-only JSON. Values are RAW; new
+        documents use ``to_output_dict``."""
         result = self.to_dict()
         # Reuse the deep copy already made by to_dict() — no second deepcopy.
         ctx = result.get("context")

@@ -157,7 +157,7 @@ class TestWorkflowOutputSource:
             assert output["success"] is False
             assert "never reported" not in result.stdout
             error = output["errors"][0]
-            assert error["path"] == "outputs.echo"
+            assert error["context"]["path"] == "outputs.echo"
             assert "'source' is a required property" in error["message"]
             assert "Add a source line to output 'echo'" in error["suggestions"][0]
         finally:

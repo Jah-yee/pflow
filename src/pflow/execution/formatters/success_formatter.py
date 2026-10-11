@@ -73,9 +73,9 @@ def format_execution_success(
     # text renderer's Warnings/Advisories split (CLI/JSON parity).
     all_diagnostics = warnings or []
     warnings_list, advisories_list = partition_surfaced_diagnostics(all_diagnostics)
-    result["warnings"] = [d.to_display_dict() for d in warnings_list]
-    result["advisories"] = [d.to_display_dict() for d in advisories_list]
-    result["diagnostics"] = [d.to_dict() for d in all_diagnostics]
+    result["warnings"] = [d.to_output_dict() for d in warnings_list]
+    result["advisories"] = [d.to_output_dict() for d in advisories_list]
+    result["diagnostics"] = [d.to_output_dict() for d in all_diagnostics]
 
     # Add metrics from collector
     if metrics_collector:

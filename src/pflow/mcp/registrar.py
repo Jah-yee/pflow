@@ -309,11 +309,7 @@ class MCPRegistrar:
         Returns:
             Registry entry dictionary
         """
-        # Convert JSON Schema to pflow params
-        params = []
-        if "inputSchema" in tool:
-            params = self.discovery.convert_to_pflow_params(tool["inputSchema"])
-
+        params = self.discovery.convert_to_pflow_params(tool["inputSchema"])
         params.extend(param.copy() for param in MCP_NODE_PARAMS)
 
         # MCPNode stores every successful tool response under one canonical
@@ -337,7 +333,7 @@ class MCPRegistrar:
                 "mcp_metadata": {
                     "server": server_name,
                     "tool": tool["name"],
-                    "original_schema": tool.get("inputSchema", {}),
+                    "original_schema": tool["inputSchema"],
                     "output_schema": tool.get("outputSchema", {}),
                 },
             },

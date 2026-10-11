@@ -50,6 +50,14 @@ format. Neither is a substitute for the other.
 Node execution (`runner.run` in `commands/run.py:execute_json_workflow`, probe's
 `node.run`) happens inside `core/stdio_reservation.py:reserve_stdout`, in every
 output format, so stray writes from user code reach stderr, not the result.
+Third-party compile-time warnings (a dependency's `SyntaxWarning`, printed on the
+first import in an environment with no cached bytecode) never reach pflow's stderr.
+`tests/test_third_party_compile_warnings.py` enforces this on every CI Python. Fix
+at the source by upgrading the dependency in `uv.lock`. Only when no fixed release
+exists, add a narrow category+message filter in `cli_main` with its removal
+condition and exempt the same message in that test. Never use a `module=` filter:
+Python 3.14.0 attributes these warnings to `importlib._bootstrap`, not to the
+module being compiled.
 
 ### Declared vs --only Output Contract
 

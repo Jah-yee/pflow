@@ -67,13 +67,11 @@ def _format_from_result(
     status = getattr(result, "status", None)
     status_str = status.value if status else "failed"
 
-    # Use existing error formatter for sanitization and execution steps
     formatted = format_execution_errors(
         result,
         shared_storage=shared_storage,
         ir_data=ir_data,
         metrics_collector=metrics_collector,
-        sanitize=True,
     )
 
     errors_list = formatted["errors"]
@@ -90,7 +88,7 @@ def _format_from_result(
         "error": summary,
         "errors": errors_list,
         "diagnostics": [
-            diagnostic.to_dict()
+            diagnostic.to_output_dict()
             for diagnostic in getattr(result, "diagnostics", [])
             if isinstance(diagnostic, Diagnostic)
         ],
@@ -136,7 +134,7 @@ def _format_from_exception(
 ) -> dict[str, Any]:
     """Format error from a pre-execution or unexpected exception."""
     diagnostics = exception_to_diagnostics(exception)
-    errors = [d.to_display_dict() for d in diagnostics]
+    errors = [d.to_output_dict() for d in diagnostics]
     if len(errors) == 1:
         summary = errors[0].get("title") or errors[0].get("message") or str(exception)
     else:
@@ -147,7 +145,7 @@ def _format_from_exception(
         "status": "failed",
         "error": summary,
         "errors": errors,
-        "diagnostics": [d.to_dict() for d in diagnostics],
+        "diagnostics": [d.to_output_dict() for d in diagnostics],
         "workflow": workflow_metadata or {"action": "unsaved"},
     }
 

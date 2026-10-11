@@ -179,6 +179,7 @@ def test_probe_mcp_output_schema_paths_resolve_via_read_fields(runner: click.tes
     node_type = "mcp-images-generate"
     tool = {
         "name": "generate",
+        "inputSchema": {"type": "object", "properties": {}},
         "outputSchema": {
             "type": "object",
             "properties": {
