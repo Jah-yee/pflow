@@ -118,17 +118,19 @@ export function NameLabel({
  *  the param's mode. */
 export function ParamValue({ param }: { param: RFParam }): JSX.Element {
   if (param.is_dynamic && typeof param.value === "string") {
-    const collapsed = collapseWhitespace(param.value);
+    // Tokenize the value as written, then flatten the text to one line: collapsing first
+    // would turn a raw TAB inside a quoted literal (an Issue) into an expression. Trimming
+    // first is safe: an expression starts with `$` and ends with `}`.
     return (
       <>
-        {parseTemplate(collapsed, param.mode).map((seg, i) =>
+        {parseTemplate(param.value.trim(), param.mode).map((seg, i) =>
           seg.isRef ? (
             <span key={i} className="ref-chip" title={`\${${seg.text}}`}>
               {seg.text}
             </span>
           ) : (
             <span key={i} className="lit">
-              {truncate(seg.text, 28)}
+              {truncate(seg.text.replace(/\s+/g, " "), 28)}
             </span>
           ),
         )}

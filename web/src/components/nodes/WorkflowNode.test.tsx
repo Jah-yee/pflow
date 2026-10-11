@@ -28,4 +28,16 @@ describe("ParamValue chips", () => {
   it("an escape is never a chip (#683)", () => {
     expect(chips("$${x} and ${x}")).toEqual(["x"]);
   });
+
+  // W2: the row tokenizes the value as written, then collapses the text it shows. A raw TAB
+  // inside a quoted literal is not a pflow literal (an Issue); collapsed first, it would be.
+  it("a raw whitespace control inside a quoted literal is no chip; the same text with a space is", () => {
+    expect(chips('${up.stdout ?? "a\tb"}')).toEqual([]);
+    expect(chips('${up.stdout ?? "a b"}')).toEqual(['up.stdout ?? "a b"']);
+  });
+
+  it("the text around a chip still collapses to one line", () => {
+    const { container } = render(<ParamValue param={{ name: "prompt", value: "\n Say\n\n  hi to ${user.name}\tnow\n", is_dynamic: true, source: null }} />);
+    expect([...container.querySelectorAll(".lit")].map((el) => el.textContent)).toEqual(["Say hi to ", " now"]);
+  });
 });

@@ -8,6 +8,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { ParamBlock } from "./ReadPanel";
 import { highlight } from "../utils/highlight";
+import { fullValue } from "../utils/format";
 import type { BatchSpec, RFParam } from "../types";
 
 // Keep CodeBlock SYNCHRONOUS (highlight → null = legacy plain-text paint), so the
@@ -161,5 +162,25 @@ describe("ParamBlock — embedded code (an MCP tool's JavaScript)", () => {
     render(<ParamBlock param={param({ name: "function", value: fn, mode: "embedded" })} kind="mcp-chrome-devtools-evaluate_script" />);
     fireEvent.click(screen.getByLabelText("Expand function"));
     expect(tealed(screen.getByRole("dialog"))).toEqual(["${item.name|json}", "${up.stdout|json}"]);
+  });
+});
+
+describe("ParamBlock — a dict param's refs are read per leaf (a shell step's env)", () => {
+  // The JSON shows `\"fallback\"`; read as text that is an Issue and the selected edge's
+  // mark would vanish. The escape leaf is the shell's literal `${up.stdout}`, never a mark.
+  const env = { X: '${up.stdout ?? "fallback"}', Y: "$${up.stdout}" };
+  const marks = (root: ParentNode): string[] => [...root.querySelectorAll(".ref-mark")].map((el) => el.textContent ?? "");
+
+  it("the selected edge marks the leaf's coalesce reference, and the box shows fullValue's text", () => {
+    render(<ParamBlock param={param({ name: "env", value: env })} kind="shell" highlightRef="up.stdout" />);
+    const box = document.querySelector(".read-param-value")!;
+    expect(marks(box)).toEqual(['${up.stdout ?? \\"fallback\\"}']);
+    expect(box.textContent).toBe(fullValue(env));
+  });
+
+  it("the ⛶ modal marks it too", () => {
+    render(<ParamBlock param={param({ name: "env", value: env })} kind="shell" highlightRef="up.stdout" />);
+    fireEvent.click(screen.getByLabelText("Expand env"));
+    expect(marks(screen.getByRole("dialog"))).toEqual(['${up.stdout ?? \\"fallback\\"}']);
   });
 });

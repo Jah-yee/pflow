@@ -19,8 +19,8 @@ export interface ResolvedBatchItem {
   label: string;
   /** The param value with every `${alias.path}` ref substituted for THIS item;
    *  non-alias refs (`${content}`) stay verbatim — they are not per-item. A
-   *  dict/list value arrives as its `fullValue` text (indented JSON). */
-  value: string;
+   *  dict/list stays structured: CodeBlock shows it as the param does. */
+  value: unknown;
 }
 
 // The item path an expression substitutes: a single plain-path operand rooted at the
@@ -116,8 +116,7 @@ function substitute(text: string, alias: string, item: unknown, mode: ParamMode 
 
 /** The per-item expansion of a batch-alias param value, or `null` when there is
  *  nothing to expand: no string leaf references an alias field, or there are no
- *  literal items (a dynamic batch). A dict/list value substitutes in its leaves and
- *  renders through `fullValue`, as the un-expanded param does. */
+ *  literal items (a dynamic batch). A dict/list value substitutes in its leaves. */
 export function resolveBatchItems(
   value: unknown,
   alias: string,
@@ -129,6 +128,6 @@ export function resolveBatchItems(
   const readFields = aliasFields(value, alias, mode);
   return items.map((item, i) => ({
     label: itemLabel(item, i, readFields),
-    value: fullValue(mapLeaves(value, (leaf) => substitute(leaf, alias, item, mode))),
+    value: mapLeaves(value, (leaf) => substitute(leaf, alias, item, mode)),
   }));
 }

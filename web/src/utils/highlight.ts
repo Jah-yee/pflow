@@ -103,13 +103,13 @@ export function markRefs(root: Root, highlightRef?: string, opts?: { tealRest?: 
       }
       if (child.type !== "text" || !child.value.includes("${")) continue;
       const segments = parseTemplate(child.value, opts?.mode);
-      const hasMatch = highlightRef != null && segments.some((s) => s.isRef && refMatchesHighlight(s.text, highlightRef));
+      const hasMatch = highlightRef != null && segments.some((s) => refMatchesHighlight(s, highlightRef));
       const hasRef = segments.some((s) => s.isRef);
       if (!hasRef || (!hasMatch && !tealRest)) continue; // nothing to color in this text node
       const replacement: ElementContent[] = segments.map((seg) => {
         const text = seg.isRef ? `\${${seg.text}}` : seg.text;
         if (!seg.isRef) return { type: "text", value: text };
-        if (highlightRef != null && refMatchesHighlight(seg.text, highlightRef)) {
+        if (highlightRef != null && refMatchesHighlight(seg, highlightRef)) {
           marks++;
           return { type: "element", tagName: "mark", properties: { className: ["ref-mark"] }, children: [{ type: "text", value: text }] };
         }

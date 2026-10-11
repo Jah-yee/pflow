@@ -68,22 +68,22 @@ describe("resolveBatchItems", () => {
     { name: "bob", greeting: "hey" },
   ];
 
-  it("substitutes the alias in a dict's string leaves, rendered as the param's JSON", () => {
+  it("substitutes the alias in a dict's string leaves, keeping the dict", () => {
     const out = resolveBatchItems({ GREETING: "${item.greeting}", MODE: "${shared.mode}" }, "item", GREET_ITEMS);
     expect(out).toEqual([
-      { label: "name: ada", value: JSON.stringify({ GREETING: "hi", MODE: "${shared.mode}" }, null, 2) },
-      { label: "name: bob", value: JSON.stringify({ GREETING: "hey", MODE: "${shared.mode}" }, null, 2) },
+      { label: "name: ada", value: { GREETING: "hi", MODE: "${shared.mode}" } },
+      { label: "name: bob", value: { GREETING: "hey", MODE: "${shared.mode}" } },
     ]);
   });
 
   it("never substitutes a key, even one that looks like a ref", () => {
     const out = resolveBatchItems({ "${item.name}": "${item.greeting}" }, "item", GREET_ITEMS);
-    expect(out?.map((r) => JSON.parse(r.value))).toEqual([{ "${item.name}": "hi" }, { "${item.name}": "hey" }]);
+    expect(out?.map((r) => r.value)).toEqual([{ "${item.name}": "hi" }, { "${item.name}": "hey" }]);
   });
 
   it("substitutes a leaf nested in a list", () => {
     const out = resolveBatchItems({ args: ["--to", "${item.name}"] }, "item", GREET_ITEMS);
-    expect(out?.map((r) => JSON.parse(r.value))).toEqual([{ args: ["--to", "ada"] }, { args: ["--to", "bob"] }]);
+    expect(out?.map((r) => r.value)).toEqual([{ args: ["--to", "ada"] }, { args: ["--to", "bob"] }]);
     expect(out?.map((r) => r.label)).toEqual(["greeting: hi", "greeting: hey"]); // the read field drops out
   });
 

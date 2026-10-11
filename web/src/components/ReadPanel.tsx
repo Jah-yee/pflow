@@ -7,7 +7,7 @@ import { useState } from "react";
 
 import { cacheInsertIndex } from "../graph/flow";
 import { resolveBatchItems } from "../utils/batchItems";
-import { fullValue, nodeColor, paramLanguage } from "../utils/format";
+import { nodeColor, paramLanguage } from "../utils/format";
 import { iconFor } from "../utils/icons";
 import { resolveEndpointFlatId } from "../utils/viewParams";
 import { BatchItemsBlock } from "./BatchItems";
@@ -104,7 +104,7 @@ export function ParamBlock({
         )}
       </div>
       <CodeBlock
-        code={fullValue(param.value)}
+        code={param.value}
         lang={paramLanguage(kind, param.name, param.value)}
         mode={param.mode}
         highlightRef={highlightRef}

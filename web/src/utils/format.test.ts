@@ -4,6 +4,7 @@ import {
   CONDITION_COLOR,
   TRANSFORM_COLOR,
   categoryLabel,
+  fullValue,
   kindColor,
   nodeColor,
   paramLanguage,
@@ -14,6 +15,7 @@ import {
   timeAgo,
 } from "./format";
 import { HIGHLIGHT_LANGS } from "./highlight";
+import type { ParamMode } from "../types";
 
 describe("condition presentation (decision code node = CONDITION pseudo-kind)", () => {
   it("a decision code node presents as CONDITION in the condition color", () => {
@@ -73,7 +75,7 @@ describe("parseTemplate", () => {
   });
 
   it("treats a pure ref as a single ref segment", () => {
-    expect(parseTemplate("${only}")).toEqual([{ text: "only", isRef: true }]);
+    expect(parseTemplate("${only}")).toEqual([{ text: "only", isRef: true, operands: ["only"] }]);
   });
 
   // #683: an escape is literal text; the same text unescaped is a ref.
@@ -98,6 +100,47 @@ describe("parseTemplate", () => {
   });
 });
 
+// W1: a dict/list param renders as `fullValue`'s JSON, which escapes a quoted literal's
+// `"` as `\"`; read as text, `${up.stdout ?? \"fallback\"}` is an Issue. Each string leaf
+// is read before serialization, and the segments carry the JSON text exactly.
+describe("parseTemplate — a dict/list value reads each string leaf, then shows its JSON", () => {
+  const shown = (value: unknown, mode?: ParamMode): string =>
+    parseTemplate(value, mode)
+      .map((s) => (s.isRef ? `\${${s.text}}` : s.text))
+      .join("");
+  const refs = (value: unknown, mode?: ParamMode): string[] =>
+    parseTemplate(value, mode).flatMap((s) => (s.isRef ? [s.text] : []));
+
+  it("a leaf's quoted coalesce fallback stays one reference; an escape leaf and a key stay text", () => {
+    const env = { X: '${up.stdout ?? "fallback"}', Y: "$${up.stdout}", "${k}": "plain" };
+    const segments = parseTemplate(env);
+    expect(refs(env)).toEqual(['up.stdout ?? \\"fallback\\"']); // the body as the JSON shows it
+    expect(segments.filter((s) => refMatchesHighlight(s, "up.stdout"))).toHaveLength(1);
+    expect(shown(env)).toBe(fullValue(env));
+  });
+
+  it("embedded code in a leaf keeps only its inserts", () => {
+    const value = { fn: "() => [`${user.name}`, ${up.stdout|json}, ${x ?? \"a\"}]" };
+    expect(refs(value, "embedded")).toEqual(["up.stdout|json"]);
+    expect(refs(value, "template")).toEqual(["user.name", "up.stdout|json", 'x ?? \\"a\\"']);
+  });
+
+  // Byte identity: whatever the leaves hold, the segments ARE `fullValue`'s text (and
+  // still find the leaves' references, as the JSON shows them).
+  it.each<[string, unknown, string[]]>([
+    ["nested", { a: [{ b: '${n.x ?? "q"}' }, "${m}", 3, null, true], c: {}, d: [] }, ['n.x ?? \\"q\\"', "m"]],
+    ["escapes and controls", { 'k"ey': 'tab\there\n${a.b}\\ "q" \u2028 \u0001 🦊 ${c ?? "\\u00e9"}' }, ["a.b", 'c ?? \\"\\\\u00e9\\"']],
+    ["a top-level list", ["${a}", '"${b}"', "x:y", '": "'], ["a", "b"]],
+    ["an Issue and an unterminated escape", { x: "${ a } ${b", y: "$${" }, []],
+    ["a scalar", 42, []],
+    ["null", null, []],
+  ])("%s: the shown text equals fullValue's", (_name, value, expectedRefs) => {
+    expect(shown(value)).toBe(fullValue(value));
+    expect(refs(value)).toEqual(expectedRefs);
+    expect(shown(value, "embedded")).toBe(fullValue(value));
+  });
+});
+
 describe("refMatchesHighlight — per parsed operand", () => {
   it.each<[string, string, boolean]>([
     ["gen.result|json", "gen.result", true],
@@ -108,8 +151,10 @@ describe("refMatchesHighlight — per parsed operand", () => {
     ["gen.result|json", "gen.res", false],
     ["gen.result|json", "other", false],
     ['other.x ?? "gen.result"', "gen.result", false], // a literal operand is not the ref
+    ["other.x ?? gen.result", "gen.result", true], // any operand, not only the first
   ])("${%s} for %s → %s", (body, highlightRef, expected) => {
-    expect(refMatchesHighlight(body, highlightRef)).toBe(expected);
+    const [segment] = parseTemplate(`\${${body}}`);
+    expect(refMatchesHighlight(segment!, highlightRef)).toBe(expected);
   });
 });
 

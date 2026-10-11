@@ -4,34 +4,59 @@
 import { templateTokens } from "../graph/scan";
 import type { ParamMode } from "../types";
 
-export interface TemplateSegment {
-  text: string;
-  isRef: boolean;
+/** One span of a value's display text. A ref's `text` is its expression as shown inside
+ *  `${…}` (a `|json` suffix included); its `operands` are the coalesce operands as written,
+ *  literals included. Escapes, Issues and what `mode` leaves to the embedded language are text. */
+export type TemplateSegment = { text: string; isRef: false } | { text: string; isRef: true; operands: string[] };
+
+// A JSON string in `fullValue`'s output; group 1 is the `:` that follows a key.
+const JSON_STRING = /"(?:[^"\\]|\\.)*"(:?)/g;
+
+/** Split a value's display text (`fullValue`) into literal/`${ref}` segments, so a param
+ *  value can render as text + inline connection chips (one chip per ref). A dict/list reads
+ *  each string leaf before serialization — its JSON escapes a quoted literal's `"` as `\"`,
+ *  which the walk would read as an Issue — and shows each segment JSON-escaped, so the
+ *  segments' text is exactly the JSON. Keys are names, never templates. */
+export function parseTemplate(value: unknown, mode?: ParamMode): TemplateSegment[] {
+  const text = fullValue(value);
+  if (typeof value !== "object" || value === null) return textSegments(text, mode);
+  const segments: TemplateSegment[] = [];
+  let pos = 0;
+  for (const m of text.matchAll(JSON_STRING)) {
+    if (m[1]) continue;
+    const start = m.index + 1;
+    append(segments, { text: text.slice(pos, start), isRef: false });
+    for (const seg of textSegments(JSON.parse(m[0]) as string, mode)) {
+      append(segments, { ...seg, text: JSON.stringify(seg.text).slice(1, -1) });
+    }
+    pos = start + m[0].length - 2;
+  }
+  append(segments, { text: text.slice(pos), isRef: false });
+  return segments;
 }
 
-/** Split a string into literal/`${ref}` segments so a param value can render as
- *  text + inline connection chips (one chip per ref). A ref segment's `text` is the
- *  expression as written inside `${…}` (a `|json` suffix included); escapes, Issues
- *  and everything `mode` leaves to the embedded language are literal. */
-export function parseTemplate(value: string, mode?: ParamMode): TemplateSegment[] {
+function textSegments(text: string, mode: ParamMode | undefined): TemplateSegment[] {
   const segments: TemplateSegment[] = [];
-  for (const token of templateTokens(value, mode)) {
-    const isRef = token.kind === "expression";
-    const text = isRef ? value.slice(token.start + 2, token.end - 1) : value.slice(token.start, token.end);
-    const last = segments[segments.length - 1];
-    if (!isRef && last && !last.isRef) last.text += text;
-    else segments.push({ text, isRef });
+  for (const token of templateTokens(text, mode)) {
+    if (token.kind === "expression") {
+      segments.push({ text: text.slice(token.start + 2, token.end - 1), isRef: true, operands: token.operands });
+    } else append(segments, { text: text.slice(token.start, token.end), isRef: false });
   }
   return segments;
 }
 
-/** Whether a `${...}` ref BODY belongs to `highlightRef`. Matching is per parsed
- *  OPERAND — `${a.b ?? "fallback"}` and `${a.b|json}` match highlightRef "a.b": an
- *  operand counts when it equals the ref or extends it with a dot path. */
-export function refMatchesHighlight(refBody: string, highlightRef: string): boolean {
-  const [token] = templateTokens(`\${${refBody}}`);
-  const operands = token?.kind === "expression" ? token.operands : [];
-  return operands.some((op) => op === highlightRef || op.startsWith(`${highlightRef}.`));
+/** Append a segment, merging adjacent text and dropping empty text. */
+function append(segments: TemplateSegment[], segment: TemplateSegment): void {
+  const last = segments[segments.length - 1];
+  if (segment.isRef) segments.push(segment);
+  else if (last && !last.isRef) last.text += segment.text;
+  else if (segment.text) segments.push(segment);
+}
+
+/** Whether a segment is a ref belonging to `highlightRef`: one of its operands equals the
+ *  ref or extends it with a dot path — `${a.b ?? "fallback"}` and `${a.b|json}` match "a.b". */
+export function refMatchesHighlight(segment: TemplateSegment, highlightRef: string): boolean {
+  return segment.isRef && segment.operands.some((op) => op === highlightRef || op.startsWith(`${highlightRef}.`));
 }
 
 /** Flatten any internal whitespace runs to single spaces (for one-line previews). */
