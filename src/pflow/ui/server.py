@@ -1277,9 +1277,10 @@ async def resume(request: Request) -> Response:
     server-stricter asymmetries: see ``_parse_resume_body``.
 
     TOCTOU (edge ledger #1): two viewers answering concurrently can both pass pre-flight and both
-    spawn; the loser's CLI refuses on the loader's superseded check (the ONE consumption policy — no
-    double-fire) and its browser pins an id that never materializes → the existing `run-not-found`
-    state. Tolerated (local single-user; same posture as #546)."""
+    spawn. The loader's superseded check (``resume_source._find_consuming_attempt``) sees only an
+    attempt whose trace already exists, so two children that load before either writes one BOTH run
+    the answered step — with ``auto_approve``, every remaining iteration twice. A later answer is
+    refused. Tolerated (local single-user; same posture as #546); the atomic token claim is #763."""
     body = await _json_body(request)
     if isinstance(body, Response):
         return body
