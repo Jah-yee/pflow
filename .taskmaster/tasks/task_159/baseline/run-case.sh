@@ -63,6 +63,9 @@ fi
 #     / parse-validate errors / shell-only execution). If a case ever DID attempt a real
 #     call, a placeholder fails loud with an auth error instead of silently making a
 #     billed, non-deterministic call — keeping the oracle honest.
+# stdin is /dev/null: verify.sh / regenerate.sh feed their case list to their loop on stdin,
+# and pflow reads a piped stdin (bash 5 makes a here-string a pipe) — an inherited stdin lets
+# one case swallow the rest of the list. A case also must not record its caller's stdin.
 env -i \
   HOME="$BASELINE_HOME" \
   PATH="$PATH" \
@@ -81,7 +84,7 @@ env -i \
   ANTHROPIC_API_KEY="not-a-real-key-baseline-preflight-only" \
   GEMINI_API_KEY="not-a-real-key-baseline-preflight-only" \
   bash "$CASE_DIR/command.sh" \
-  > "$CASE_DIR/.raw-stdout" 2> "$CASE_DIR/.raw-stderr"
+  < /dev/null > "$CASE_DIR/.raw-stdout" 2> "$CASE_DIR/.raw-stderr"
 RC=$?
 
 NORM_STDOUT=$(BASELINE_HOME="$BASELINE_HOME" BASELINE_CASE_DIR="$CASE_DIR" BASELINE_REPO_ROOT="$REPO_ROOT" \

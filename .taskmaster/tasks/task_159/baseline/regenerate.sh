@@ -36,4 +36,10 @@ done <<< "$cases"
 
 echo
 echo "regenerated $count cases ($fail harness failures)"
+# A loop that ends early must never read as success (see run-case.sh's stdin note).
+found=$(printf '%s\n' "$cases" | wc -l | tr -d ' ')
+if [[ $count -ne $found ]]; then
+  echo "harness error: ran $count of $found cases" >&2
+  fail=$((fail + 1))
+fi
 [[ $fail -eq 0 ]] || exit 1

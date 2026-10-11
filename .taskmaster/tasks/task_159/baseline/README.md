@@ -1,6 +1,7 @@
 # Task 159 Baseline — Index
 
-**79 runnable cases** captured across 11 surfaces (01–06, 10, 12–15).
+Runnable cases across 11 surfaces (01–06, 10, 12–15) — `./verify.sh` prints the
+current count in its summary line.
 `PLAN.md`, `RECORDING.md`, and the audit files are historical context; the
 filesystem plus `./verify.sh` are the current source of truth. Read
 [PLAN.md](./PLAN.md) for the original strategy and [FINDINGS.md](./FINDINGS.md)
@@ -22,6 +23,11 @@ for the initial construction findings.
 
 `verify.sh` exit codes: 0 = all clean, 1 = drift, 2 = harness error.
 
+CI runs `./verify.sh` on every PR and on `main` (the `baseline-oracle` job in
+`.github/workflows/main.yml`, ubuntu). A PR that intentionally changes recorded
+text re-records the affected cases in the same PR (`./regenerate.sh <case>`) and
+names them in its body; any other drift is a regression.
+
 ## Status — what the implementing agent for surfaces 06+ inherits
 
 | Phase | Status |
@@ -29,8 +35,8 @@ for the initial construction findings.
 | Phase 0 — infrastructure (normalize.py, run-case.sh, regenerate.sh, verify.sh, .gitignore) | ✅ done |
 | Surface 01 — parser errors (10 cases) | ✅ done; 1 finding (F-01) |
 | Surface 02 — validator errors (8 cases) | ✅ done |
-| Surface 03 — analyze-cache modes (8 cases, compressed from 17) | ✅ done |
-| Surface 04 — warning catalog (30 cases: 28 IDs + subpath/text variants) | ✅ done; 27/30 trigger target ID; 3 non-trigger cases intentionally lock current silence |
+| Surface 03 — analyze-cache modes (11 cases) | ✅ done |
+| Surface 04 — warning catalog (31 cases: 28 IDs + subpath/text/sub-workflow variants) | ✅ done; 28/31 trigger target ID; 3 non-trigger cases intentionally lock current silence |
 | Surface 05 — advisory cases (5 cases) | ✅ done |
 | **Surface 06 — dry-run nudge (3 cases)** | ✅ done; positive nudge, optimal silence, and structural cache error |
 | **Surface 10 — live recordings (2 cases)** | ✅ partial; Gemini translation + real lyrics-generator trace committed |
@@ -79,8 +85,8 @@ baseline/
 │   └── long-stable-text.txt                 # ~30k-char stable text for threshold-clearing inputs
 ├── 01-parser-errors/                  (10 cases)
 ├── 02-validator-errors/               (8 cases)
-├── 03-analyze-cache-modes/            (8 cases)
-├── 04-warning-catalog/                (30 cases)
+├── 03-analyze-cache-modes/            (11 cases)
+├── 04-warning-catalog/                (31 cases)
 ├── 05-advisory-cases/                 (5 cases)
 ├── 06-dry-run-nudge/                  (3 cases)
 ├── 10-live-recordings/                (2 cases)
@@ -105,11 +111,13 @@ baseline/
 05-subworkflow-references-parent-chunk · 06-cache-content-below-min-predicted ·
 07-unused-chunk · 08-analyze-cache-surfaces-undeclared-name
 
-### Surface 03 — analyze-cache modes (8/8 pass)
+### Surface 03 — analyze-cache modes (11 cases)
 
 01-greenfield-text · 02-greenfield-json · 03-steady-state-text ·
 04-steady-state-json · 05-trace-from-trace · 06-no-trace-autoload ·
-07-json-error-envelope-unknown-workflow · 08-all-rows-flag
+07-json-error-envelope-unknown-workflow · 08-all-rows-flag ·
+07-autoload-prefers-success · 08-autoload-failed-only ·
+09-autoload-rejected-names-file
 
 `03-steady-state-text`, `04-steady-state-json`, and `08-all-rows-flag` run
 `examples/core/prompt-caching.pflow.md` directly. These cover the original
@@ -118,7 +126,7 @@ cases. The remaining original Surface 11 variants (`with-fixture-trace` and
 example dry-run footer) are optional because trace mode is covered by Surface
 03/10 and dry-run behavior is covered by Surface 06.
 
-### Surface 04 — Warning catalog (30/30 cases captured; 27 trigger target ID)
+### Surface 04 — Warning catalog (31 cases captured; 28 trigger target ID)
 
 | # | ID | Triggered |
 |---|---|---|
@@ -147,6 +155,7 @@ example dry-run footer) are optional because trace mode is covered by Surface
 | 18 | cache.prompt-body-duplicates-cache | ✓ |
 | 19 | cache.prompt-body-shadows-cache | ⏭ (intentional silence fixture — fires duplicates instead) |
 | 20 | llm.thinking-temperature-mismatch | ✓ |
+| 20b | llm.thinking-temperature-mismatch (in a sub-workflow) | ✓ |
 | 21 | cache.prompt-cache-incomplete | ✓ |
 | 22 | cache.batch-prewarm-below-min | ✓ |
 | 23 | cache.batch-prewarm-lower-bound-recommended | ✓ |
