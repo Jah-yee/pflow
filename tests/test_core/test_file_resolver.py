@@ -225,6 +225,7 @@ class TestResolveFileReferences:
         assert ir["nodes"][0]["params"]["prompt"] == "Hello world"
         assert ir["nodes"][0]["params"]["model"] == "gpt-4"
         assert "_source_files" not in ir["nodes"][0]
+        assert "_resolved_files" not in ir["nodes"][0]
 
     def test_template_variables_not_resolved(self, tmp_path: Path) -> None:
         """Template variables like ${item.prompt} are not treated as file refs."""
@@ -281,6 +282,34 @@ class TestResolveFileReferences:
         resolve_file_references(ir, tmp_path)
 
         assert ir["nodes"][0]["_source_files"] == {"prompt": "./p.md"}
+
+    def test_resolved_paths_recorded_beside_authored_references(self, tmp_path: Path) -> None:
+        """_resolved_files holds each loaded file's absolute path, keyed like _source_files (#813)."""
+        workflows, shared = tmp_path / "workflows", tmp_path / "shared"
+        workflows.mkdir()
+        shared.mkdir()
+        (shared / "body.py").write_text("result: int = 1", encoding="utf-8")
+        (shared / "batch.yaml").write_text("items:\n  - prompt: ../shared/p.md", encoding="utf-8")
+        (shared / "p.md").write_text("item prompt", encoding="utf-8")
+
+        ir = _make_ir([
+            {"id": "c", "type": "code", "params": {"code": "../shared/body.py"}},
+            {"id": "b", "type": "llm", "batch": "../shared/batch.yaml", "params": {"prompt": "${item.prompt}"}},
+        ])
+        resolve_file_references(ir, workflows)
+
+        code_node, batch_node = ir["nodes"]
+        assert code_node["_source_files"] == {"code": "../shared/body.py"}
+        assert code_node["_resolved_files"] == {"code": str((shared / "body.py").resolve())}
+        # The batch file's own items are loaded relative to the workflow too (B1 falls through to B2).
+        assert batch_node["_source_files"] == {
+            "batch": "../shared/batch.yaml",
+            "batch.items[0].prompt": "../shared/p.md",
+        }
+        assert batch_node["_resolved_files"] == {
+            "batch": str((shared / "batch.yaml").resolve()),
+            "batch.items[0].prompt": str((shared / "p.md").resolve()),
+        }
 
     def test_idempotent(self, tmp_path: Path) -> None:
         """Running resolution twice doesn't break anything or corrupt provenance."""
