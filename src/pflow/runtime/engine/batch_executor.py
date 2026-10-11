@@ -476,6 +476,10 @@ def _run_batch_item_once(
         child_failure = result.get("_pflow_child_failure")
         if isinstance(child_failure, dict):
             error_info["child_failure"] = child_failure
+            if _child_masked_its_input(child_failure):
+                # The child boundary masked the value this item passed (a sensitive input name):
+                # the item line beside that message must not print it again.
+                error_info["item_summary"] = {**error_info["item_summary"], "summary": "<REDACTED>"}
     _capture_item_trace(
         parent_shared,
         config.node_id,
@@ -490,6 +494,14 @@ def _run_batch_item_once(
         child_workflow_path=item_child_workflow_path,
     )
     return result, error_info, duration_ms, last_resolutions, template_errors
+
+
+def _child_masked_its_input(child_failure: dict[str, Any]) -> bool:
+    """Whether a child-input error in this bundle showed the received value as ``<REDACTED>``."""
+    diagnostics = child_failure.get("diagnostics")
+    return isinstance(diagnostics, list) and any(
+        isinstance(d, dict) and (d.get("context") or {}).get("received") == "<REDACTED>" for d in diagnostics
+    )
 
 
 def _pop_child_workflow_path(shared: dict[str, Any], node_id: str) -> str | None:

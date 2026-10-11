@@ -448,6 +448,60 @@ class TestTheError:
         # …nor a fix built from it.
         assert diagnostic.suggestions == ['Pass a JSON array (e.g. ["a", "b"]): token=\'["a", "b"]\'']
 
+    @pytest.mark.parametrize(
+        ("received", "shown"),
+        [
+            ({"password": "hunter2", "user": "bob"}, '{"password": "<REDACTED>", "user": "bob"}'),
+            ('{"api_key": "hunter2", "n": 1}', '\'{"api_key": "<REDACTED>", "n": 1}\''),
+            ([{"token": "hunter2"}], '[{"token": "<REDACTED>"}]'),
+        ],
+    )
+    def test_a_sensitive_key_inside_the_value_is_redacted_and_never_echoed_by_the_fix(
+        self, received: object, shown: str
+    ) -> None:
+        """The repo's display convention (`redact_sensitive`) reaches inside the value — a dict, a list, or
+        JSON text — and the fix line, which could quote the value, falls back to the canonical example."""
+        error = _error("s", "string" if not isinstance(received, str) else "integer", received, source="call")
+        (diagnostic,) = error.to_diagnostics()
+        assert "hunter2" not in str(error) + str(diagnostic.suggestions) + str(diagnostic.context)
+        assert str(error).endswith(f"received {shown} in the call's parameters.")
+        assert diagnostic.suggestions in (['Pass text: "s": "text"'], ['Pass a whole number: "s": 3'])
+
+    def test_a_fix_line_never_carries_more_of_the_value_than_the_message(self) -> None:
+        """R5 caps `received` at 80 characters; the fix line repeated a container in full (14k characters)."""
+        long = {f"k{i}": i for i in range(400)}
+        (diagnostic,) = _error("s", "string", long, source="call").to_diagnostics()
+        assert diagnostic.suggestions == ['Pass text: "s": "text"']
+        (short,) = _error("s", "string", {"a": 1}, source="call").to_diagnostics()
+        assert short.suggestions == ['Pass text: "s": "{\\"a\\": 1}"']  # presence: a short one is still repaired
+
+    @pytest.mark.parametrize(
+        ("source", "suggestion"),
+        [
+            (
+                "env",
+                "export port=3, or pass `port: 3` under step 'call' `inputs:` (a passed value wins over the environment)",
+            ),
+            ("settings", "pflow settings set-env port 3, or pass `port: 3` under step 'call' `inputs:`"),
+        ],
+    )
+    def test_a_childs_env_or_settings_fix_passes_the_value_from_the_calling_step(
+        self, source: InputSource, suggestion: str
+    ) -> None:
+        """At a sub-workflow boundary there is no command line to pass `port=3` on — the root has no such input."""
+        error = InputTypeError(
+            name="port", declared_type="integer", received="abc", source=source, step="call", sub_workflow_path="./c.md"
+        )
+        assert error.to_diagnostics()[0].suggestions == [suggestion]
+
+    @pytest.mark.parametrize(
+        ("received", "accepted"),
+        [(1, "true or false"), ("maybe", "true or false (also yes/no, 1/0)")],
+    )
+    def test_accepted_describes_the_form_the_value_came_in(self, received: object, accepted: str) -> None:
+        """A typed JSON `1` is refused for a boolean: `accepted` must not say "also 1/0", which is the TEXT grammar."""
+        assert _context(_error("b", "boolean", received, source="call"))["accepted"] == accepted
+
     def test_a_long_value_is_cut_at_80_characters(self) -> None:
         context = _context(_error("count", "integer", "x" * 300))
         assert context["received"] == "x" * 80 + "…"

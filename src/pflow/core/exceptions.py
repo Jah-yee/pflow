@@ -12,7 +12,7 @@ from pflow.core.cache_ttl import build_unsupported_cache_ttl_diagnostic, unsuppo
 from pflow.core.diagnostic import LLM_FAILURE_CATEGORY, LLM_VALIDATION_CATEGORY, Diagnostic, Severity
 from pflow.core.gate import GATE_KIND_APPROVAL, GateRequest
 from pflow.core.llm_providers import detect_provider, extract_provider_prefix
-from pflow.core.security_utils import is_sensitive_parameter
+from pflow.core.security_utils import redact_for_display
 from pflow.core.templates import Field, Resolution, declared_text_misses, parse_path
 from pflow.core.types import TypeSpec
 
@@ -262,16 +262,25 @@ class InputTypeError(PflowError):
         return f"inputs.{self.input_name}"
 
     def _shown(self) -> str:
-        """``received`` as display text: masked, JSON for a non-text value, cut at 80 characters."""
-        if is_sensitive_parameter(self.input_name):
-            return "<REDACTED>"
-        text = self.received if isinstance(self.received, str) else _json_text(self.received)
+        """``received`` as display text: redacted (``redact_for_display``), JSON for a non-text
+        value, cut at 80 characters."""
+        shown = redact_for_display([self.input_name], self.received)
+        text = shown if isinstance(shown, str) else _json_text(shown)
+        if text == "<REDACTED>":
+            return text
         return text if len(text) <= _RECEIVED_LIMIT else text[:_RECEIVED_LIMIT] + "…"
 
     def _quoted(self) -> str:
         """``received`` in a sentence: text quoted (escapes visible), a JSON value or the mask as is."""
         shown = self._shown()
         return repr(shown) if isinstance(self.received, str) and shown != "<REDACTED>" else shown
+
+    def _passed(self, argument: str, example: str) -> str:
+        """How to pass the fixed value instead: a command-line argument at the root; at a
+        sub-workflow boundary, a key under the calling step's ``inputs:``."""
+        if self.step:
+            return f"pass `{self.input_name}: {example}` under step '{self.step}' `inputs:`"
+        return f"pass {argument}"
 
     def _message(self) -> str:
         name, declared = self.input_name, f"`- type: {self.type_spec.name}`"
@@ -285,15 +294,17 @@ class InputTypeError(PflowError):
 
     def _suggestion(self) -> str:
         spec, name = self.type_spec, self.input_name
-        example = _fix_example(spec, None if is_sensitive_parameter(name) else self.received)
+        hidden = redact_for_display([name], self.received) != self.received  # a fix line never echoes it
+        example = _fix_example(spec, None if hidden else self.received)
         argument = f"{name}={shlex.quote(example)}"
         match self.source:
             case "stdin":
                 return f"Pipe {spec.accepted_text}, or pass {argument} on the command line"
             case "env":
-                return f"export {argument}, or pass {argument} (an argument wins over the environment)"
+                winner = "a passed value" if self.step else "an argument"
+                return f"export {argument}, or {self._passed(argument, example)} ({winner} wins over the environment)"
             case "settings":
-                return f"pflow settings set-env {name} {shlex.quote(example)}, or pass {argument}"
+                return f"pflow settings set-env {name} {shlex.quote(example)}, or {self._passed(argument, example)}"
             case "recorded":
                 return f"Override it: pflow resume {self.resumed_run or '<run-id>'} {argument}"
             case "call":
@@ -318,7 +329,10 @@ class InputTypeError(PflowError):
             "declared_type": self.type_spec.name,
             "received": self._shown(),
             "source": self.source,
-            "accepted": self.type_spec.accepted_text,
+            # Text is read by the grammar (`yes`, `1`); a typed value must already be one (`true`).
+            "accepted": self.type_spec.accepted_text
+            if isinstance(self.received, str)
+            else self.type_spec.accepted_noun,
         }
         if self.step:
             context["sub_workflow_step"] = self.step
@@ -362,17 +376,30 @@ def _as_number(received: Any) -> int | float | None:
 
 def _fix_example(spec: TypeSpec, received: Any) -> str:
     """The smallest fix of ``received`` when one is obvious (``3.0`` → ``3``, ``tea`` → ``["tea"]``),
-    else the type's canonical example. ``received`` is ``None`` for a sensitive input."""
+    else the type's canonical example — also when the fix would run past 80 characters (a fix
+    line never carries more of the value than the message does). ``received`` is ``None`` when
+    it holds anything ``redact_for_display`` hides."""
     text = received.strip() if isinstance(received, str) else None
+    fix = spec.example_text
     if spec.name in ("integer", "number"):
         number = _as_number(received)
         if number is not None and (isinstance(number, int) or number.is_integer()):
-            return str(int(number))
-    if spec.name == "array" and text and text[0] not in "[{":
-        return json.dumps([text], ensure_ascii=False)
-    if spec.name == "string" and isinstance(received, (dict, list)):
-        return _json_text(received)
-    return spec.example_text
+            fix = str(int(number))
+    elif spec.name == "array" and text and text[0] not in "[{":
+        fix = json.dumps([text], ensure_ascii=False)
+    elif spec.name == "string" and isinstance(received, (dict, list)):
+        fix = _json_text(received)
+    return fix if len(fix) <= _RECEIVED_LIMIT else spec.example_text
+
+
+def shown_declared_text(text_path: str, text: str) -> str:
+    """``text`` — JSON text at ``text_path`` inside a declared input — as every message shows it:
+    ``<REDACTED>`` when the input or any field on the path is sensitive-named, its own sensitive
+    keys redacted otherwise (``redact_for_display``)."""
+    path = parse_path(text_path)
+    names = [path.root, *(seg.name for seg in path.path if isinstance(seg, Field))] if path else [text_path]
+    shown = redact_for_display(names, text)
+    return shown if isinstance(shown, str) else text
 
 
 def declared_text_reason(reference: str, text_path: str, text: str) -> tuple[str, str]:
@@ -391,11 +418,15 @@ def declared_text_reason(reference: str, text_path: str, text: str) -> tuple[str
 
 def declared_text_fix(text_path: str, text: str) -> str:
     """The two remedies for JSON ``text`` held at ``text_path`` inside a declared input: nest the
-    value in the input, or parse the text in a code step. ``text`` as given (pass it masked)."""
+    value in the input, or parse the text in a code step. ``text`` as given (pass it through
+    ``shown_declared_text``); the nested example — there to be pasted — is left out when it
+    would pass 80 characters or carry a redaction."""
     holder = text_path.rsplit(".", 1)[-1] if "." in text_path and not text_path.endswith("]") else None
     try:
         nested = json.dumps({holder: json.loads(text)}) if holder else None
     except ValueError:  # masked
+        nested = None
+    if nested is not None and (len(nested) > _RECEIVED_LIMIT or "<REDACTED>" in nested):
         nested = None
     nest = f"Nest the object in the input (`{nested}`)" if nested else "Nest the object in the input"
     return f"{nest}, or parse the text in a code step (`json.loads({holder or 'text'})`)."
@@ -412,9 +443,7 @@ class DeclaredInputTextError(PflowError):
         self.reference = reference
         self.text_path = text_path
         self.node_id = node_id
-        ref = parse_path(reference)
-        shown = "<REDACTED>" if ref is not None and is_sensitive_parameter(ref.root) else text
-        what, self.fix = declared_text_reason(reference, text_path, shown)
+        what, self.fix = declared_text_reason(reference, text_path, shown_declared_text(text_path, text))
         super().__init__(f"{where} reads ${{{reference}}}: {what}")
 
     @classmethod

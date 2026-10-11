@@ -533,6 +533,36 @@ test "$N" != 8
     assert "      In step 'call' sub-workflow: Command failed with exit code 1" in result.stderr  # item 2, inside
 
 
+@pytest.mark.parametrize(("name", "item_line"), [("api_token", "item: <REDACTED>"), ("count", "item: 'sk-SECRET'")])
+def test_the_item_line_never_reprints_a_value_the_message_masked(tmp_path: Path, name: str, item_line: str) -> None:
+    """The child boundary masks a value passed to a sensitive-named input; the record's `item:` line (and its
+    JSON `item_summary`) must not print the same item beside it. A plain name keeps the item line (presence)."""
+    (tmp_path / "child.pflow.md").write_text(
+        f"# Child\n\nTakes one number.\n\n## Inputs\n\n### {name}\n\nA number.\n\n- type: integer\n\n"
+        f"## Steps\n\n### show\n\nShow it.\n\n- type: shell\n- env:\n    V: ${{{name}}}\n\n"
+        "```shell command\nprintf '%s' \"$V\"\n```\n",
+        encoding="utf-8",
+    )
+    parent = _parent(
+        tmp_path, items='["7","sk-SECRET"]', inputs=f"{{{name}: ${{item}}}}", batch="    error_handling: continue"
+    )
+    text = CliRunner(mix_stderr=False).invoke(cli, [str(parent)])
+    as_json = CliRunner(mix_stderr=False).invoke(cli, ["--output-format", "json", str(parent)])
+    summaries = [summary["summary"] for summary in _values_under(json.loads(as_json.stdout), "item_summary")]
+    assert item_line in text.stderr
+    assert ("sk-SECRET" in text.stderr) is (name == "count")
+    assert summaries and all(("sk-SECRET" in summary) is (name == "count") for summary in summaries)
+
+
+def _values_under(value: Any, key: str) -> list[Any]:
+    """Every value stored under ``key`` anywhere in a JSON document."""
+    if isinstance(value, dict):
+        return [v for k, v in value.items() if k == key] + [x for v in value.values() for x in _values_under(v, key)]
+    if isinstance(value, list):
+        return [x for v in value for x in _values_under(v, key)]
+    return []
+
+
 def test_a_childs_fallback_inputs_are_inputs_not_outputs(tmp_path: Path) -> None:
     """Without declared `## Outputs` the child's store is mirrored back minus its inputs — and an
     input resolved from its default is an input like a supplied one (both run and plan read the

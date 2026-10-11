@@ -19,8 +19,7 @@ from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.diagnostic_render import written_reference
-from pflow.core.exceptions import declared_text_fix
-from pflow.core.security_utils import is_sensitive_parameter
+from pflow.core.exceptions import declared_text_fix, shown_declared_text
 from pflow.core.templates import (
     LIST_TYPES,
     DynamicIndex,
@@ -105,7 +104,7 @@ def build_declared_text_error_message(
     its declaration already admits the container — so the fix names nesting or parsing."""
     reference, declared_type = read
     if reference.path:
-        shown = "<REDACTED>" if is_sensitive_parameter(reference.root) else text
+        shown = shown_declared_text(reference.raw, text)
         return (
             f"Parameter '{param_key}' expects {expected_type} but {template_str} is text inside input "
             f"'{reference.root}' (declared `- type: {declared_type}`) — a declared input is never JSON-parsed.\n\n"
@@ -275,7 +274,7 @@ def _classify_one_reference(
         if unparsed := unparsed_declared_text(reference, context):
             text_path, text = unparsed
             path_error["text_not_parsed"] = text_path
-            path_error["unparsed_text"] = "<REDACTED>" if is_sensitive_parameter(root) else text
+            path_error["unparsed_text"] = shown_declared_text(text_path, text)
         return path_error
 
     if status == NodeStatus.FAILED:

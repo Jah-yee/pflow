@@ -1076,3 +1076,68 @@ resume path for any successor.
   dynamic; recommended)**, C (document the mismatch).
 - Open: `~/.pflow/registry.json` rewritten 15:11 with MAIN-checkout paths by another session (G1 observation; not ours).
 - Next: falsifier report → G1 evaluates it → bundle H1 + any 3+/ambiguous falsifier item → hand back.
+
+## [2026-10-11 16:13] G1 (Opus) — falsifier report evaluated (`scratchpads/task-120/falsifier/report.md`, on `a0528d02`)
+- Did: re-executed every item with the falsifier's wrappers (`falsifier/p.sh` branch, `pm.sh` main; isolated HOME
+  `falsifier/home`) and drivers in `scratchpads/task-120/gate2/`; fixed W2, S1, S2, S5, S6 with tests; W1, S3, S4, O1
+  and the two main-broken items dispositioned below (no code).
+- Dispositions:
+
+  | # | Sev | Verified | Disposition |
+  |---|---|---|---|
+  | W1 | W | Executed: `alias3` validate-only ✓, then `each` parses the item's JSON text while `direct` fails; `agent2` prompt `doc.a=1` from declared string `v` | **Handed back (user, beside H1)** — options below. Not fixed, as instructed. |
+  | W2 | W | Executed: `secfield` printed `hunter2SECRET` in the reason + nest example (6 JSON copies); MCP `{"s": {"password": …}}` printed it in `received` and the fix line | **Fixed — class: every new message renders a value through the repo's display-redaction convention.** One primitive `security_utils.redact_for_display(names, value)`: `<REDACTED>` when any name on the path is sensitive, else `redact_sensitive` — also inside JSON object/array TEXT (bytes kept when nothing is redacted). Routed: `InputTypeError._shown` (`received`, message, context), the fix line (falls back to the canonical example whenever anything was hidden), and `exceptions.shown_declared_text` (path-aware) — the one display rule for the §1.14 reason, `DeclaredInputTextError`, `unparsed_text` (template_errors) and the declared-text param error. Re-run: secret count 0 in text and JSON on both repros. N1–N4 killed. |
+  | S1 | S | Executed: MCP 400-key object → 5 802-char fix line | **Fixed — class: a fix line or example never carries more of the value than the message's 80-char cap** — `_fix_example` (every source) and `declared_text_fix`'s nest example fall back to the generic form past 80 chars; the nest example is also withheld when it would carry a redaction (it exists to be pasted). Re-run: longest line 211. N5–N7 killed. |
+  | S2 | S | Executed: child env error says `or pass port=3`; following it → `Unknown input 'port'` | **Fixed — class: at a sub-workflow boundary the "pass it instead" half names the calling step's `inputs:`** (env AND settings; `InputTypeError._passed`): `export port=3, or pass \`port: 3\` under step 'call' \`inputs:\` (a passed value wins over the environment)`. Root text unchanged. N8 killed. |
+  | S3 | S | Executed: `analyze-cache … --format=json` → one `error` with two messages joined by `\n`, no `path`/`input` | **Follow-up, not now**: the fix changes the analyze-cache envelope contract (`format_version` 5.0, single `error` object). Recommend an issue for an additive `errors[]` beside `error`; the text surface and MCP already keep each input's diagnostic separate. |
+  | S4 | S | Executed: `loopp start=9` carry error placed at `params.inputs.n` | **Handed back**: the clean fix needs the carried-key set on the host node — a compile-time stamp of the same shape the user declined for the §1.5 clause (D1=B). Options: A stamp carried keys on the `WorkflowExecutor`, path `nodes[id=run].loop.carry.n` from iteration 2; B leave (the message names the input and value; the carry is in the workflow). Rec **B**, revisit together with D1-A if ever. |
+  | S5 | S | Executed: MCP `{"b": 1}` → `accepted: "true or false (also yes/no, 1/0)"` | **Fixed — class: `accepted` describes the form the value came in** — the text grammar for text, the typed values (`accepted_noun`) for a typed value. N9 killed. |
+  | S6 | S | Executed: `ptok` → message `<REDACTED>`, next line `item: 'sk-ITEMSECRET'` (also JSON `item_summary`) | **Fixed — class: a batch record never re-prints a value its child-input message masked** (`batch_executor`: the item summary's text becomes `<REDACTED>` when the bundle's diagnostic shows `received: <REDACTED>`; identity fields kept). Presence row: a plain-named input keeps `item: 'sk-SECRET'`. N10 killed. |
+  | O1 | obs | Executed: `i=abc … --validate-only b=true` ✓, the run exits 1 with the env-source error | **No change (by design, D6).** View for H1: validate-only is env-blind at the root, so H1-A (validator honours env for child inputs) would make child validation env-dependent while root validation is not — a second inconsistency; it supports H1-B. |
+  | main-1 | pre-existing | Reproduced on branch AND main: `w/pff2.pflow.md` (6 shell items, `parallel: true`, `max_concurrent: 2`, `fail_fast`, item `b` exits 1) → `[3] Executor error:` `[4] Executor error:` `[5] Executor error:` with no message | To file (orchestrator). Evidence line: "Parallel `fail_fast`: items cancelled after the first failure are reported as `Executor error:` with an empty message (`w/pff2.pflow.md`, identical on `origin/main`)". |
+  | main-2 | pre-existing | Reproduced on branch AND main: `w/pmut.pflow.md` + `w/cmut.pflow.md` (child `o: object`, `default: {"k": 1}`, code mutates `o["seen"]`), batch `[1, 2, 3]` → `seen` 1, 2, 3 | To file. Evidence line: "A container `default:` is one shared object across child calls — a child that mutates it leaks into later items (`seen` 1→2→3; identical on `origin/main`)". Fix site on this branch: `ir_preparation._fallback_value` returns the IR's default object itself (`:84-85`) — copy a container default per resolution. |
+
+- **W1 options (for the user, beside H1).** What happens: the rule keys on the reference ROOT's active binding
+  (`templates._declared_typed`). A step `inputs:` key bound to `${v}` (the value resolves protected — text) or a batch
+  alias over `${rows}` is a new root that is not in the map, so `${doc.a}` / `${item}` into a container parse the text.
+  - **A — binding provenance at the two binding sites.** A step `inputs:` key or batch alias whose value is ONE whole
+    reference rooted in a declared non-`any` input inherits that root's protection. Sites: `_bind_locally` keeps the
+    name in the map with the root's type instead of dropping it; the per-item store adds `alias → <root type>` when
+    `batch.items` is such a reference. Mirrors needed in the planner's per-item context and the validator
+    (`declared_root_type` / `step_scope`): rules (b)/(c) apply to the new name, and an alias is protection-only
+    because the element type is unknown. ADR-0017 text touched: the decision sentence "a reference whose root is a
+    declared non-`any` input is never JSON-parsed" gains "…or a name bound to one by a single reference", and
+    Considered Options ¶1's "the per-step shadow rule (a step's own `inputs:` key wins)" gains the provenance
+    exception. The rejected "Tag the VALUE" stays rejected: this is binding provenance resolved from the authored
+    template, and a node output never inherits it. Cost: engine contact (`template_resolution`, `batch_executor`),
+    planner and validator, so a plan and a targeted re-review.
+  - **B — by design; correct the promise.** Protection follows the reference root (ADR-0017's literal sentence); a
+    rebinding takes the new name's semantics. Fix the overclaim "`${input}` … at every step" in `guide/core.md:454`
+    and both MCP copies (`:1037` / `:1016`). Docs only.
+  - **C — validator-only.** Flag statically a step `inputs:` key bound to a declared `string`/scalar that is then read
+    with a path or into a container (the only certain shapes). Runtime unchanged; a rebound `object`/`array`
+    descendant's text still parses.
+  - Blast radius (`gate2/scan_w1.py` → `gate2/scan_w1.txt`, 172/186 parseable in-tree workflows): 168 rebindings
+    (155 step `inputs:` keys, 13 batch aliases). 11 read the new name with a path, all `${item.text}` over a declared
+    `array` of objects. A does not change those (the elements are already objects), so **0 in-tree behaviour changes**.
+  - **Recommendation: A.** It is what the user's ruled sentence says ("decided once … nothing downstream re-infers
+    it"), the in-tree blast radius is zero, and it avoids the value tagging ADR-0017 rejected. Build it in this task
+    under a targeted re-review. If the PR must go now: B's doc correction now and A as the immediate follow-up.
+- Changed: `core/{security_utils,exceptions}.py`, `runtime/engine/{template_errors,batch_executor}.py`; tests:
+  `test_core/test_param_coercion.py` (+7 rows), `test_runtime/test_declared_input_resolution.py` (+3),
+  `test_runtime/test_workflow_executor/test_child_input_boundary.py` (+2, with a `_values_under` JSON walker).
+- Verified: `make check` rc 0; `make test` **11469 passed** (11456 + 13); Task-159 `verify.sh` **87/0/0** (no guide text
+  changed this round; run because message text did); mutation ledger `gate2/mutants.json` **10/10 killed** (same
+  harness: content restore, `PYTHONDONTWRITEBYTECODE=1`, `__pycache__` purged before/after, counted). Real surface:
+  W2 repros → 0 secret occurrences (text + JSON + MCP), S1 longest line 211, S2 new fix line, S6 `item: <REDACTED>`.
+  |  Assumed: nothing.
+- Deviations/surprises: (1) `redact_for_display` extends `redact_sensitive`'s convention into JSON TEXT, which its
+  docstring had scoped out ("a secret inside a free-text string has no key to match"). JSON text has keys, and the new
+  messages quote JSON text, so this is a narrow, additive extension (importance 2). Free text stays the accepted
+  boundary. (2) The S6 fix masks the item line only when the child's message masked, which keeps the pre-existing
+  item summarizer's behaviour everywhere else.
+- Self-checks: fully-happy: (a) the first S6 test version tripped on the parent's auto-output (it legitimately holds
+  the item), so it was narrowed to `item_summary`; (b) two guards first had no test (the nest-example cap and the
+  redaction exclusion), so a direct row was added before the ledger. test-reflect: not separately directed; each row
+  has a presence half.
+- Next: hand back. W1 and H1 go to the user; S3, S4 and the two main-broken items go to the orchestrator.

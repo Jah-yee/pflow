@@ -464,6 +464,41 @@ class TestTheMissSaysWhy:
         assert 'Nest the object in the input (`{"payload": {"a": 1}}`)' in rendered
         assert "(`json.loads(payload)`)" in rendered
 
+    @pytest.mark.parametrize(
+        ("field", "value", "shown"),
+        [
+            ("password", json.dumps({"y": "hunter2"}), "'d.password' is text ('<REDACTED>')"),
+            (
+                "note",
+                json.dumps({"token": "hunter2", "y": 1}),
+                '\'d.note\' is text (\'{"token": "<REDACTED>", "y": 1}\')',
+            ),
+        ],
+    )
+    def test_the_reason_redacts_a_sensitive_field_or_key_on_every_output(
+        self, tmp_path: Path, field: str, value: str, shown: str
+    ) -> None:
+        """The reason quotes the text: a sensitive field on the path masks it whole, a sensitive key inside it
+        is redacted — in the text output and in every JSON copy (`unparsed_text`, the diagnostics)."""
+        wf = _write(tmp_path / "wf.pflow.md", OBJECT_INPUT.replace("${d.payload.a}", f"${{d.{field}.a}}"))
+        d = json.dumps({field: value})
+        text = click.testing.CliRunner().invoke(main, ["--no-trace", str(wf), f"d={d}"]).output
+        as_json = click.testing.CliRunner().invoke(main, ["--no-trace", "--output-format", "json", str(wf), f"d={d}"])
+        assert shown in text
+        assert "hunter2" not in text + as_json.output
+        assert '"unparsed_text"' in as_json.output  # presence: the JSON medium carries the text field
+
+    def test_the_nest_example_is_offered_only_when_it_can_be_pasted(self) -> None:
+        """The example is there to be pasted: never 80+ characters of the value, never a redaction."""
+        from pflow.core.exceptions import declared_text_fix
+
+        generic = "Nest the object in the input, or parse the text in a code step (`json.loads(payload)`)."
+        assert declared_text_fix("d.payload", '{"a": 1}').startswith(
+            'Nest the object in the input (`{"payload": {"a": 1}}`)'
+        )
+        assert declared_text_fix("d.payload", json.dumps({f"k{i}": i for i in range(40)})) == generic
+        assert declared_text_fix("d.payload", '{"token": "<REDACTED>"}') == generic
+
     def test_a_plain_missing_field_keeps_its_message(self, tmp_path: Path) -> None:
         wf = _write(tmp_path / "wf.pflow.md", OBJECT_INPUT.replace("${d.payload.a}", "${d.nope}"))
         result = WorkflowRunner().run(str(wf), {"d": json.loads(self.D)}, RunnerConfig(trace_enabled=False))
