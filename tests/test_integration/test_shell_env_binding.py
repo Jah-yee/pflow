@@ -328,19 +328,23 @@ class TestBindingFailures:
 
     # stdin: is the step's other binding channel (#727): a value UTF-8 cannot encode once failed
     # after spawn as "exit code -2" with a traceback, retried and swallowed by ignore_errors.
-    _STDIN_UNENCODABLE = "The value bound to stdin: contains '\\ud800' at character"
-
+    # stdin: is strict UTF-8, not env:'s os.fsencode — a low surrogate (\udc80) fsencodes on POSIX
+    # but cannot be piped, and a NUL (refused by env:) pipes fine.
     @pytest.mark.parametrize(
-        ("type_", "value", "position"),
-        [("string", "cut \ud800", 4), ("object", {"s": "cut \ud800"}, 11)],
-        ids=["string", "object-as-json"],
+        ("type_", "value", "expected"),
+        [
+            ("string", "cut \ud800", "contains '\\ud800' at character 4,"),
+            ("string", "cut \udc80", "contains '\\udc80' at character 4,"),
+            ("object", {"s": "cut \ud800"}, "contains '\\ud800' at character 11,"),
+        ],
+        ids=["high-surrogate", "low-surrogate", "object-as-json"],
     )
     @pytest.mark.trace_files
     def test_an_unencodable_stdin_value_under_ignore_errors_and_retry(
         self,
         type_: str,
         value: Any,
-        position: int,
+        expected: str,
         attempts: list[str],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -349,23 +353,28 @@ class TestBindingFailures:
         step = _shell(None, "cat", retry={"max": 3})
         step["params"].update(stdin="${x}", ignore_errors=True)
         result = _run(_ir(step, inputs={"x": _input(type_)}), {"x": value})
-        self._assert_failed_before_spawn(result, f"{self._STDIN_UNENCODABLE} {position} ")
+        self._assert_failed_before_spawn(result, f"The value bound to stdin: {expected}")
         assert [(d.node_id, d.context.get("param")) for d in result.errors] == [("s", "stdin")]
         assert not any("codec" in d.message for d in result.errors)
         assert attempts == ["prep"]
 
     def test_an_unencodable_stdin_item_fails_once_in_a_continue_batch(self, attempts: list[str]) -> None:
-        batch = {"items": ["a", "cut \ud800", "naïve ✓"], "as": "item", "error_handling": "continue", "max_retries": 3}
+        batch = {
+            "items": ["a\0b", "cut \ud800", "naïve ✓"],
+            "as": "item",
+            "error_handling": "continue",
+            "max_retries": 3,
+        }
         step = _shell(None, "cat", batch=batch)
         step["params"]["stdin"] = "${item}"
         result = _run(_ir(step))
         assert result.status is WorkflowStatus.DEGRADED
         output = result.shared_after["s"]
-        # The valid items, non-ASCII included, still reach the command.
-        assert [item["stdout"] for item in output["results"]] == ["a", "naïve ✓"]
-        assert [(error["index"], self._STDIN_UNENCODABLE in error["error"]) for error in output["errors"]] == [
-            (1, True)
-        ]
+        # The valid items, a NUL and non-ASCII included, still reach the command.
+        assert [item["stdout"] for item in output["results"]] == ["a\0b", "naïve ✓"]
+        assert [
+            (error["index"], "The value bound to stdin: contains" in error["error"]) for error in output["errors"]
+        ] == [(1, True)]
         assert attempts == ["prep", "exec", "prep", "prep", "exec"]
 
 

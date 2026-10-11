@@ -58,9 +58,9 @@ def _stdin_bytes(text: str | None) -> bytes | None:
     except UnicodeEncodeError as exc:
         # UTF-8 encodes every code point except a surrogate, so that is the only way here.
         raise StdinBindingError(
-            f"The value bound to stdin: contains {text[exc.start]!r} at character {exc.start} — a surrogate "
-            "code point, which UTF-8 cannot encode (usually a \\uXXXX escape pair cut in half upstream). "
-            "Repair the invalid Unicode in the upstream value before binding it to stdin."
+            # Kept under the 200-character batch error preview, so the fix survives truncation.
+            f"The value bound to stdin: contains {text[exc.start]!r} at character {exc.start}, a surrogate UTF-8 "
+            "cannot encode (often a cut \\uXXXX escape). Repair the invalid Unicode upstream before binding it to stdin."
         ) from exc
 
 
