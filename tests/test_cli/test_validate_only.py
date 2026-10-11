@@ -577,7 +577,7 @@ class TestValidationErrorDiagnosticShape:
     """
 
     def test_json_errors_are_diagnostic_dicts_not_strings(self, tmp_path: Path) -> None:
-        """JSON error entries must be Diagnostic.to_display_dict(), not {"message": str, "category": str}.
+        """JSON error entries must be Diagnostic.to_output_dict(), not {"message": str, "category": str}.
 
         Before Task 144, errors were: [{"message": "error text", "category": "validation"}]
         After: [{"severity": "error", "message": "...", "source": "validation", "title": "...", ...}]
@@ -599,7 +599,7 @@ class TestValidationErrorDiagnosticShape:
         assert len(errors) > 0
 
         err = errors[0]
-        # These keys come from Diagnostic.to_display_dict() — NOT from the old string wrapper
+        # These keys come from Diagnostic.to_output_dict() — NOT from the old string wrapper
         assert "severity" in err, f"Missing 'severity' key — errors may have reverted to string wrapping: {err}"
         assert err["severity"] == "error"
         assert "source" in err, f"Missing 'source' — not a Diagnostic dict: {err}"
@@ -633,11 +633,14 @@ class TestValidationErrorDiagnosticShape:
 
         assert rich_error["title"] == "Validation Error"
         assert rich_error["node_id"] == "writer"
-        assert rich_error["path"] == "nodes[id=writer].params.file_pat"
         assert rich_error["suggestions"]
         assert "file_path" in rich_error["suggestions"][0]
-        assert "file_path" in rich_error["available_fields"]
-        assert "file_path" in rich_error["similar_names"]
+        # One nested form, as every printed document (#781): details live under `context` only.
+        context = rich_error["context"]
+        assert context["path"] == "nodes[id=writer].params.file_pat"
+        assert "file_path" in context["available_fields"]
+        assert "file_path" in context["similar_names"]
+        assert not set(context) & set(rich_error), f"context keys duplicated at top level: {sorted(rich_error)}"
 
     def test_text_validation_failure_renders_diagnostic_fields(self, tmp_path: Path) -> None:
         """Text output must render per-error location and suggestions from Diagnostic fields.

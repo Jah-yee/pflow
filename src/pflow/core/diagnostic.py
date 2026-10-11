@@ -150,9 +150,8 @@ class Diagnostic:
         return result
 
     def to_display_dict(self) -> dict[str, Any]:
-        """Serialize with context merged into top-level keys — a legacy flat shape kept for the trace's
-        ``warnings`` (read by ``type``/``recovered``) and validate-only JSON. Values are RAW; new
-        documents use ``to_output_dict``."""
+        """Serialize with context merged into top-level keys — a legacy flat shape kept only for the trace's
+        ``warnings`` (read by ``type``/``recovered``). Values are RAW; a printed document uses ``to_output_dict``."""
         result = self.to_dict()
         # Reuse the deep copy already made by to_dict() — no second deepcopy.
         ctx = result.get("context")
