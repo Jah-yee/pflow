@@ -87,9 +87,3 @@ proof.
 - an upstream issue number beside a closing keyword in a PR body ("fixes agronholm/anyio#816") parsed by GitHub as a phantom
   closing reference to THIS repo's #816 (nonexistent, no effect) — the "never place a closing keyword next to a number the PR
   must not close" trap in a cross-repo form; recognition would extend that ORCHESTRATION sentence to upstream references | s14 | n=1
-- a lane's executed evaluation refuted the closing mechanism the orchestrator had written into the issue or packet before
-  executing anything (s14: #793's mtime guard — concurrent real-HOME writers; #776's named-key sanitize pass — crashes on a
-  text body; #767's `import pflow.cli` probe — the import is lazy; #749's two mechanisms — Task 152 owns the surface);
-  recognition: an orchestrator-written mechanism is labelled HYPOTHESIS in the packet, the lane's evaluation decides | s13, s14 | n=2
-  → PROPOSED (promote now: one clause in ORCHESTRATION "GH-issue lane filing bar" — the mechanism is a hypothesis the lane's
-  evaluation may overturn; s13's lens-re-audit entry merged into this one)

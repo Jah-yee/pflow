@@ -460,3 +460,13 @@ _Tacit residue only — ships, rulings and parked work live above, in CURRENT-ST
   confirmed.
 - NEEDS VERIFICATION: the 184 plan's "P1 leaves the tree import-red by design" — the task orchestrator should confirm the
   phase-gate command the planner named actually runs green at P1's end before accepting that.
+
+## [2026-10-11, after close] the user accepted every pending item
+
+- Task 184 CP-1 → all four as recommended (written into the 184 worktree as `scratchpads/session-14/CP-1-RULED.md`; the
+  orchestrator records it on the branch). #799 → B, with the one-line `workflow_executor.py` engine-exclusion waiver (ruling
+  comment on #799). #749 → A: closed into Task 152; 152's spec refreshed against `cf8b7fcb` (six stale points VERIFIED by me:
+  guide path, topic list, file sizes, two missing tools, the `server.py:286-293` pointer, the pinning test) and moved to `next`;
+  worktree + empty branch removed. RECURRENCE "pre-execution closing mechanism is a hypothesis" → promoted into the role
+  prompt's filing bar; entry deleted. Producer-facing edits committed. Global `~/.local/bin/pflow` reinstalled (editable,
+  0.15.0 → 0.16.0, mcp 1.30, anyio 4.15.1); two consecutive runs left the registry mtime unchanged.
