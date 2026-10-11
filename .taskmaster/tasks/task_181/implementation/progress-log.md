@@ -349,3 +349,15 @@
 - Post-handback "fully happy?" (orchestrator-directed): no code change.
   - (a) `mode?` stays optional. Requiring it changes no reader: every reader passes `param.mode` into a `mode` parameter that keeps its `"template"` default for text that has no param (the source pane, run values, item fields). It would only tighten the type and add `mode: "template"` to ~85 test literals.
   - (b) Executed a scan of every in-tree `.pflow.md` (`examples/`, `workflows/`; 72 parse, the 8 that fail are `examples/invalid/`): **0 Issues** in any Template param, so no example loses a chip or teal to the Issue change. **One escape**: `examples/nodes/agent/claude-schema.pflow.md:93` `*Review cost: $${review.llm_usage.cost_usd}*` — the run writes the literal `${review.llm_usage.cost_usd}` (executed via `templates.resolve`). The old UI drew a chip there, which was the #683 false claim; the new UI shows the literal text the run sends. This is a pre-existing example bug (the author meant `$` + the value), not a UI regression. It is outside PD's files; the fix is to keep the dollar sign apart from the reference (e.g. `USD ${…}`), for the orchestrator to route.
+
+## [2026-10-11 03:00] task orchestrator — PD verified + committed (`416a0416`); dispositions; PE routed to I2
+- Verified: I2's PD entry + "fully happy?" (clean; `mode?` kept optional with reason; no in-tree example regresses). Gates as logged (web 905, `make test` 10923). UI slot: granted to I2 on port 8781 (not 8765 — reuse-if-up would serve another checkout); stopped at handback.
+- Dispositions of I2's items:
+  - stale `template_surfaces.py:29` "TypeScript mirror: …isCodeBody" → fix in PE.
+  - #683 second clause (preview shows `true`/`null` where sh receives `True`/empty) → not D10; follow-up for the merge seam; PR says `Refs #683` for that clause unless main files it separately.
+  - D10's fence premise was wrong → `web/src/graph/CLAUDE.md` states the true behaviour (accepted).
+  - Committed Python-vs-TS differential → follow-up candidate (merge seam), alongside Task 170's same uncommitted check.
+  - `examples/nodes/agent/claude-schema.pflow.md:93` `$${…}` (pre-existing, unrelated to this task) → merge-seam follow-up, not this PR.
+  - Tooling postmortem: (S) `visual-invariants.pflow.md` `*` bullets make `out_path` required → **fix in this PR (PE)**; (S) chips clipped by row ellipsis → one skill line in PE ("assert decorations via the DOM, not pixels"); (M) no DOM-text reader workflow → issue at merge seam (not built here).
+- Rotation: I1 is past ~600k cumulative (plan: rotate past ~350k) → PE goes to I2 (holds the rule + screenshot tooling; ~265k).
+- Next: I2 on PE.
