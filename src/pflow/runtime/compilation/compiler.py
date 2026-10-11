@@ -285,6 +285,11 @@ def _create_node_and_config(
     # Set node_id on the bare node (engine needs this for config lookup)
     node_instance.node_id = node_id
 
+    # A file-loaded code body's `__file__`: an attribute, never a param, so the absolute path stays out of
+    # the config hash, memo cache key and trace params.
+    if node_type == "code":
+        node_instance.source_file = (node_data.get("_resolved_files") or {}).get("code")
+
     # Extract interface metadata from registry
     nodes = registry.load()
     node_metadata = nodes.get(node_type, {})
