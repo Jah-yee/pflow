@@ -48,3 +48,9 @@
 - Deviations/surprises: none. Note for the build: #722 (MCP `registry_run` rejects `eval(`) is open — the §4c/R7 eval form
   is refused over MCP until it lands; the guide text should not promise it works over MCP before then.
 - Next: build after Task 118 Part 2 merges; the task orchestrator re-verifies 118's shipped `param_mode` shapes (P0).
+
+## [2026-10-11 00:00] task orchestrator — bootstrap; 118 Part 2 shapes pre-checked
+- Did: merged `origin/main` (`d0463878`) into the branch (clean, merge `24386bfe`); `make install` green; read ORCHESTRATION, spec, plan, checkpoint header, 118 + 170 task-reviews, #621 (latest comment: shell/code half closed by 118 Part 2; the MCP `function:` half is this task's).
+- Verified (grep on the merged tree): `ParamMode = Literal["template","body"]` + `param_mode` + `_BODIES` + `template_params` + `code_bodies` (`core/workflow/template_surfaces.py:24-58`); `split_params(…, node_type)` checks `param_mode != "body"` before `has_templates` (`runtime/engine/template_resolution.py:127`); `parses_leaves` at `:90`; `step_scope` / `StepScope.owner(root, *, has_path)` (`core/workflow/data_flow.py:859-897`); unused-input hook = `| body_reference_roots(workflow_ir)` in `validate_workflow_templates` (`runtime/template_validation/validator.py:113-119`); web `isCodeBody` (`web/src/utils/format.ts:146`, called `scan.ts:139`, `ReadPanel.tsx:76`); chrome-devtools MCP registered locally.
+- Deviations/surprises: plan §0 check 1 says callers compare `== "body"`; shipped callers compare `!= "body"` (`template_surfaces.py:47`, `react_flow.py:312`, `execution_service.py:701`, `template_resolution.py:127`, `file_resolver.py:103` uses `== "body"`). Same effect for a third mode (embedded is "not a body" → still a template param) — no decision changes; I1 confirms in P0.
+- Next: launch I1 (Opus · high) on P0 → PA → PB → PC; mid-task review after PC.
