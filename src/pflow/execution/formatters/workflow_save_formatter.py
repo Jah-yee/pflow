@@ -18,6 +18,8 @@ Usage:
 
 from typing import Any
 
+from pflow.core.types import input_usage, usage_arguments
+
 
 def format_save_success(
     name: str,
@@ -58,7 +60,7 @@ def format_save_success(
         ...     },
         ...     metadata={"keywords": ["test", "example"]}
         ... )
-        >>> "Execute with: pflow test-workflow msg=<value>" in result
+        >>> "Execute with: pflow test-workflow msg=<string>" in result
         True
         >>> "Optional params: count" in result
         True
@@ -81,7 +83,7 @@ def format_save_success(
 
     # Add note about optional parameters if there are any
     inputs = workflow_ir.get("inputs", {})
-    optional_params = [param_name for param_name, spec in inputs.items() if not spec.get("required", True)]
+    optional_params = [param_name for param_name, spec in inputs.items() if not input_usage(spec).required]
     if optional_params:
         lines.append(f"  Optional params: {', '.join(optional_params)}")
 
@@ -103,130 +105,25 @@ def format_save_success(
 
 
 def format_execution_hint(name: str, workflow_ir: dict[str, Any]) -> str:
-    """Format execution hint with parameter type placeholders.
-
-    Generates a command example showing how to execute the workflow with
-    type-appropriate placeholders for each parameter.
-
-    Args:
-        name: Workflow name
-        workflow_ir: Workflow IR with inputs declaration
-
-    Returns:
-        Formatted execution command string
+    """The command that runs a saved workflow: every input as ``name=<placeholder>``, required first.
 
     Examples:
         >>> format_execution_hint("my-workflow", {"inputs": {}})
         'pflow my-workflow'
 
-        >>> format_execution_hint("my-workflow", {
-        ...     "inputs": {
-        ...         "topic": {"required": True, "type": "string"},
-        ...         "verbose": {"required": False, "type": "boolean"}
-        ...     }
-        ... })
-        'pflow my-workflow topic=<value> verbose=<true/false>'
-
         >>> format_execution_hint("analyzer", {
         ...     "inputs": {
-        ...         "count": {"required": True, "type": "number"},
-        ...         "data": {"required": True, "type": "array"}
+        ...         "count": {"required": True, "type": "integer"},
+        ...         "data": {"required": False, "type": "array"},
         ...     }
         ... })
-        "pflow analyzer count=<number> data='[...]'"
+        "pflow analyzer count=<integer> data='[...]'"
     """
-    base_command = f"pflow {name}"
-
-    # Get inputs from IR
-    inputs = workflow_ir.get("inputs", {})
-    if not inputs:
-        return base_command
-
-    # Separate required and optional parameters
-    required_params = []
-    optional_params = []
-
-    for param_name, param_spec in inputs.items():
-        is_required = param_spec.get("required", True)
-        param_type = param_spec.get("type", "any")
-
-        # Create hint based on type - use consistent <type> format
-        type_hint = _get_type_hint(param_type)
-        hint = f"{param_name}={type_hint}"
-
-        if is_required:
-            required_params.append(hint)
-        else:
-            optional_params.append(hint)
-
-    # Construct full command (required first, then optional)
-    all_params = required_params + optional_params
-    if all_params:
-        return f"{base_command} {' '.join(all_params)}"
-    else:
-        return base_command
-
-
-def _get_type_hint(param_type: str) -> str:
-    """Get type-appropriate placeholder hint.
-
-    Uses JSON format for arrays and objects to show exact syntax needed.
-
-    Args:
-        param_type: Parameter type from workflow IR
-
-    Returns:
-        Placeholder string for the type
-
-    Examples:
-        >>> _get_type_hint("boolean")
-        '<true/false>'
-        >>> _get_type_hint("number")
-        '<number>'
-        >>> _get_type_hint("array")
-        "'[...]'"
-        >>> _get_type_hint("object")
-        "'{...}'"
-        >>> _get_type_hint("string")
-        '<value>'
-    """
-    type_hints = {
-        "boolean": "<true/false>",
-        "number": "<number>",
-        "array": "'[...]'",  # Show JSON array format with shell quotes
-        "object": "'{...}'",  # Show JSON object format with shell quotes
-    }
-    return type_hints.get(param_type, "<value>")
+    return " ".join([f"pflow {name}", *usage_arguments(workflow_ir.get("inputs") or {}, include_optional=True)])
 
 
 def _has_complex_types(workflow_ir: dict[str, Any]) -> bool:
-    """Check if workflow has complex parameter types that need explanation.
-
-    Complex types are: array, object, or untyped (generic "value").
-
-    Args:
-        workflow_ir: Workflow IR dict with inputs
-
-    Returns:
-        True if workflow has any complex parameter types
-
-    Examples:
-        >>> _has_complex_types({"inputs": {"name": {"type": "string"}}})
-        False
-        >>> _has_complex_types({"inputs": {"data": {"type": "array"}}})
-        True
-        >>> _has_complex_types({"inputs": {"config": {"type": "object"}}})
-        True
-        >>> _has_complex_types({"inputs": {"value": {"type": "any"}}})
-        True
-    """
-    inputs = workflow_ir.get("inputs", {})
-
-    for param_spec in inputs.values():
-        param_type = param_spec.get("type", "any").lower()
-
-        # Check if it's a complex type
-        if param_type in ("array", "object", "any", ""):
-            return True
-
-    return False
+    """Whether an input's placeholder says too little on its own: an array, object or untyped input."""
+    return any(
+        input_usage(spec).type.name in ("array", "object", "any") for spec in (workflow_ir.get("inputs") or {}).values()
+    )

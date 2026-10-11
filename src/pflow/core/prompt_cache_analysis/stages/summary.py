@@ -8,6 +8,7 @@ from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.llm_providers import detect_provider
+from pflow.core.types import usage_arguments
 
 from .. import cost_estimation
 from ..context import AnalysisContext
@@ -89,16 +90,13 @@ def _format_workflow_run_command(workflow_path: str | None, inputs: Mapping[str,
     :class:`AnalysisSummary` so renderers can surface the command on
     unavailable-cost branches without reaching into the IR themselves.
 
-    Placeholder values (``<value>``) are intentional: greenfield analysis has
-    no resolved parameters yet, and showing defaults would imply they're
-    required. The agent fills in real values when running.
+    Every input shows as ``name=<placeholder>``, required first: greenfield analysis has no
+    resolved parameters yet, and showing defaults would imply they're required. The agent fills
+    in real values when running.
     """
     if workflow_path is None or workflow_path.startswith("ir-hash:"):
         return None
-    parts = [f"pflow run {workflow_path}"]
-    for name in inputs or {}:
-        parts.append(f"{name}=<value>")
-    return " ".join(parts)
+    return " ".join([f"pflow run {workflow_path}", *usage_arguments(inputs or {}, include_optional=True)])
 
 
 def _build_summary(

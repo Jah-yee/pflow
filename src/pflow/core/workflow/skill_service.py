@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pflow.core.types import usage_arguments
 from pflow.core.workflow.manager import WorkflowManager
 
 logger = logging.getLogger(__name__)
@@ -57,8 +58,8 @@ class SkillInfo:
 def generate_usage_section(workflow_name: str, ir: dict[str, Any]) -> str:
     """Generate the ## Usage markdown section from workflow IR inputs.
 
-    Builds a usage section with an example pflow command showing required
-    parameters. Stdin inputs are excluded (they're piped, not CLI args).
+    Builds a usage section with an example pflow command showing each required
+    input as ``name=<placeholder>`` (a stdin input too — an argument wins over the pipe).
 
     Args:
         workflow_name: Name of the workflow
@@ -67,22 +68,7 @@ def generate_usage_section(workflow_name: str, ir: dict[str, Any]) -> str:
     Returns:
         Complete ## Usage section as markdown string
     """
-    # Collect required parameters, excluding stdin inputs
-    example_params: list[str] = []
-    inputs = ir.get("inputs", {})
-    for input_name, config in inputs.items():
-        if not isinstance(config, dict):
-            continue
-        # Skip stdin inputs — they're piped, not CLI args
-        if config.get("stdin") is True:
-            continue
-        if config.get("required", True):
-            example_params.append(f"{input_name}=<value>")
-
-    # Build example command
-    command = f"pflow {workflow_name}"
-    if example_params:
-        command += f" {' '.join(example_params)}"
+    command = " ".join([f"pflow {workflow_name}", *usage_arguments(ir.get("inputs") or {})])
 
     return f"""## Usage
 

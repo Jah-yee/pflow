@@ -34,7 +34,7 @@ def settings() -> None:
 
     \b
     Credentials:
-      pflow settings set-env API_TOKEN "sk-..."    Store API key
+      pflow settings set-env api_token "sk-..."    Fills a workflow input named api_token
       pflow settings set-env GITHUB_TOKEN "ghp-..."
       pflow settings show                          Verify stored values
     \b
@@ -45,7 +45,7 @@ def settings() -> None:
       pflow settings llm providers                 # Full list of LLM providers and their env vars
       pflow settings llm models                    # Models you can use with your keys
     \b
-    Stored credentials are available as fallbacks for declared workflow inputs.
+    A stored value fills the declared workflow input of the same name.
     Precedence: CLI params > shell env > settings env > workflow defaults.
     Credentials must still be declared as inputs — they are not injected implicitly.
     """

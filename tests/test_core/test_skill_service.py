@@ -163,7 +163,7 @@ class TestGenerateUsageSection:
         usage = generate_usage_section("test-workflow", ir)
 
         # Should include required params in command
-        assert "pflow test-workflow repo=<value> branch=<value>" in usage
+        assert "pflow test-workflow repo=<string> branch=<string>" in usage
         # Should not include optional params
         assert "verbose" not in usage
         # Should include standard sections
@@ -201,8 +201,9 @@ class TestGenerateUsageSection:
         assert "verbose" not in usage
         assert "debug" not in usage
 
-    def test_generate_usage_skips_stdin_inputs(self):
-        """Test that stdin: true inputs are excluded from CLI command."""
+    def test_generate_usage_includes_required_stdin_input(self):
+        """A required stdin input shows as an argument, as on every other surface — an argument
+        wins over the pipe, so the command runs as printed."""
         ir = {
             "inputs": {
                 "content": {"type": "string", "stdin": True, "required": True},
@@ -212,10 +213,7 @@ class TestGenerateUsageSection:
 
         usage = generate_usage_section("stdin-workflow", ir)
 
-        # Should include non-stdin required param
-        assert "format=<value>" in usage
-        # Should NOT include stdin param (it's piped, not CLI arg)
-        assert "content" not in usage
+        assert "pflow stdin-workflow content=<string> format=<string>\n" in usage
 
 
 class TestInjectOrReplaceUsage:
@@ -362,7 +360,7 @@ class TestEnrichWorkflow:
         # Should have ## Usage section
         assert "## Usage" in body
         assert "pflow test-workflow" in body
-        assert "repo=<value> branch=<value>" in body
+        assert "repo=<string> branch=<string>" in body
 
     def test_enrich_preserves_other_frontmatter(self, tmp_path):
         """Test that enrichment preserves existing frontmatter fields."""

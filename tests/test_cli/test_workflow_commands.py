@@ -398,8 +398,8 @@ class TestWorkflowDescribeCommand:
 
             # Check inputs section
             assert "Inputs:" in result.output
-            assert "- input_file (required): Path to input data file" in result.output
-            assert "- format (optional): Output format (json/csv)" in result.output
+            assert "- input_file (any, required): Path to input data file" in result.output
+            assert "- format (any, optional): Output format (json/csv)" in result.output
             assert "Default: json" in result.output
 
             # Check outputs section
@@ -470,7 +470,7 @@ class TestWorkflowDescribeCommand:
             "Description: A local draft\n"
             "\n"
             "Inputs:\n"
-            "  - subject (required): Subject to greet\n"
+            "  - subject (any, required): Subject to greet\n"
             "\n"
             "Outputs:\n"
             "  - message: Greeting text\n"
@@ -534,9 +534,9 @@ class TestWorkflowDescribeCommand:
             result = invoke_cli(["describe", "flexible-task"])
 
             assert result.exit_code == 0
-            assert "- verbose (optional): Enable verbose output" in result.output
-            assert "Default: False" in result.output
-            assert "- timeout (optional): Operation timeout in seconds" in result.output
+            assert "- verbose (any, optional): Enable verbose output" in result.output
+            assert "Default: false" in result.output
+            assert "- timeout (any, optional): Operation timeout in seconds" in result.output
             assert "Default: 30" in result.output
 
             # Example should not include optional parameters
@@ -682,9 +682,9 @@ class TestWorkflowDescribeCommand:
             assert result.exit_code == 0
 
             # Check inputs are properly categorized
-            assert "- source (required): Source file path" in result.output
-            assert "- target (required): Target directory" in result.output
-            assert "- compression (optional): Compression level (1-9)" in result.output
+            assert "- source (any, required): Source file path" in result.output
+            assert "- target (any, required): Target directory" in result.output
+            assert "- compression (any, optional): Compression level (1-9)" in result.output
             assert "Default: 5" in result.output
 
             # Example should only include required parameters
@@ -739,7 +739,7 @@ class TestWorkflowCommandIntegration:
 
             assert result.exit_code == 0
             assert "Workflow: analyze-logs" in result.output
-            assert "- log_path (required): Path to log file" in result.output
+            assert "- log_path (any, required): Path to log file" in result.output
             assert "- report: Analysis report" in result.output
 
     def test_empty_list_to_save_workflow_guidance(self) -> None:

@@ -350,7 +350,7 @@ describe("inputFields — the run form's top-level input model (Task 175)", () =
   it("maps each input's name/type/required/default/description/sensitive off its raw io", () => {
     const graph: RFGraph = {
       nodes: [
-        topInput("topic", { data_type: "string", default: "cats" }, "the subject"),
+        topInput("topic", { data_type: "string", required: false, default: "cats" }, "the subject"),
         topInput("api_key", { sensitive: true }),
         node("step", { kind: "shell" }), // a non-input body node is ignored
       ],
@@ -358,7 +358,7 @@ describe("inputFields — the run form's top-level input model (Task 175)", () =
       groups: [],
     };
     expect(inputFields(graph)).toEqual([
-      { name: "topic", dataType: "string", required: true, defaultValue: "cats", description: "the subject", sensitive: false },
+      { name: "topic", dataType: "string", required: false, defaultValue: "cats", description: "the subject", sensitive: false },
       { name: "api_key", dataType: "string", required: true, defaultValue: null, description: null, sensitive: true },
     ]);
   });

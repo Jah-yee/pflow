@@ -10,7 +10,7 @@
   3 recommended actions
 
   Cost data unavailable: run the workflow once for cost figures.
-  Suggested:  pflow run .taskmaster/tasks/task_159/baseline/04-warning-catalog/14-cache.consolidate-to-root-recommended/workflow.pflow.md concept=<value>
+  Suggested:  pflow run .taskmaster/tasks/task_159/baseline/04-warning-catalog/14-cache.consolidate-to-root-recommended/workflow.pflow.md concept='{...}'
 
 ## Recommended actions (3)
 

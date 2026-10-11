@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final, NoReturn
 
@@ -43,15 +43,16 @@ _NUMBER_TEXT: Final = re.compile(r"-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)
 _BOOLEAN_TEXT: Final[dict[str, bool]] = {"true": True, "false": False, "yes": True, "no": False, "1": True, "0": False}
 _NO_FIT: Final[tuple[bool, Any]] = (False, None)
 
-# Per type, for messages: (what it accepts, the aside shown with it, a canonical example as typed on a command line).
-_ACCEPTED: Final[dict[str, tuple[str, str, str]]] = {
-    "string": ("text", "", "text"),
-    "integer": ("a whole number", "e.g. 3", "3"),
-    "number": ("a number", "e.g. 3, 2.5, 1e3", "3"),
-    "boolean": ("true or false", "also yes/no, 1/0", "true"),
-    "object": ("a JSON object", 'e.g. {"a": 1}', '{"a": 1}'),
-    "array": ("a JSON array", 'e.g. ["a", "b"]', '["a", "b"]'),
-    "any": ("any value", "", ""),
+# Per type, for messages: (what it accepts, the aside shown with it, a canonical example as typed on a command
+# line, the placeholder an example command shows after ``name=``).
+_ACCEPTED: Final[dict[str, tuple[str, str, str, str]]] = {
+    "string": ("text", "", "text", "<string>"),
+    "integer": ("a whole number", "e.g. 3", "3", "<integer>"),
+    "number": ("a number", "e.g. 3, 2.5, 1e3", "3", "<number>"),
+    "boolean": ("true or false", "also yes/no, 1/0", "true", "<true/false>"),
+    "object": ("a JSON object", 'e.g. {"a": 1}', '{"a": 1}', "'{...}'"),
+    "array": ("a JSON array", 'e.g. ["a", "b"]', '["a", "b"]', "'[...]'"),
+    "any": ("any value", "", "", "<value>"),
 }
 
 
@@ -200,13 +201,18 @@ class TypeSpec:
     @property
     def accepted_text(self) -> str:
         """The noun with its aside: ``"a whole number (e.g. 3)"``, ``"true or false (also yes/no, 1/0)"``."""
-        noun, aside, _ = _ACCEPTED[self.name]
+        noun, aside, _, _ = _ACCEPTED[self.name]
         return f"{noun} ({aside})" if aside else noun
 
     @property
     def example_text(self) -> str:
         """A canonical accepted value as typed on a command line: ``"3"``, ``'["a", "b"]'``."""
         return _ACCEPTED[self.name][2]
+
+    @property
+    def placeholder(self) -> str:
+        """What an example command shows after ``name=``: ``"<integer>"``, ``"'[...]'"`` (shell-quoted JSON)."""
+        return _ACCEPTED[self.name][3]
 
     def is_wildcard(self) -> bool:
         """Return True only for the explicit wildcard type."""
@@ -220,6 +226,59 @@ class TypeSpec:
 
     def __str__(self) -> str:
         return self.name
+
+
+@dataclass(frozen=True)
+class InputUsage:
+    """How a caller supplies one declared workflow input — what every surface that describes or
+    exemplifies an input reads (``describe``, ``save``, skills, discovery, LLM context, the graph)."""
+
+    type: TypeSpec
+    required: bool  # a run that omits it fails
+    default: str | None  # the default as a caller would type it; None when there is none
+    stdin: bool
+
+    def argument(self, name: str) -> str:
+        """``name=<placeholder>``, as an example command shows it."""
+        return f"{name}={self.type.placeholder}"
+
+
+def input_usage(spec: Mapping[str, Any]) -> InputUsage:
+    """Read one ``## Inputs`` declaration the way a run treats it (``ir_preparation.prepare_inputs``).
+
+    Required unless ``required`` is false or a default fills it — a ``default: null`` is no
+    default, and a ``default: ""`` still fails a required input as empty, so neither makes it
+    optional. Untyped (or a type outside the vocabulary) is ``any``.
+    """
+    declared = spec.get("type")
+    type_spec = TypeSpec(declared if isinstance(declared, str) and declared in CANONICAL_TYPES else "any")
+    default = spec.get("default")
+    return InputUsage(
+        type=type_spec,
+        required=bool(spec.get("required", True)) and default in (None, ""),
+        default=None if default is None else _typed_text(default, type_spec),
+        stdin=spec.get("stdin") is True,
+    )
+
+
+def usage_arguments(inputs: Mapping[str, Mapping[str, Any]], *, include_optional: bool = False) -> list[str]:
+    """The ``name=<placeholder>`` arguments of an example command: the required inputs in
+    declaration order, then — with ``include_optional`` — the optional ones."""
+    usages = {name: input_usage(spec) for name, spec in inputs.items()}
+    required = [usage.argument(name) for name, usage in usages.items() if usage.required]
+    optional = [usage.argument(name) for name, usage in usages.items() if not usage.required]
+    return required + optional if include_optional else required
+
+
+def _typed_text(value: Any, type_spec: TypeSpec) -> str:
+    """A default as the run receives it, typed as a caller would: text as is (empty text as ``""``);
+    a scalar into a ``string`` input as the text the coercer makes of it (``False`` → ``False``, as
+    ``param_coercion.coerce_declared_input`` does); anything else as JSON."""
+    if isinstance(value, str):
+        return value or '""'
+    if type_spec.name == "string" and not isinstance(value, (dict, list)):
+        return str(value)
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _raise_parameterized_generic_error(raw: str, stripped: str) -> NoReturn:

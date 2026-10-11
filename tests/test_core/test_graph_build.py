@@ -342,17 +342,18 @@ def test_synthetic_input_and_output_with_same_name_have_distinct_identity() -> N
     assert input_node.id.ancestor_path == () and output_node.id.ancestor_path == ()
 
 
-def test_input_ports_carry_interface_data_and_required_defaults_true() -> None:
+def test_input_ports_carry_interface_data_and_required_as_the_run_treats_it() -> None:
     graph = build_graph({
         "inputs": {
             "topic": {"type": "string", "description": "What to research"},
             "limit": {"type": "integer", "required": False, "default": 5},
+            "depth": {"type": "integer", "default": 2},
         },
         "nodes": [{"id": "work", "type": "code"}],
     })
 
-    # Description rides `purpose` (symmetric with outputs); an input that omits
-    # `required:` IS required — the ir_schema default every runtime reader applies.
+    # Description rides `purpose` (symmetric with outputs); `required` is the run's rule
+    # (`types.input_usage`): an input that omits `required:` is required unless a default fills it.
     topic = _node(graph, _input_id("topic"))
     assert topic.purpose == "What to research"
     assert topic.io == IOPort(data_type="string", required=True, default=None)
@@ -360,6 +361,7 @@ def test_input_ports_carry_interface_data_and_required_defaults_true() -> None:
     limit = _node(graph, _input_id("limit"))
     assert limit.purpose == ""
     assert limit.io == IOPort(data_type="integer", required=False, default=5)
+    assert _node(graph, _input_id("depth")).io == IOPort(data_type="integer", required=False, default=2)
     # Inputs ship no source ref (the parser injects `_source_line` only for
     # outputs/nodes; the inputs schema forbids extra keys).
     assert limit.source is None
