@@ -228,7 +228,7 @@ def test_parse_and_resolve_never_raise(source: str) -> None:
     assert isinstance(resolve(source, context), Resolution)
     assert isinstance(resolve(source, context, embedded=True), Resolution)
     for issue in template.issues:
-        near_miss_insert(issue)
+        near_miss_insert(source, issue)
     # The uncached scans agree with the cached parse.
     assert TemplateResolver.has_templates(source) is template.needs_resolution
     assert TemplateResolver.has_references(source) is bool(template.expressions)
@@ -517,6 +517,8 @@ def test_has_templates_in_embedded_code_counts_only_json_inserts(value: Any, ord
         ("`$${price}`", []),
         ("${a + b}", []),
         ("${x|json} $${y|json}", ["${y|json}"]),  # a visible insert beside a hidden one
+        ('`${"${x|json}"}`', ["${x|json}"]),  # inside another Expression's literal operand
+        ("$${a[${i}]|json}", ["${a[${i}]|json}"]),  # nested `${`: every opening is tried
     ],
 )
 def test_hidden_inserts_are_the_inserts_the_parse_could_not_see(source: str, hidden: list[str]) -> None:
@@ -526,21 +528,27 @@ def test_hidden_inserts_are_the_inserts_the_parse_could_not_see(source: str, hid
 
 
 @pytest.mark.parametrize(
-    ("source", "meant"),
+    ("source", "expected"),
     [
-        ("${x|json }", "${x|json}"),
-        ("${ x|json}", "${x|json}"),
-        ("${x|JSON}", "${x|json}"),
-        ('${ a ?? "d" | Json }', '${a ?? "d"|json}'),
+        ("${x|json }", ("${x|json }", "${x|json}")),
+        ("${ x|json}", ("${ x|json}", "${x|json}")),
+        ("${x|JSON}", ("${x|JSON}", "${x|json}")),
+        ('${ a ?? "d" | Json }', ('${ a ?? "d" | Json }', '${a ?? "d"|json}')),
+        # The Issue ends at the first `}`; the written text runs brace-balanced past it.
+        ("(${{}|JSON})", ("${{}|JSON}", "${{}|json}")),
+        ("${rows[${i}]|JSON} tail", ("${rows[${i}]|JSON}", "${rows[${i}]|json}")),
         ("${x|jsn}", None),  # a different word: in JavaScript a bitwise or
         ("${a + b}", None),
         ("${ x }", None),
         ("${x|json", None),  # unclosed
     ],
 )
-def test_near_miss_insert_names_the_insert_an_issue_was_meant_to_be(source: str, meant: str | None) -> None:
+def test_near_miss_insert_names_the_insert_an_issue_was_meant_to_be(
+    source: str, expected: tuple[str, str] | None
+) -> None:
+    """``(as written, meant)``."""
     (issue,) = parse(source).issues
-    assert near_miss_insert(issue) == meant
+    assert near_miss_insert(source, issue) == expected
 
 
 def test_the_lexical_patterns_read_an_insert_as_its_expression() -> None:

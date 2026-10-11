@@ -440,27 +440,46 @@ def embedded_code(template: Template) -> Template:
 
 def hidden_inserts(template: Template) -> tuple[tuple[int, int], ...]:
     """Spans of ``${…|json}`` in the source that the parse did not produce as Expressions —
-    inserts swallowed by a ``$${…}`` escape or by an Issue (``${${x|json} + 1}``)."""
+    inserts swallowed by a ``$${…}`` escape, an Issue (``${${x|json} + 1}``) or another
+    Expression's literal (``${"${x|json}"}``). Every ``${`` is tried, so matches may nest."""
     visible = {expr.span[0] for expr in template.expressions}
-    return tuple(
-        match.span()
-        for match in _EXPRESSION_AT.finditer(template.source)
-        if match.group(2) is not None and match.start() not in visible
-    )
+    spans: list[tuple[int, int]] = []
+    start = template.source.find("${")
+    while start != -1:
+        match = _EXPRESSION_AT.match(template.source, start)
+        if match is not None and match.group(2) is not None and start not in visible:
+            spans.append(match.span())
+        start = template.source.find("${", start + 1)
+    return tuple(spans)
 
 
-def near_miss_insert(issue: Issue) -> str | None:
-    """The JSON insert an Issue was probably meant to be (``${x|json }``, ``${ x|json}``,
-    ``${x|JSON}`` → ``${x|json}``): its inner text with the ends trimmed and the word after
-    the last ``|`` lower-cased, if that parses as one; else ``None``."""
-    if not issue.raw.endswith("}"):
+def balanced_template(source: str, start: int) -> str:
+    """The ``${…}`` opening at ``start`` through its brace-balanced ``}`` (to the end if
+    unclosed) — wider than an Issue, which ends at its first ``}``."""
+    depth = 0
+    for index in range(start + 1, len(source)):
+        depth += (source[index] == "{") - (source[index] == "}")
+        if depth == 0:
+            return source[start : index + 1]
+    return source[start:]
+
+
+def near_miss_insert(source: str, issue: Issue) -> tuple[str, str] | None:
+    """``(as written, meant)`` when an Issue was probably meant as a JSON insert
+    (``${x|json }``, ``${ x|json}``, ``${x|JSON}``, ``${{}|JSON}`` → ``${…|json}``): the
+    brace-balanced text from its ``${``, ends trimmed and the word after the last ``|``
+    lower-cased, if that parses as one; else ``None``."""
+    written = balanced_template(source, issue.span[0])
+    if not written.endswith("}"):
         return None
-    head, bar, word = issue.raw[2:-1].strip().rpartition("|")
+    head, bar, word = written[2:-1].strip().rpartition("|")
     if not bar:
         return None
-    candidate = f"${{{head.rstrip()}|{word.strip().lower()}}}"
-    expression = _expression_at(candidate, 0)  # the Issue ran to its first `}`: a match is whole
-    return candidate if expression is not None and expression.as_json else None
+    meant = f"${{{head.rstrip()}|{word.strip().lower()}}}"
+    expression = _expression_at(meant, 0)
+    if expression is None or not expression.as_json or expression.span[1] != len(meant):
+        return None
+    return written, meant
 
 
 # ── Walk ─────────────────────────────────────────────────────────────────────

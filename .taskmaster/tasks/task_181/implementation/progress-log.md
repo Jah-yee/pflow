@@ -215,3 +215,66 @@
   - the guide, docs, `mcp describe` / context-builder snippets and instruction files;
   - the searcher-doc line, which should name `template_surfaces.EMBEDDED_CODE`;
   - the click/hover real runs.
+
+## [2026-10-11 18:20] implementer I1 (gate-runner) — mid-task review of PA–PC: findings and dispositions; ONE finding handed back
+- Did: dispatched `workflows/review/run-review-lenses.pflow.md`, provider codex, on `git diff 5ab179fc..69f30eec`.
+  - Five lenses, each with its own target (spec + plan + ruled checkpoint + the 12:00 Q1–Q6 extensions; silence = gap): `review-validation-consistency`, `review-impact-completeness`, `review-silent-failures`, `review-feature-interactions`, and `review-simplicity` aimed only at `_shown_as_inserts` and `written_reference`.
+  - Backgrounded to `.taskmaster/tasks/task_181/implementation/review-midtask.out` (untracked; kept for the record) and waited in-turn. 249 s; coverage 5/5 lenses produced output, no gaps.
+  - Read the report in full. Verified every Critical by reproducing it against the code.
+- Findings and dispositions:
+  1. **Bare output source with a dynamic index + `|json`** (Critical; 3 lenses). **CONFIRMED, FIXED.**
+     - Repro: `normalize_output_source("up.items[${i}]|json")` returned the text unwrapped, so the run published `up.items[0]|json`, and the Issue pass checked only bare sources without `${`.
+     - Fix: `normalize_output_source` wraps when `${source}` parses as ONE whole Expression (simple or a JSON insert). The Issue pass checks every output source's normalized form for a misplaced insert (`bare` = the author did not write the `${}`).
+     - Tests: parity row `misplaced_insert_output_bare_dynamic_index` (validator Error + runtime `OutputResolutionError`) and `test_a_bare_dynamic_index_output_source_insert_is_the_error`. Mutations V1 (wrap only simple) → 3 red; V2 (bare-only check) → 2 red.
+  2. **Validator suggestions that rebuild a DIFFERENT path lose `|json`; mixed bare/insert use of one path suppresses the rewrite** (Critical from impact-completeness, Warning from 3 others; simplicity proposes the redesign). **CONFIRMED — NOT FIXED, HANDED BACK (importance 3).**
+     - Examples: Pass 5 `Change ${up.stdot|json} to ${up.stdout}`, Pass 8 `Use ${item.response}`, available-fields lists, `context.similar_names`.
+     - This is a gap against ruled §6 ("every template and every suggestion keeps `|json`"). Closing it is a design choice across ~50 `${…}` render sites in `path_validation.py` / `batch_item_validation.py` (counted), so it is not a contained fix. Options below.
+  3. **Near-miss inserts with an inner `}`** — `${{}|JSON}`, `${rows[${i}]|JSON}` (Critical; 2 lenses). **CONFIRMED, FIXED.**
+     - Repro: the Issue ends at the first `}` (`${{}`), so `near_miss_insert` found nothing.
+     - Fix: new `templates.balanced_template(source, start)` (the brace-balanced `${…}`). `near_miss_insert(source, issue)` now reads that and returns `(as written, meant)`. The validator's private `_balanced` was deleted, so one helper has one home.
+     - Tests: two new near-miss rows (explicit written/meant columns) and `test_a_near_miss_around_inner_braces_is_the_error`. Mutation V3 → 3 red.
+  4. **Hidden insert inside another Expression's literal operand** — `` `${"${ghost.value|json}"}` `` (Critical; silent-failures). **CONFIRMED, FIXED.**
+     - Repro: `finditer` consumed the outer match.
+     - Fix: `hidden_inserts` tries every `${` opening (overlapping). The §7a container is any non-Text segment spanning the insert, so the message says "inside another '${…}'", not "'$${…}'".
+     - Tests: hidden-insert rows (`` `${"${x|json}"}` ``, `$${a[${i}]|json}`) and `test_an_insert_inside_a_bare_expression_literal_is_the_error`. Mutations V4 (non-overlapping) → 2 red; V7 (container = Issues only) → 1 red.
+  5. **A multi-root bare expression reports only its first root** — `` `${a ?? b}` `` (Warning; 2 lenses). **CONFIRMED, FIXED.**
+     - Fix: `embedded_references` yields one record per in-scope root, so each unused input gets its own §4a ERROR (Q2) and leaves the generic unused report. `_bare_reference_warning` dedupes fixes per expression, and singular/plural follows distinct expressions; the ruled singular and Q4 plural texts are unchanged.
+     - Tests: `test_4a_every_input_of_a_coalesce_gets_its_own_error`, `test_4b_a_coalesce_of_two_scoped_roots_lists_both_owners_and_one_fix`. Mutations V5 → 2 red; V6 (plurality by record count) → 1 red.
+  6. **`trace_report` scans a failed embedded param's `template_resolutions` with the ordinary view, so a bare JS `${other.missing}` can draw a "key not found" suggestion; the report also shows the insert's path without `|json`** (Warning; 2 lenses). **CONFIRMED, SKIPPED (importance 2).**
+     - The report cannot apply the embedded policy: a trace node event carries only the class name (`node_type: "MCPNode"`, executed on the real-run trace), not the IR type `param_mode` needs.
+     - The case is narrow: `template == resolved` means every insert in the param stayed unresolved (permissive mode), and the JS name must be rooted at a step id with the field missing. The effect is one extra report suggestion, never a wrong run.
+     - The `${path}` it prints is a path description, not a paste-able fix.
+     - D9's headline (an unresolved insert names `up.missing`, not `missing|json`) holds and is tested.
+  7. **`registry_run` success drops the §4d warning** (Critical; silent-failures). **SKIPPED — pre-existing, not this task's.**
+     - Task 118's task-review already records "MCP `registry_run` success never forwards validation warnings (pre-existing…)".
+     - The finding is true for every warning class, not one introduced here. Follow-up for the merge seam.
+  8. **Suggestion: extend the consumer/parity matrix.** Taken where it guards a fixed bug: bare dynamic-index output source (row), multi-root expressions (2 tests), overlapping hidden insert, inner-brace near-miss. The "identifier-shaped JS in failed traces" row is not added (#6 skipped). "Corrections to different paths" waits on #2.
+  - **Simplicity, verified clean by the lens:** `written_reference` earns its keep (several callers share the suffix decision); `TemplateOperand.as_json` is useful provenance. Its one finding is #2.
+- Changed:
+  - `src/pflow/core/templates.py` (`hidden_inserts` overlap-aware; `balanced_template`; `near_miss_insert(source, issue) -> (written, meant)`);
+  - `src/pflow/runtime/output_resolver.py` (`normalize_output_source`);
+  - `src/pflow/runtime/template_validation/validator.py` (Issue-pass output sources, §7a container, near-miss call, `_bare_reference_warning`);
+  - `src/pflow/core/workflow/data_flow.py` (per-root records);
+  - tests: `test_core/test_templates.py`, `test_integration/test_embedded_code_diagnostics.py` (+5), `test_integration/test_template_parity.py` (+1 row).
+- Verified: `make check` rc 0; `make test` 10920 passed (PC 10909; +11). Mutation ledger V1–V7 above, each a counted failure, restored from byte copies. | Assumed: nothing.
+- Deviations/surprises:
+  - #1 also changes `normalize_output_source` for runtime callers. The only newly wrapped shapes are whole-expression JSON inserts (an `is_simple` wrap ⊂ one-whole-Expression; the difference is exactly `as_json`). The full corpus and suite are green.
+  - The fixes kept the ruled message texts. #5's plural head is Q4's form, and its singular head with two owners uses Q3's nouns joined with "and".
+- **HANDED BACK — #2, options (importance 3: a validator-wide design choice, closing a gap against ruled §6):**
+  - **(A) Thread `as_json` through Pass 5 / Pass 8 (RECOMMENDED).**
+    - `validate_template_paths` takes `(raw, as_json)` pairs; Pass 8 keeps `TemplateOperand`.
+    - One render primitive (`diagnostic_render.written_reference`, already there) at every builder site — the original path, changed paths, available fields and `similar_names`.
+    - Deletes `_shown_as_inserts`, `_insert_references` and the workflow-wide "insert-only" rule; mixed use resolves naturally because each operand renders its own form.
+    - Cost: signature churn across ~12 builders / ~50 render sites; reversible; mechanical; existing tests unaffected with `as_json` defaulting to False.
+    - It is the shape the simplicity lens named as the simplest final code.
+  - **(B) Broaden the rewrite:** per diagnostic, suffix every `${…}` rooted at the insert's root. Small, but still a post-hoc string rewrite, still workflow-wide for mixed use, and it guesses at intent.
+  - **(C) Accept the gap:** only changed-path suggestions stay bare; the original reference, messages and runtime fixes keep `|json`. Record it for the user as a deviation from §6.
+  - My recommendation: (A), built by me now as a contained follow-up phase before PD. My window is healthy.
+- Self-checks: fully happy with the six dispositions. The doubt is #2 itself, handed back rather than absorbed. test-reflect: every review-fix test is mutation-killed (V1–V7); no shallow test was added; nothing was deleted.
+- Next: the orchestrator rules on #2 (A/B/C). Then, if (A), I build it with tests and re-run R6/R10 plus the new mutations.
+
+## [2026-10-11 18:40] task orchestrator — ruling on mid-task finding #2: option (A)
+- Did: read the 18:20 dispositions (6 fixed/skipped with reasons — accepted, incl. #6 skip and #7 as a merge-seam follow-up already in 118's review). Ruled #2 = **(A) thread `as_json` through Pass 5 / Pass 8**, render every rebuilt `${…}` via `written_reference`, delete `_shown_as_inserts` / `_insert_references`.
+- Why within my authority (importance 2, not 3): (A) is the shape that *meets* the user's ruled §6 ("every suggestion keeps `|json`"); no user-visible fork remains, it is internal and reversible. (B) keeps a post-hoc string rewrite; (C) would deviate from a ruling — that one would have needed the user.
+- Committed the mid-task fixes as one commit (review-midtask.out stays untracked).
+- Next: I1 builds (A) with tests + mutations; then fresh I2 on PD.

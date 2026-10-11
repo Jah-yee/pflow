@@ -1772,6 +1772,15 @@ MISPLACED_INSERT_ROWS: tuple[Row, ...] = (
         Raises("OutputResolutionError", "${p.out_str|json}"),
     ),
     Row(
+        "misplaced_insert_output_bare_dynamic_index",
+        "output_source",
+        "p.out_arr[${i}].x|json",
+        Error(JSON_INSERT_ELSEWHERE),
+        Raises("OutputResolutionError", "p.out_arr[${i}].x|json"),
+        declared_inputs=I_INPUT,
+        mutation="wrap a bare source only when it is a simple expression (publishes `p.out_arr[1].x|json` text)",
+    ),
+    Row(
         "misplaced_insert_output_bare",
         "output_source",
         "p.out_str|json",

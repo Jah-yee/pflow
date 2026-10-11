@@ -477,3 +477,57 @@ def test_a_batch_item_miss_inside_an_insert_keeps_the_suffix(function: str, mess
     ir["inputs"] = {"data": {"type": "array", "required": True, "description": "Items."}}
     [error] = _errors(WorkflowValidator.validate(ir, extracted_params={"data": ["a"]}, registry=Registry()))
     assert error.message == message
+
+
+# ── Mid-task review fixes ──────────────────────────────────────────────────
+
+
+def test_a_bare_dynamic_index_output_source_insert_is_the_error() -> None:
+    """``up.items[${i}]|json`` is one bare expression body, so it normalizes to ``${…|json}``:
+    a misplaced insert, never the literal text ``up.items[0]|json``."""
+    ir = _ir(
+        {"id": "s", "type": "shell", "params": {"command": "echo"}},
+        inputs=("i",),
+        outputs={"o": {"source": "s.stdout[${i}]|json", "description": "Out."}},
+    )
+    error = _only_error(ir)
+    assert (error.message, error.suggestions) == _misplaced("${s.stdout[${i}]|json}", "s.stdout[${i}]")
+
+
+def test_a_near_miss_around_inner_braces_is_the_error() -> None:
+    """The Issue ends at the ``{}``'s ``}``; the near-miss reads the whole written insert."""
+    error = _only_error(_ir(_eval("s", "() => (${{}|JSON})")))
+    assert (error.message, error.suggestions) == (
+        "'${{}|JSON}' in 'function' is not a pflow insert ('JSON' must be lower-case), so it would be sent to "
+        "the MCP tool as JavaScript, unchanged.",
+        ["Write ${{}|json}"],
+    )
+
+
+def test_an_insert_inside_a_bare_expression_literal_is_the_error() -> None:
+    error = _only_error(_ir(_eval("s", '() => `${"${count|json}"}`'), inputs=("count",)))
+    assert error.message == (
+        "${count|json} in 'function' sits inside another '${…}' ('${\"${count|json}\"}'), which pflow sends to "
+        "the MCP tool as written — so the value is never inserted."
+    )
+
+
+def test_4a_every_input_of_a_coalesce_gets_its_own_error() -> None:
+    errors = _errors(_validate(_ir(_eval("s", "() => `${a ?? b}`"), inputs=("a", "b"))))
+    assert [e.message.split(":")[0] for e in errors] == ["Input 'a' is never inserted", "Input 'b' is never inserted"]
+
+
+def test_4b_a_coalesce_of_two_scoped_roots_lists_both_owners_and_one_fix() -> None:
+    ir = _ir(
+        {"id": "fetch", "type": "shell", "params": {"command": "echo"}},
+        _eval("rows", "() => `${item.id ?? fetch.stdout}`", batch={"items": [1]}),
+    )
+    [warning] = _warnings(_validate(ir))
+    assert warning.message == (
+        "${item.id ?? fetch.stdout} in 'function' is JavaScript: pflow sends it unchanged, so the batch item and "
+        "the output of step 'fetch' are not inserted."
+    )
+    assert warning.suggestions[0] == (
+        f"To insert it, put ${{item.id ?? fetch.stdout|json}} {JS_VALUE_PLACE}: const id = ${{item.id ?? fetch.stdout|json}};"
+    )
+    assert len(warning.suggestions) == 2  # one fix for the one expression, then the closing line

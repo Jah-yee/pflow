@@ -1480,7 +1480,8 @@ _QUOTES = ("'", '"')
 @dataclass(frozen=True, slots=True)
 class EmbeddedReference:
     """A ``${…}`` in embedded code that pflow reports: a bare reference whose root is in the
-    step's scope (``step_scope``), or a JSON insert wrapped in matching quotes."""
+    step's scope (``step_scope``) — one record per such root — or a JSON insert wrapped in
+    matching quotes."""
 
     node_id: str
     param: str  # the param's location (``function``)
@@ -1537,26 +1538,23 @@ def _embedded_reports(
         start, end = expression.span
         before, after = text[start - 1 : start], text[end : end + 1]
         quote = before if before in _QUOTES and before == after else None
-        root, root_kind = "", None
-        if not expression.as_json:
-            owned = next((ref.root for ref in expression.references if _owner(scope, ref)), None)
-            if owned is None:
-                continue
-            root, root_kind = owned, _root_kind(scope, owned)
-        elif quote is None:
-            continue
+        if expression.as_json:
+            roots: dict[str, EmbeddedRootKind | None] = {"": None} if quote else {}
+        else:
+            roots = {ref.root: _root_kind(scope, ref.root) for ref in expression.references if _owner(scope, ref)}
         span = (start - 1, end + 1) if quote else (start, end)
-        yield EmbeddedReference(
-            node_id=node_id,
-            param=param,
-            expression=text[start:end],
-            root=root,
-            root_kind=root_kind,
-            is_insert=expression.as_json,
-            quote=quote,
-            whole_value=whole == text[start:end],
-            name=_declared_name(text, *span) or js_value_name(expression),
-        )
+        for root, root_kind in roots.items():
+            yield EmbeddedReference(
+                node_id=node_id,
+                param=param,
+                expression=text[start:end],
+                root=root,
+                root_kind=root_kind,
+                is_insert=expression.as_json,
+                quote=quote,
+                whole_value=whole == text[start:end],
+                name=_declared_name(text, *span) or js_value_name(expression),
+            )
 
 
 def _root_kind(scope: StepScope, root: str) -> EmbeddedRootKind:

@@ -24,11 +24,12 @@ from pflow.core.suggestion_utils import find_similar_items
 from pflow.core.templates import (
     DynamicIndex,
     Expression,
-    Issue,
     Literal,
     Reference,
     Template,
     TemplateResolver,
+    Text,
+    balanced_template,
     hidden_inserts,
     near_miss_insert,
     parse,
@@ -779,30 +780,31 @@ def _and_list(items: list[str], word: str = "and") -> str:
 
 def _bare_reference_warning(refs: list[EmbeddedReference], node: dict[str, Any]) -> Diagnostic:
     first = refs[0]
+    per_expression: dict[str, EmbeddedReference] = {}  # one fix per expression, however many roots
+    for ref in refs:
+        per_expression.setdefault(ref.expression, ref)
     nouns = list(dict.fromkeys(_owner_noun(ref) for ref in refs))
     roots = list(dict.fromkeys(f"'{ref.root}'" for ref in refs))
-    expressions = _and_list(list(dict.fromkeys(ref.expression for ref in refs)))
+    one = len(per_expression) == 1
+    message = (
+        f"{_and_list(list(per_expression))} in '{first.param}' {'is' if one else 'are'} JavaScript: "
+        f"pflow sends {'it' if one else 'them'} unchanged, "
+        f"so {_and_list(nouns)} {'is' if len(nouns) == 1 else 'are'} not inserted."
+    )
     spaced = "${ " + first.expression[2:-1] + " }"
-    if len(refs) == 1:
-        message = (
-            f"{expressions} in '{first.param}' is JavaScript: pflow sends it unchanged, so {nouns[0]} is not inserted."
-        )
+    if one and len(roots) == 1:
         closing = (
             f"If {roots[0]} here is your JavaScript variable, the code is correct — write {spaced} "
             "(spaces inside the braces) to clear this warning."
         )
     else:
-        message = (
-            f"{expressions} in '{first.param}' are JavaScript: pflow sends them unchanged, "
-            f"so {_and_list(nouns)} {'is' if len(nouns) == 1 else 'are'} not inserted."
-        )
         closing = (
             f"If {_and_list(roots, 'or')} here is your JavaScript variable, the code is correct — write it with "
             f"spaces inside the braces ({spaced}) to clear this warning."
         )
     fixes = [
         _insert_fix(ref) if ref.whole_value else "To insert it, " + _insert_fix(ref)[0].lower() + _insert_fix(ref)[1:]
-        for ref in refs
+        for ref in per_expression.values()
     ]
     return Diagnostic(
         severity=Severity.WARNING,
@@ -843,11 +845,13 @@ def _validate_malformed_templates(workflow_ir: dict[str, Any]) -> list[Diagnosti
     """
     diagnostics: list[Diagnostic] = []
     for surface in iter_template_surfaces(workflow_ir):
-        if surface.kind == "output_source" and "${" not in surface.value:
-            # A bare source (`x|json`) resolves as its normalized `${…}` form.
-            if insert := _first_insert(parse(normalize_output_source(surface.value))):
-                diagnostics.append(_misplaced_insert_diagnostic(surface, surface.key, insert, bare=True))
-            continue
+        if surface.kind == "output_source":
+            # A source resolves as its normalized `${…}` form (a bare `x|json` too).
+            normalized = normalize_output_source(surface.value)
+            if insert := _first_insert(parse(normalized)):
+                bare = normalized != surface.value
+                diagnostics.append(_misplaced_insert_diagnostic(surface, surface.key, insert, bare=bare))
+                continue
         for location, template in surface.templates():
             if (diagnostic := _template_diagnostic(surface, location, template)) is not None:
                 diagnostics.append(diagnostic)
@@ -919,11 +923,11 @@ def _unseen_insert_diagnostic(surface: TemplateSurface, location: str, template:
     path = surface.path(location)
     for start, end in hidden_inserts(template):
         insert = template.source[start:end]
-        container = next((seg for seg in template.issues if seg.span[0] < start < seg.span[1]), None)
-        if container is None:
+        opened = [seg for seg in template.segments if not isinstance(seg, Text) and seg.span[0] < start < seg.span[1]]
+        if not opened:
             inside = "'$${…}'"
         else:
-            inside = f"another '${{…}}' ('{_balanced(template.source, container.span[0])}')"
+            inside = f"another '${{…}}' ('{balanced_template(template.source, opened[0].span[0])}')"
         name = js_value_name(parse(insert).expressions[0])
         message = (
             f"{insert} in '{location}' sits inside {inside}, which pflow sends to the MCP tool as written — "
@@ -932,27 +936,18 @@ def _unseen_insert_diagnostic(surface: TemplateSurface, location: str, template:
         fix = f"Insert it where a JavaScript value goes, outside any '${{…}}': const {name} = {insert}; — then use {name} in the JavaScript."
         return _template_error(surface.node_id, path, message, fix, template.source)
     for issue in template.issues:
-        if (meant := near_miss_insert(issue)) is not None:
+        if (near_miss := near_miss_insert(template.source, issue)) is not None:
+            written, meant = near_miss
             message = (
-                f"'{issue.raw}' in '{location}' is not a pflow insert ({_near_miss_reason(issue)}), "
+                f"'{written}' in '{location}' is not a pflow insert ({_near_miss_reason(written)}), "
                 "so it would be sent to the MCP tool as JavaScript, unchanged."
             )
             return _template_error(surface.node_id, path, message, f"Write {meant}", template.source)
     return None
 
 
-def _balanced(text: str, start: int) -> str:
-    """The brace-balanced ``${…}`` opening at ``start`` (through the end if unclosed)."""
-    depth = 0
-    for index in range(start + 1, len(text)):
-        depth += (text[index] == "{") - (text[index] == "}")
-        if depth == 0:
-            return text[start : index + 1]
-    return text[start:]
-
-
-def _near_miss_reason(issue: Issue) -> str:
-    inner = issue.raw[2:-1]
+def _near_miss_reason(written: str) -> str:
+    inner = written[2:-1]
     word = inner.rpartition("|")[2].strip()
     reasons = [
         *(["a space after '${'"] if inner[:1].isspace() else []),
