@@ -6,6 +6,8 @@ import textwrap
 from collections.abc import Mapping
 from typing import Any
 
+from pflow.core.security_utils import redact_sensitive
+
 MAX_BATCH_ERRORS_SHOWN = 5
 MAX_ERROR_MESSAGE_CHARS = 200
 MAX_ITEM_SUMMARY_CHARS = 240
@@ -98,12 +100,12 @@ def compact_batch_error_detail(error_detail: Mapping[str, Any]) -> dict[str, Any
     if "item" in error_detail:
         compact["has_full_item"] = True
 
-    # Preserve the structured child-failure bundle (#252) so JSON/MCP consumers
-    # get the child's per-node category + data, not a flattened string. The bundle
-    # holds child failure records (never the raw batch item), so it is API-safe.
+    # Keep the structured child-failure bundle (#252) so JSON/MCP consumers get the
+    # child's per-node category + data, not a flattened string. The runtime builds it
+    # raw (failure data, `Diagnostic.to_dict()` payloads), so it is redacted here (#799).
     child_failure = error_detail.get("child_failure")
     if isinstance(child_failure, Mapping):
-        compact["child_failure"] = dict(child_failure)
+        compact["child_failure"] = redact_sensitive(dict(child_failure))
 
     return compact
 

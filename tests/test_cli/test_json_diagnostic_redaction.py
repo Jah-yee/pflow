@@ -26,11 +26,21 @@ JSON_BODY = json.dumps({"access_token": SECRET_TOKEN, "error": "nope"}).encode()
 TEXT_BODY = b"Unauthorized: sign in first"
 
 
+OK_BODY = json.dumps({"ok": True}).encode()
+
+
 class _AuthFailureHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
+        if self.path == "/ok":
+            self._answer(200, OK_BODY, "application/json")
+            return
         body, content_type = (TEXT_BODY, "text/plain") if self.path == "/text" else (JSON_BODY, "application/json")
-        self.send_response(401)
-        self.send_header("Set-Cookie", SECRET_COOKIE)
+        self._answer(401, body, content_type)
+
+    def _answer(self, status: int, body: bytes, content_type: str) -> None:
+        self.send_response(status)
+        if status == 401:  # a successful item's response is the workflow's own output, shown in full
+            self.send_header("Set-Cookie", SECRET_COOKIE)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -142,6 +152,117 @@ class TestDegradedSuccessDocument:
         assert warning in doc["diagnostics"]
         failure = warning["context"]["unresolved_references"][0]["failure"]
         assert failure["data"]["response"] == {"access_token": "<REDACTED>", "error": "nope"}
+
+
+# A batched sub-workflow step: each item runs `child.pflow.md`, whose fetch hits `${url}`.
+_BATCH_PARENT = """### each
+
+Run the child workflow for every URL.
+
+- type: workflow
+- workflow: ./child.pflow.md
+- inputs:
+    url: ${item}
+
+```yaml batch
+items: ITEMS
+error_handling: continue
+```
+"""
+
+_CHILD_FETCH = """# Child
+
+Fetch one URL.
+
+## Inputs
+
+### url
+
+The URL to fetch.
+
+- type: string
+
+## Steps
+
+### fetch
+
+Fetch the URL.
+
+- type: http
+- url: ${url}
+"""
+
+
+def _write_child(tmp_path: Path, extra_steps: str = "") -> None:
+    fetch_extra = "- on-error: handle\n" if extra_steps else ""
+    (tmp_path / "child.pflow.md").write_text(_CHILD_FETCH + fetch_extra + extra_steps, encoding="utf-8")
+
+
+def _batch_parent(*urls: str) -> str:
+    return _BATCH_PARENT.replace("ITEMS", json.dumps(list(urls)))
+
+
+def _child_failure(batch_error: dict[str, Any]) -> dict[str, Any]:
+    child_failure = batch_error["child_failure"]
+    assert child_failure["failed_node"] == "fetch"
+    return child_failure
+
+
+class TestBatchedSubWorkflowDocument:
+    """A failed batch item's `child_failure` carries the child's failure data and diagnostics (#799)."""
+
+    def test_failed_run_redacts_the_child_failure_data(self, tmp_path: Path, auth_server: str) -> None:
+        _write_child(tmp_path)
+        exit_code, stdout, doc = _run_json(tmp_path, _batch_parent(f"{auth_server}/json", f"{auth_server}/json"))
+
+        assert exit_code == 1
+        _assert_no_secret(stdout)
+        details = doc["execution"]["steps"][0]["batch_error_details"]
+        assert len(details) == 2
+        for detail in details:
+            data = _child_failure(detail)["failures"]["fetch"]["data"]
+            assert data["response"] == {"access_token": "<REDACTED>", "error": "nope"}
+            assert data["response_headers"]["Set-Cookie"] == "<REDACTED>"
+
+    def test_failed_run_redacts_the_child_template_diagnostic(self, tmp_path: Path, auth_server: str) -> None:
+        # The child's handler quotes the failed fetch, so the bundle also carries a template diagnostic.
+        _write_child(tmp_path, "\n" + _REF_HANDLER)
+        exit_code, stdout, doc = _run_json(tmp_path, _batch_parent(f"{auth_server}/json"))
+
+        assert exit_code == 1
+        _assert_no_secret(stdout)
+        child_failure = doc["execution"]["steps"][0]["batch_error_details"][0]["child_failure"]
+        diagnostic = child_failure["diagnostics"][0]
+        assert diagnostic["context"]["category"] == "template_error"
+        failure = diagnostic["context"]["unresolved_references"][0]["failure"]
+        assert failure["data"]["response"] == {"access_token": "<REDACTED>", "error": "nope"}
+        assert failure["data"]["response_headers"]["Set-Cookie"] == "<REDACTED>"
+
+    def test_partially_failed_run_redacts_result_and_execution(self, tmp_path: Path, auth_server: str) -> None:
+        _write_child(tmp_path)
+        exit_code, stdout, doc = _run_json(tmp_path, _batch_parent(f"{auth_server}/json", f"{auth_server}/ok"))
+
+        assert exit_code == 0
+        _assert_no_secret(stdout)
+        detail = doc["execution"]["steps"][0]["batch_error_details"][0]
+        assert detail["index"] == 0
+        assert _child_failure(detail)["failures"]["fetch"]["data"]["response"]["access_token"] == "<REDACTED>"
+        result_error = doc["result"]["each"]["errors"][0]
+        assert _child_failure(result_error)["failures"]["fetch"]["data"]["response"]["access_token"] == "<REDACTED>"
+
+    def test_mcp_success_text_redacts_the_child_failure_data(self, tmp_path: Path, auth_server: str) -> None:
+        from pflow.mcp_server.services.execution_service import ExecutionService
+
+        _write_child(tmp_path)
+        workflow = tmp_path / "leak.pflow.md"
+        steps = _batch_parent(f"{auth_server}/json", f"{auth_server}/ok")
+        workflow.write_text(f"# Leak\n\nRedaction probe.\n\n## Steps\n\n{steps}", encoding="utf-8")
+
+        text = ExecutionService.execute_workflow(str(workflow))
+
+        _assert_no_secret(text)
+        assert '"child_failure"' in text
+        assert '"access_token": "<REDACTED>"' in text
 
 
 _GATED_FINALIZE = (
