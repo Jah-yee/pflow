@@ -4,7 +4,9 @@ Planner: Fable, 2026-10-11, worktree `feat/task-184-run-outcome` @ `05884642` (=
 #757/#761 all merged). Spec: `task-184.md` (D1–D4 ruled). Governing issues #695, #699, #737 (closed by this task); #754
 (ruled, kept), #748 (out — the probe adapter). **Embedded user checkpoint CP-1:** `implementation/show-before-code.md` —
 four questions (Q1–Q4) ruled BEFORE P1 starts; §3/§4 below are written on the recommendations and name where each ruling
-lands. Self-reviewed: plan-mode deep-review, six lenses on codex (`implementation/reviews/plan-review.md`); the Critical and
+lands. **CP-1 RULED 2026-10-11 by the owner — all four as recommended** (Q1 one `-p` tier rule; Q2 uniform MCP identity
+block, `paused_node_id:` line and the 3-error cap dropped; Q3 `errors` always a list; Q4 one trace-line emission site, before
+the payload in JSON mode) — §2–§4 stand as written. Self-reviewed: plan-mode deep-review, six lenses on codex (`implementation/reviews/plan-review.md`); the Critical and
 four Warnings were verified against code and folded in where marked "plan-review #N" (dispositions in `progress-log.md`).
 
 No engine contact (`runtime/engine/`, `workflow_executor` untouched), no trace-format change (the trailer's `json_output`

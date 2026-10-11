@@ -76,3 +76,18 @@ Append-only. Spec: `../task-184.md` · Plan: `implementation-plan.md` · Checkpo
 - Verified clean (per the report): D1–D4 intact; probe twin justified; Task 117/178/152 trajectories unaffected; resume shares
   the CLI dispatch; partial `result` rule preserved; MCP failure stays a raise.
 - Next: unchanged — CP-1 to the user; implementation on ruling.
+
+## [2026-10-11 20:05] task-orchestrator (Opus) — bootstrap: main merged, CP-1 ruling recorded
+- Did: merged `origin/main` `5b39ec21` (clean, no hand resolution — PR #800 remedies/`binding_phrase`, PR #798 real-HOME guard);
+  `make install`; recorded the CP-1 ruling (plan header).
+- [RULING] CP-1 (owner, 2026-10-11, relayed by the main orchestrator from `scratchpads/session-14/CP-1-RULED.md`): the owner
+  accepted every recommendation in `show-before-code.md` — Q1 one `-p` tier rule (summary hidden, must-act always prints);
+  Q2 uniform MCP identity block, `paused_node_id:` line and the failure text's 3-error cap dropped; Q3 `errors` always a list;
+  Q4 one emission site for `Workflow trace saved:`, before the payload in JSON mode. Plan §2–§4 stand as written.
+- Carried into the build (packet): F20 (`success` on paused/denied — escalated, see next entry when ruled); `ui/server.py`'s six
+  raw `to_dict()` bodies (note coverage in the task-review, don't widen); #801 (name the per-channel scrub attach site in the
+  task-review); #795 may add the Task-170 examples capture to `baseline-oracle` (re-record affected examples if the job exists
+  at PR time).
+- Ordering predicate: P1 starts only after `gh issue view 799` prints CLOSED, then a second `git merge origin/main`; P1 builds
+  on the PRINTING compactor. #799 OPEN at 20:05.
+- Next: P0 to implementer I1 (Opus, medium).
