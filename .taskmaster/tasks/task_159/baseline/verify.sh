@@ -49,6 +49,12 @@ done <<< "$cases"
 
 echo
 echo "summary: $pass passed, $drift drifted, $errors harness errors"
+# A loop that ends early must never read as green (see run-case.sh's stdin note).
+found=$(printf '%s\n' "$cases" | wc -l | tr -d ' ')
+if [[ $((pass + drift + errors)) -ne $found ]]; then
+  echo "harness error: ran $((pass + drift + errors)) of $found cases" >&2
+  errors=$((errors + 1))
+fi
 if [[ $drift -gt 0 ]]; then
   echo "drifted cases:"
   for c in "${drifted[@]}"; do echo "  $c"; done
