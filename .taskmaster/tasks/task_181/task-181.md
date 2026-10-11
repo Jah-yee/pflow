@@ -9,7 +9,10 @@ templated — but under a rule that mirrors Task 118's: the text is the embedded
 `${x|json}` Reference that yields a quote-safe JSON/JS literal.
 
 ## Status
-not started
+done
+
+## Completed
+2026-10-11
 
 ## Priority
 

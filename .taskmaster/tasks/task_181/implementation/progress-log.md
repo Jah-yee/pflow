@@ -520,3 +520,10 @@
   - Doubt checked: is `template_reads` exactly the old union? The three killed mutations pin its three non-param members (outputs, cache, bodies); the param/batch/loop member is pinned by the whole unused-input suite. The one surviving mutant (W1d) is dead in practice.
   - test-reflect: both new tests have same-medium presence pairs (the converted child runs and the tool receives `"#main"`; the suffixed binding is the §5 error). Nothing deleted beyond the moved code.
 - Next: orchestrator.
+
+## [2026-10-11 03:40] task orchestrator — gate closed; task-review written; spec done
+- Did: accepted G1's falsifier evaluation (03:30: W1 fixed by moving the embedded-code report to data flow per 118 invariant 6 — the whole report, not my suggested split, for one detector; W2 fixed via `Expression.bare_raw`; S1 skipped as a known limit) and committed it (`245d1497`). Wrote `task-review.md`; spec `## Status: done`, `## Completed: 2026-10-11`.
+- Verified (final committed tree, `origin/main` unchanged since the 02:40 merge): `make check` RC 0; `make test-all-local` 11008 passed, 2 skipped; web `npm run typecheck` + `npm test` 918 passed. Real `~/.pflow`: `mcp-servers.json` untouched since the 03:20 repair; `registry.json` was rewritten once at 03:33 (core-node entries now point at this worktree's `src/` — pflow's normal core-node refresh when a checkout's sources change; content clean: no stub/test entries, `evaluate_script` has `pageId`); re-running `make test-all-local` and `make check` leaves it untouched (mtime equal before/after).
+- Deviations/surprises: none beyond the entries above.
+- Self-checks: all phases verified with "fully happy?" + test-reflect resolved per entry; tooling postmortem items dispositioned (03:00); every gate finding dispositioned (18:20, 02:52, 03:20, 03:30).
+- Next: `create-pr`.
