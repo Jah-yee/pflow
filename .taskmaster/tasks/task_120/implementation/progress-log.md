@@ -294,3 +294,17 @@ resume path for any successor.
   - kept unchanged and mutation-verified: the grammar / typed-value / lossless / idempotence / placeholder / error tables
     (PA) and the leaf, walk, W5, consumer, structured-param, install/restore, `-o` and parity rows (PC).
 - Next: hand back; mid-task review #1, then PB.
+
+## [2026-10-11 15:30] task-orchestrator — PA+PC accepted; committed; main merged
+- Did: read I1's P0/PA/PC/15:10 entries; accepted deviations PA 2–7 and PC 1, 3–5 (all ≤2/5, plan-consistent); committed PA+PC
+  as one commit `d9d90332` (PA alone is red on 2 tests — PC fixes them); merged `origin/main` (#680 `5a93929d`, #741
+  `90dc9b01`) → `f8ebc68f`.
+- Verified: on `f8ebc68f` `make check` exit 0; `make test` 11330 passed; Task-159 `verify.sh` **87 passed / 0 drifted / 0
+  harness errors** (the post-#680 green base — PA+PC introduce no baseline drift; PZ compares against 87/87).
+- Deviations/surprises: PC deviation 1 adds two runtime messages outside CP-1 (wrong container shape; "reads input 'v',
+  declared `- type: string`") — closes a silent pass the plan's fold would otherwise open (ORCHESTRATION "a gap your change
+  widens"); carried to the user at the PF screenshot checkpoint as new text. CLI temporarily stricter until PB (one PR).
+- Self-checks: I1 fully-happy + test-reflect (directed) done — see [15:10]; mutation harness bytecode-reuse bug found and
+  fixed by I1, both ledgers re-run clean (PA 16/16, PC 23/23).
+- Next: mid-task review #1 (engine contact) on PA+PC, gate-run by I1 (it holds the code); then a FRESH Opus implementer
+  for PB → PD (I1 at ~480k tokens, past the plan's ~350k rotation point).
