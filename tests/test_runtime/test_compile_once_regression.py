@@ -552,3 +552,39 @@ def test_resolved_defaults_do_not_leak_between_batch_items(tmp_path: Path):
             f"Item {i}: expected 'DEFAULT_{expected_text}', got '{stdout}'. "
             f"If prefix is wrong, defaults leaked. If text is wrong, per-item values leaked."
         )
+
+
+def test_each_batch_item_is_typed_by_the_child_on_its_own(tmp_path: Path):
+    """The compile-once cache must not stand in for per-item typing (#188).
+
+    The string test above cannot see a coercion leak (text stays text). Here the child declares
+    `n: integer` and its code step refuses anything but an int: each item's text must reach the
+    child as THAT item's int — "7" then "8" — not as text, and not as item 0's 7.
+    """
+    child_md = tmp_path / "child.pflow.md"
+    child_md.write_text(
+        "# Child\n\nShow n.\n\n## Inputs\n\n### n\n\nA whole number.\n\n- type: integer\n\n"
+        "## Steps\n\n### show\n\nShow it.\n\n- type: code\n- inputs:\n    n: ${n}\n\n"
+        '```python code\nn: int\n\nresult: str = f"{n!r}"\n```\n',
+        encoding="utf-8",
+    )
+    parent_ir: dict[str, Any] = {
+        "ir_version": "0.1.0",
+        "nodes": [
+            {"id": "source", "type": "shell", "params": {"command": "printf '%s' '[\"7\", \"8\"]'"}},
+            {
+                "id": "process",
+                "type": "workflow",
+                "batch": {"items": "${source.stdout}"},
+                "params": {"workflow": str(child_md), "inputs": {"n": "${item}"}},
+            },
+        ],
+        "edges": [{"from": "source", "to": "process"}],
+    }
+
+    workflow = compile_workflow(parent_ir, registry=Registry())
+    shared: dict[str, Any] = dict(workflow.resolved_defaults)
+    result = WorkflowEngine().run(workflow, shared)
+
+    assert result == "default", f"Workflow failed: {shared.get('error', 'N/A')}"
+    assert [item["show"]["result"] for item in shared["process"]["results"]] == ["7", "8"]

@@ -3,7 +3,7 @@
 import contextlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
@@ -36,6 +36,7 @@ from .result import ExecutionResult, Plan, PreparedWorkflow, ResolvedWorkflow, R
 from .workflow_resolver import resolve_workflow
 
 if TYPE_CHECKING:
+    from pflow.core.param_coercion import InputSource
     from pflow.runtime.resume_source import ResumeSource
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,7 @@ class WorkflowRunner:
         workflow_manager: WorkflowManager | None = None,
         workflow_name: str | None = None,
         resume_source: "ResumeSource | None" = None,
+        input_sources: "Mapping[str, InputSource] | None" = None,
     ) -> ExecutionResult:
         """Execute a workflow and return structured results.
 
@@ -164,6 +166,9 @@ class WorkflowRunner:
                 into ``params`` BEFORE calling; the runner threads the entry node,
                 events, and lineage id to the collector and engine, nothing more.
                 Its entry must already be resolved (``_check_resume_entry``).
+            input_sources: Where each supplied ``params`` value came from (stdin, a
+                recorded run, an MCP call …); an absent key is a CLI argument. The
+                input boundary (``prepare_inputs``) types and names each value by it.
 
         Returns:
             ExecutionResult -- always. Never raises (except KeyboardInterrupt/SystemExit).
@@ -201,7 +206,7 @@ class WorkflowRunner:
             # Hash the PRISTINE resolved IR (logical only — source-line
             # provenance stripped, see workflow_content_hash) so a replay can detect the file was edited since
             # this run (a node renamed/removed/re-nested), but NOT false-flag a comment/whitespace edit. Must
-            # be computed BEFORE any IR-touching compile step — `_fill_declared_defaults` (above, in
+            # be computed BEFORE any IR-touching compile step — `_fill_placeholders` (above, in
             # _prepare_workflow) writes only to `params`, never to `resolved.ir`, so this site stays pristine.
             content_hash = workflow_content_hash(resolved.ir)
             trace_collector = WorkflowTraceCollector(
@@ -247,6 +252,7 @@ class WorkflowRunner:
                 mcp_pool,
                 cache,
                 resume_source,
+                input_sources,
             )
             return result
 
@@ -276,7 +282,7 @@ class WorkflowRunner:
         params: dict[str, Any],
         diagnostics: list[Diagnostic],
     ) -> ResolvedWorkflow:
-        """Resolve, inject file path, enrich defaults, validate.
+        """Resolve, inject file path, fill declared-input placeholders, validate.
 
         File reference resolution happens inside ``resolve_workflow()`` at the
         IR-load boundary (see ``execution/workflow_resolver.py``). The Runner
@@ -296,9 +302,9 @@ class WorkflowRunner:
 
         # Fill declared input names so validation doesn't flag them as missing.
         # Only needs to know WHICH inputs will be available, not their final values.
-        # The real prepare_inputs() (type coercion, env resolution) runs once
+        # The real prepare_inputs() (env → settings → default, typing) runs once
         # in the compiler's _prepare_compilation().
-        self._fill_declared_defaults(resolved.ir, params)
+        self._fill_placeholders(resolved.ir, params)
 
         validation_warnings = self._validate(resolved.ir, params)
         diagnostics.extend(validation_warnings)
@@ -321,6 +327,7 @@ class WorkflowRunner:
         mcp_pool: Any,
         cache: Any,
         resume_source: "ResumeSource | None" = None,
+        input_sources: "Mapping[str, InputSource] | None" = None,
     ) -> ExecutionResult:
         """Compile IR, execute flow, build result.
 
@@ -346,7 +353,13 @@ class WorkflowRunner:
         )
 
         registry = Registry()
-        workflow = compile_workflow(resolved.ir, registry=registry, initial_params=params)
+        workflow = compile_workflow(
+            resolved.ir,
+            registry=registry,
+            initial_params=params,
+            input_sources=input_sources,
+            resumed_run=resume_source.execution_id if resume_source is not None else None,
+        )
 
         # Apply prepare_inputs() updates after seeding the supplied parameters.
         # resolved_defaults includes fallback values for missing inputs and coerced
@@ -445,18 +458,20 @@ class WorkflowRunner:
         params: dict[str, Any],
         *,
         source_file_path: str | None = None,
+        input_sources: "Mapping[str, InputSource] | None" = None,
     ) -> ValidationResult:
         """Validate a workflow without executing it.
 
-        Uses dummy parameter values for declared inputs. Does NOT call
-        prepare_inputs(). This is intentional -- validate-only mode checks
-        structure, not runtime values.
+        The structure is validated with placeholder values for every declared input; then
+        the values the caller DID supply are checked at the input boundary
+        (``check_supplied_inputs``: declared type, undeclared names), so ``--validate-only``
+        with values refuses what the run would. A missing input is not an error here.
 
         Args:
             workflow: File path, saved name, raw markdown, or IR dict.
-            params: Accepted for signature parity with run(); not consulted --
-                declared inputs are validated with placeholder values.
+            params: The supplied input values (may be empty).
             source_file_path: For file reference resolution. Derived from resolution if None.
+            input_sources: Where each supplied value came from (see ``run``).
 
         Returns:
             ValidationResult with valid, errors, and warnings.
@@ -472,11 +487,13 @@ class WorkflowRunner:
             # get here. See ``execution/workflow_resolver.py`` module docstring.
 
             from pflow.core.validation_utils import validate_with_placeholder_inputs
+            from pflow.runtime.compilation import check_supplied_inputs
 
             validator_diagnostics = validate_with_placeholder_inputs(
                 resolved.ir, workflow_file=Path(file_path) if file_path else None
             )
-            diagnostics = [*resolved.diagnostics, *validator_diagnostics]
+            input_errors, _typed = check_supplied_inputs(resolved.ir, params, input_sources=input_sources)
+            diagnostics = [*resolved.diagnostics, *validator_diagnostics, *input_errors]
             # Compute ``valid`` from the combined list, not only ``validator_diagnostics``.
             # ``resolved.diagnostics`` carries parser advisories as well as any future
             # parser errors, so checking the combined list keeps validity tied to
@@ -517,6 +534,7 @@ class WorkflowRunner:
         config: RunnerConfig,
         *,
         resume_source: "ResumeSource | None" = None,
+        input_sources: "Mapping[str, InputSource] | None" = None,
     ) -> Plan:
         """Build an execution plan without invoking any node.
 
@@ -531,7 +549,12 @@ class WorkflowRunner:
         from pflow.execution.plan import build_plan
         from pflow.runtime.cache import MemoizationCache
 
-        prepared = self.preflight(workflow, params)
+        prepared = self.preflight(
+            workflow,
+            params,
+            input_sources=input_sources,
+            resumed_run=resume_source.execution_id if resume_source is not None else None,
+        )
         resolved, params = prepared.resolved, prepared.params
         cache = MemoizationCache(read_enabled=config.cache_enabled)
 
@@ -561,13 +584,21 @@ class WorkflowRunner:
 
         return plan
 
-    def preflight(self, workflow: str | dict[str, Any] | ResolvedWorkflow, params: dict[str, Any]) -> PreparedWorkflow:
+    def preflight(
+        self,
+        workflow: str | dict[str, Any] | ResolvedWorkflow,
+        params: dict[str, Any],
+        *,
+        input_sources: "Mapping[str, InputSource] | None" = None,
+        resumed_run: str | None = None,
+    ) -> PreparedWorkflow:
         """Everything a run does before its trace exists — resolve, fill declared inputs, validate with
         the full ``WorkflowValidator``, compile — and nothing after it: no trace, no execution.
 
         ``plan()`` and the web UI's run and resume pre-flights share it, so a workflow that would die
-        before writing its trace (a validator-only error, a missing input, an unknown node type) is
-        refused up front with the run's own error — ``WorkflowValidationError`` carries every error.
+        before writing its trace (a validator-only error, a missing or mistyped input, an unknown node
+        type) is refused up front with the run's own error — ``WorkflowValidationError`` carries every
+        error. ``input_sources`` / ``resumed_run`` label the values as ``run`` does (``prepare_inputs``).
         ``params`` is copied, never mutated.
         """
         from pflow.registry import Registry
@@ -578,7 +609,13 @@ class WorkflowRunner:
         resolved = self._prepare_workflow(workflow, params, diagnostics)
         self._strip_placeholders(params)
         registry = Registry()
-        compiled = compile_workflow(resolved.ir, registry=registry, initial_params=params)
+        compiled = compile_workflow(
+            resolved.ir,
+            registry=registry,
+            initial_params=params,
+            input_sources=input_sources,
+            resumed_run=resumed_run,
+        )
         return PreparedWorkflow(resolved, compiled, params, registry, diagnostics)
 
     def _build_cache_nudge(
@@ -687,29 +724,24 @@ class WorkflowRunner:
 
     _PLACEHOLDER_PREFIX = "__pflow_declared_"
 
-    def _fill_declared_defaults(self, ir: dict[str, Any], params: dict[str, Any]) -> None:
-        """Fill declared input names so validation doesn't flag them as missing.
+    def _fill_placeholders(self, ir: dict[str, Any], params: dict[str, Any]) -> None:
+        """Fill every declared input nobody supplied with a placeholder, so validation doesn't flag it.
 
         The validator checks template variables against params. Without inputs
-        filled in, ${name} produces a false "unresolved template" error.
-
-        Adds real defaults for optional inputs, and placeholders for required/env
-        inputs. Placeholders are stripped before compilation so prepare_inputs()
-        correctly catches truly missing required inputs with (msg, path, suggestion).
+        filled in, ${name} produces a false "unresolved template" error. Never a
+        real default: the compiler's prepare_inputs() resolves env → settings →
+        default in that order and names the value's source in any error, which a
+        pre-filled default would erase.
         """
-        for name, decl in ir.get("inputs", {}).items():
-            if name not in params:
-                if "default" in decl:
-                    params[name] = decl["default"]
-                else:
-                    params[name] = f"{self._PLACEHOLDER_PREFIX}{name}__"
+        for name in ir.get("inputs", {}):
+            params.setdefault(name, f"{self._PLACEHOLDER_PREFIX}{name}__")
 
     def _strip_placeholders(self, params: dict[str, Any]) -> None:
         """Remove declared-input placeholders before compilation.
 
-        Placeholders were added by _fill_declared_defaults to satisfy the validator.
-        The compiler's prepare_inputs() needs them absent to detect truly missing
-        required inputs with full (msg, path, suggestion) error tuples.
+        Placeholders were added by _fill_placeholders to satisfy the validator.
+        The compiler's prepare_inputs() needs them absent to resolve each input's
+        fallbacks and to detect truly missing required inputs.
         """
         to_remove = [k for k, v in params.items() if isinstance(v, str) and v.startswith(self._PLACEHOLDER_PREFIX)]
         for k in to_remove:

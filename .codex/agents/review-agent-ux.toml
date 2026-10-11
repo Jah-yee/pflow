@@ -30,7 +30,6 @@ Before flagging a UX issue, check if infrastructure already exists. New code sho
 | Success/error formatters | `execution/formatters/` | Structured success and error output (shared by CLI and MCP). |
 | Output controller | `core/output_controller.py` | Interactive vs non-interactive output, progress callbacks, partial-line state machine. |
 | Unified error output | `cli/error_output.py` | JSON/text branching for ALL error types (post-Task 149). |
-| Rerun display | `cli/rerun_display.py` | Builds safe rerun commands with secret masking. |
 | Security utils | `core/security_utils.py` | Parameter masking — 19 sensitive parameter names detected. |
 | `shared["__warnings__"]` | dict keyed by node_id | Accumulated warnings. Values may be strings, structured dicts, or `Diagnostic` instances. Surfaced in execution summary. |
 | MCP error diagnostics | `mcp/errors.py` | Per-status diagnostic builder with structured `suggestions` list. |

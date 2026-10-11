@@ -30,7 +30,7 @@ class TestPrepareInputsTypeCoercion:
                 }
             }
         }
-        # Simulates CLI's infer_type() converting "1458..." to int
+        # An int from a typed source (an MCP call, a parent step) for a declared string
         provided_params = {"channel_id": 1458059302022549698}
 
         errors, defaults, _env_params = prepare_inputs(workflow_ir, provided_params)

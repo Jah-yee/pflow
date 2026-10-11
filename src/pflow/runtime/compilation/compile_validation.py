@@ -19,7 +19,7 @@ from .ir_preparation import prepare_inputs, validate_ir_structure
 logger = logging.getLogger(__name__)
 
 
-def _load_settings_env() -> dict[str, str]:
+def load_settings_env() -> dict[str, str]:
     """Load settings.env for workflow input population.
 
     Returns empty dict on any error (non-fatal).
@@ -117,6 +117,7 @@ def _prepare_compilation(
     ir_dict: dict[str, Any],
     initial_params: dict[str, Any],
     input_sources: Mapping[str, InputSource] | None = None,
+    resumed_run: str | None = None,
 ) -> tuple[dict[str, Any], list[Any], dict[str, Any], set[str]]:
     """Prepare IR for compilation: validate structure, check data flow, resolve inputs.
 
@@ -158,7 +159,11 @@ def _prepare_compilation(
 
     # The input boundary: resolve and type every declared input, then apply the updates in place.
     errors, resolved_defaults, resolved_env_param_names = prepare_inputs(
-        ir_dict, initial_params, settings_env=_load_settings_env(), input_sources=input_sources
+        ir_dict,
+        initial_params,
+        settings_env=load_settings_env(),
+        input_sources=input_sources,
+        resumed_run=resumed_run,
     )
     if errors:
         # One diagnostic per problem, each with its own path and fix.

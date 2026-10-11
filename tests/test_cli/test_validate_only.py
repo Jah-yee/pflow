@@ -202,22 +202,24 @@ class TestValidateOnlyWithoutInputValues:
         assert result.exit_code == 0, f"Failed without inputs: {result.output}\n{result.stderr}"
 
 
-class TestValidateOnlySkipsPrepareInputs:
-    """Test that prepare_inputs is NOT called during validation."""
+class TestValidateOnlyChecksSuppliedValuesOnly:
+    """`--validate-only` runs the input boundary over the values SUPPLIED — never over the missing ones."""
 
-    def test_validate_only_skips_prepare_inputs(self, tmp_path: Path) -> None:
-        """Should NOT call prepare_inputs() which would error on missing params.
-
-        This test validates the fix for the duplicate error message bug.
-        """
+    def test_missing_required_input_is_tolerated_and_a_supplied_bad_value_is_not(self, tmp_path: Path) -> None:
         workflow = {
             "ir_version": "0.1.0",
-            "inputs": {"required_input": {"type": "string", "description": "Required"}},
+            "inputs": {
+                "required_input": {"type": "string", "description": "Required"},
+                "count": {"type": "integer", "description": "A count", "required": False},
+            },
             "nodes": [
                 {
                     "id": "test",
                     "type": "shell",
-                    "params": {"command": 'echo "$REQUIRED_INPUT"', "env": {"REQUIRED_INPUT": "${required_input}"}},
+                    "params": {
+                        "command": 'echo "$REQUIRED_INPUT $COUNT"',
+                        "env": {"REQUIRED_INPUT": "${required_input}", "COUNT": "${count}"},
+                    },
                 }
             ],
             "edges": [],
@@ -226,13 +228,16 @@ class TestValidateOnlySkipsPrepareInputs:
         workflow_path = tmp_path / "test.pflow.md"
         write_workflow_file(workflow, workflow_path)
 
-        result = invoke_cli(["--validate-only", str(workflow_path)])
+        missing = invoke_cli(["--validate-only", str(workflow_path)])
+        bad = invoke_cli(["--validate-only", str(workflow_path), "count=abc"])
 
-        # Should succeed without errors about missing required_input
-        assert result.exit_code == 0, f"Failed: {result.output}\n{result.stderr}"
-        # Should NOT show "Workflow requires input 'required_input'" error
-        combined = (result.output + result.stderr).lower()
-        assert "requires input" not in combined
+        # A missing required input is the run's concern, not validation's.
+        assert missing.exit_code == 0, f"Failed: {missing.output}\n{missing.stderr}"
+        assert "requires input" not in (missing.output + missing.stderr).lower()
+        # A supplied value is checked against its declaration, as the run would.
+        assert bad.exit_code == 1
+        assert "Input 'count' is declared `- type: integer` but received 'abc'" in bad.output + bad.stderr
+        assert "requires input" not in (bad.output + bad.stderr).lower()
 
 
 class TestValidateOnlyEdgeCases:

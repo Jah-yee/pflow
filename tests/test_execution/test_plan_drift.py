@@ -3824,6 +3824,7 @@ def test_plan_and_engine_hand_a_batched_child_the_same_text_inputs(tmp_path) -> 
     from pflow.runtime.engine.template_resolution import resolve_templates
 
     items = ['{"a":1}', "[1, 2]", "plain"]
+    child_ir = {"inputs": {"s": {"type": "string"}, "n": {"type": "integer"}}, "nodes": []}
     ir = {
         "ir_version": "0.1.0",
         "nodes": [
@@ -3844,7 +3845,7 @@ def test_plan_and_engine_hand_a_batched_child_the_same_text_inputs(tmp_path) -> 
         engine_inputs = resolve_templates(config.template_config, {**shared, "item": item, "__index__": idx}, "call")[
             0
         ]["inputs"]
-        planned, diagnostic = _resolve_per_item_sub_workflow_inputs(
+        planned, diagnostics = _resolve_per_item_sub_workflow_inputs(
             shared=shared,
             batch_config=config.batch_config,
             item=item,
@@ -3852,9 +3853,12 @@ def test_plan_and_engine_hand_a_batched_child_the_same_text_inputs(tmp_path) -> 
             raw_inputs_template=config.template_config.template_params["inputs"],
             default_inputs={},
             node_id="call",
+            child_ir=child_ir,
+            sub_workflow_path="./child.pflow.md",
         )
-        assert diagnostic is None
-        assert planned == engine_inputs == {"s": item, "n": "7"}
+        assert diagnostics == []
+        assert engine_inputs == {"s": item, "n": "7"}  # the parent hands text on…
+        assert planned == {"s": item, "n": 7}  # …and the child's declarations type it, as prep does
 
 
 def test_plan_cache_key_reads_a_declared_input_as_the_run_does(tmp_path) -> None:
@@ -3885,3 +3889,109 @@ def test_plan_cache_key_reads_a_declared_input_as_the_run_does(tmp_path) -> None
 
     assert shared["show"]["result"] == "str"
     assert [entry.status for entry in plan.entries] == ["cached"]
+
+
+def test_plan_types_each_batched_child_item_as_prep_does(tmp_path) -> None:
+    """`--dry-run` of a `continue` batch types every item's child inputs by the child's
+    declarations, as the host's `prep` does: items whose text fits plan against the run's memo
+    (their cache keys hash the same typed `n`), and the item that does not fit is reported with the
+    run's own message — never item 0's values leaking into another item (Task 120 PD)."""
+    child = tmp_path / "child.pflow.md"
+    child.write_text(
+        "# Child\n\nShow n.\n\n## Inputs\n\n### n\n\nA whole number.\n\n- type: integer\n\n"
+        "## Steps\n\n### show\n\nShow it.\n\n- type: code\n- cache: true\n- inputs:\n    n: ${n}\n\n"
+        '```python code\nn: int\n\nresult: str = f"{n!r}"\n```\n',
+        encoding="utf-8",
+    )
+    ir = {
+        "ir_version": "0.1.0",
+        "nodes": [
+            {"id": "emit", "type": "shell", "cache": True, "params": {"command": 'printf \'%s\' \'["7","x","9"]\''}},
+            {
+                "id": "call",
+                "type": "workflow",
+                "params": {"workflow": str(child), "inputs": {"n": "${item}"}},
+                "batch": {"items": "${emit.stdout}", "error_handling": "continue"},
+            },
+        ],
+        "edges": [{"from": "emit", "to": "call"}],
+    }
+    compiled, registry = _compile(ir)
+    cache = MemoizationCache(db_path=tmp_path / "cache.db")
+
+    shared = _run(compiled, cache)
+    plan = build_plan(compiled, {}, cache, registry, workflow_name="typed-items")
+
+    assert [result["show"]["result"] for result in shared["call"]["results"]] == ["7", "9"]
+    (call,) = [entry for entry in plan.entries if entry.node_id == "call"]
+    assert call.sub_plan is not None
+    (show,) = call.sub_plan.entries
+    assert (show.batch_items_cached, show.batch_items_total) == (2, 3)
+    (warning,) = call.sub_plan.diagnostics
+    assert warning.message == (
+        f"Batch item 1: Step 'call' passes 'x' to input 'n' of {child}, declared `- type: integer`. "
+        "Runtime will reject this item."
+    )
+    assert warning.context is not None and warning.context["source"] == "parent"
+
+
+def _typed_child(tmp_path) -> Path:
+    child = tmp_path / "child.pflow.md"
+    child.write_text(
+        "# Child\n\nShow n.\n\n## Inputs\n\n### n\n\nA whole number.\n\n- type: integer\n\n"
+        "## Steps\n\n### show\n\nShow it.\n\n- type: code\n- inputs:\n    n: ${n}\n\n"
+        '```python code\nn: int\n\nresult: str = f"{n!r}"\n```\n',
+        encoding="utf-8",
+    )
+    return child
+
+
+def test_plan_reports_a_bad_first_batch_item_per_item_under_continue(tmp_path) -> None:
+    """Under `continue` the run fails only item 0's prep and runs the rest, so the plan must not
+    fail the node on item 0's value (the batch child compiles without any item's values)."""
+    child = _typed_child(tmp_path)
+    ir = {
+        "ir_version": "0.1.0",
+        "nodes": [
+            {"id": "emit", "type": "shell", "cache": True, "params": {"command": "printf '%s' '[\"x\",\"7\"]'"}},
+            {
+                "id": "call",
+                "type": "workflow",
+                "params": {"workflow": str(child), "inputs": {"n": "${item}"}},
+                "batch": {"items": "${emit.stdout}", "error_handling": "continue"},
+            },
+        ],
+        "edges": [{"from": "emit", "to": "call"}],
+    }
+    compiled, registry = _compile(ir)
+    cache = MemoizationCache(db_path=tmp_path / "cache.db")
+    _run(compiled, cache)
+
+    plan = build_plan(compiled, {}, cache, registry, workflow_name="first-item-bad")
+
+    (call,) = [entry for entry in plan.entries if entry.node_id == "call"]
+    assert call.status == "sub_workflow" and call.sub_plan is not None, call
+    assert [d.message.split(":")[0] for d in call.sub_plan.diagnostics] == ["Batch item 0"]
+
+
+def test_plan_names_a_bad_child_value_at_the_step_as_the_run_does(tmp_path) -> None:
+    """Non-batch: the plan types the child's inputs at the same boundary as the run's `prep`, so its
+    error is the run's own — placed at the step — not a compile error from the child's side."""
+    child = _typed_child(tmp_path)
+    ir = {
+        "ir_version": "0.1.0",
+        "nodes": [
+            {"id": "up", "type": "shell", "cache": True, "params": {"command": "printf x"}},
+            {"id": "call", "type": "workflow", "params": {"workflow": str(child), "inputs": {"n": "${up.stdout}"}}},
+        ],
+        "edges": [{"from": "up", "to": "call"}],
+    }
+    compiled, registry = _compile(ir)
+    cache = MemoizationCache(db_path=tmp_path / "cache.db")
+    _run(compiled, cache)
+
+    plan = build_plan(compiled, {}, cache, registry, workflow_name="bad-child-value")
+
+    (call,) = [entry for entry in plan.entries if entry.node_id == "call"]
+    assert call.diagnostic is not None
+    assert call.diagnostic.message == (f"Step 'call' passes 'x' to input 'n' of {child}, declared `- type: integer`.")

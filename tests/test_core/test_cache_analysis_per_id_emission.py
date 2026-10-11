@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from pflow.core.exceptions import WorkflowValidationError
 from pflow.core.file_resolver import resolve_file_references
 from pflow.core.markdown_parser import parse_markdown
 from pflow.core.prompt_cache_analysis.analyze import analyze
@@ -1371,13 +1372,12 @@ def test_sub_workflow_projection_node_ref_does_not_resolve_from_root_parameter(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Node-output refs must not fall back to root parameters with the same name.
+    """Node-output refs resolve from the node's evidence, never from a root parameter.
 
     The parent passes ``${creative.direction}`` to a child input, where
-    ``creative`` is a parent node id. Root analysis parameters may also contain
-    a ``creative`` key, but that parameter is not declared as a parent workflow
-    input, so cross-workflow projection must ignore it and use the parent node's
-    memo/trace output.
+    ``creative`` is a parent node id. A root parameter named ``creative`` (not a
+    declared input) is refused by ``analyze``'s input boundary before analysis, so
+    cross-workflow projection uses the parent node's memo/trace output.
     """
     from pflow.runtime.cache import MemoizationCache
 
@@ -1429,10 +1429,19 @@ def test_sub_workflow_projection_node_ref_does_not_resolve_from_root_parameter(
     result = analyze(
         parent_ir,
         workflow_path="parent.pflow.md",
-        parameters={"creative": {"direction": "root parameter value"}},
+        parameters={"topic": "root parameter value"},
         auto_load_trace=False,
         memo_cache=cache,
     )
+    with pytest.raises(WorkflowValidationError, match="Workflow input validation failed") as refused:
+        analyze(
+            parent_ir,
+            workflow_path="parent.pflow.md",
+            parameters={"creative": {"direction": "root parameter value"}},
+            auto_load_trace=False,
+            memo_cache=cache,
+        )
+    assert [d.context["path"] for d in refused.value.validation_errors if d.context] == ["inputs.creative"]
 
     diag = next(d for d in result.warnings if d.id == "cache.sub-workflow-cache-undeclared")
     assert diag.context is not None
@@ -7045,6 +7054,7 @@ def test_partial_prompt_cache_matches_var_but_suggests_name_for_diverged_ir() ->
         prompt_cache=["declared"],
         second_prompt_cache=["declared"],
     )
+    workflow_ir["inputs"]["source"] = {"type": "object"}
     diag, _result = _partial_diag(workflow_ir, parameters={"source": {"value": "x " * 20}, "a": "a " * 20})
     assert diag is not None
     assert diag.context is not None
@@ -7230,7 +7240,7 @@ def test_partial_prompt_cache_suppressed_when_consolidate_to_root_covers_same_ch
 
 def test_partial_prompt_cache_renderer_handles_many_affected_nodes() -> None:
     workflow_ir = {
-        "inputs": {"a": {"type": "string"}, "b": {"type": "string"}},
+        "inputs": {"a": {"type": "string"}, "b": {"type": "string"}, "concept": {"type": "object"}},
         "cache": {
             "items": [
                 {"name": "a", "var": "a", "prose_before": "A:\n"},

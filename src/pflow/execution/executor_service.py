@@ -142,12 +142,15 @@ def build_subworkflow_diagnostics(bundle: dict[str, Any], parent_step_id: str) -
     """
     workflow_ref = bundle.get("workflow_path")
 
-    template_diagnostic = bundle.get("template_diagnostic")
-    if isinstance(template_diagnostic, dict):
-        # Strict-mode template failure: the rich Diagnostic (unresolved_references,
-        # peer suggestions) lives only on the child exception — captured verbatim
-        # into the bundle, never present in the child's archived failure record.
-        inner: list[Diagnostic] = [Diagnostic.from_dict(template_diagnostic)]
+    # Diagnostics captured verbatim into the bundle — never in the child's archived failure
+    # record: a strict-mode template failure (unresolved_references, peer suggestions, only on the
+    # child exception) or the child input boundary's. `template_diagnostic` is the key a trace
+    # recorded before the input boundary existed carries; a resume restores it.
+    captured = bundle.get("diagnostics")
+    if not isinstance(captured, list) and isinstance(bundle.get("template_diagnostic"), dict):
+        captured = [bundle["template_diagnostic"]]
+    if isinstance(captured, list) and captured:
+        inner: list[Diagnostic] = [Diagnostic.from_dict(d) for d in captured if isinstance(d, dict)]
     else:
         child_shape: dict[str, Any] = {
             "__execution__": {"failed_node": bundle.get("failed_node")},
@@ -159,6 +162,11 @@ def build_subworkflow_diagnostics(bundle: dict[str, Any], parent_step_id: str) -
 
     wrapped: list[Diagnostic] = []
     for d in inner:
+        if (d.context or {}).get("sub_workflow_step") == parent_step_id:
+            # Placed at this step already (a value the step passes fails the child's
+            # declaration) — its sentence names the step; wrapping would say it twice.
+            wrapped.append(d)
+            continue
         # Mirror the provenance contract of `_propagate_child_parser_warnings`
         # exactly (message via the shared helper, node_id fallback, setdefault
         # context keys) — see core/diagnostic.py::format_child_provenance.

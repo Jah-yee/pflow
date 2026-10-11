@@ -1435,6 +1435,7 @@ def test_filter_consults_catalog_flag_not_severity() -> None:
 
 def test_dynamic_batch_trace_preserves_observed_model_truth(tmp_path: Path) -> None:
     workflow_ir = {
+        "inputs": {"items": {"type": "array"}},
         "nodes": [
             {
                 "id": "generate",
@@ -1442,7 +1443,7 @@ def test_dynamic_batch_trace_preserves_observed_model_truth(tmp_path: Path) -> N
                 "params": {"model": "${item.model}", "prompt": "${item.prompt}"},
                 "batch": {"items": "${items}"},
             }
-        ]
+        ],
     }
     trace_path = tmp_path / "batch-trace.json"
     write_trace_jsonl(
@@ -1519,6 +1520,7 @@ def test_memo_hit_trace_does_not_count_historical_provider_cache_reads(tmp_path:
     caching worked even when pflow skipped the LLM call before the provider.
     """
     workflow_ir = {
+        "inputs": {"content": {"type": "string"}},
         "cache": {
             "items": [
                 {
@@ -1591,6 +1593,7 @@ def test_in_process_hit_trace_does_not_count_historical_provider_cache_reads(tmp
     from pflow.core.prompt_cache_analysis.rendering.json import render_json
 
     workflow_ir = {
+        "inputs": {"content": {"type": "string"}},
         "cache": {
             "items": [
                 {
@@ -1667,6 +1670,7 @@ def test_complete_trace_with_heterogeneous_exclusion_renders_priced_cohort_actua
     JSON renderers can disclose what was left out.
     """
     workflow_ir = {
+        "inputs": {"items": {"type": "array"}},
         "nodes": [
             {
                 "id": "generate",
@@ -1679,7 +1683,7 @@ def test_complete_trace_with_heterogeneous_exclusion_renders_priced_cohort_actua
                 "type": "llm",
                 "params": {"model": "anthropic/claude-haiku-4-5", "prompt": "Score the options."},
             },
-        ]
+        ],
     }
     trace_path = tmp_path / "mixed-batch-trace.json"
     write_trace_jsonl(
@@ -1865,6 +1869,7 @@ def test_multi_observed_sets_model_empty_without_promoting_heterogeneous(
     tmp_path: Path,
 ) -> None:
     workflow_ir = {
+        "inputs": {"items": {"type": "array"}},
         "nodes": [
             {
                 "id": "generate",
@@ -1872,7 +1877,7 @@ def test_multi_observed_sets_model_empty_without_promoting_heterogeneous(
                 "params": {"model": "anthropic/claude-haiku-4-5", "prompt": "${item.prompt}"},
                 "batch": {"items": "${items}"},
             }
-        ]
+        ],
     }
     trace_path = tmp_path / "multi-observed-trace.json"
     write_trace_jsonl(
@@ -1987,6 +1992,7 @@ def test_mixed_per_node_explicit_default_and_heterogeneous_integration(
     sys.modules["pflow.core.prompt_cache_analysis.analyze"]
     _patch_stage_attr(monkeypatch, "get_default_workflow_model", lambda: "gemini/gemini-2.5-flash")
     workflow_ir = {
+        "inputs": {"items": {"type": "array"}},
         "nodes": [
             {
                 "id": "explicit",
@@ -2004,7 +2010,7 @@ def test_mixed_per_node_explicit_default_and_heterogeneous_integration(
                 "params": {"model": "${item.model}", "prompt": "${item.prompt}"},
                 "batch": {"items": "${items}"},
             },
-        ]
+        ],
     }
     trace_path = tmp_path / "mixed-model-trace.json"
     write_trace_jsonl(
@@ -6047,6 +6053,7 @@ def test_batch_prefix_projection_uses_trace_call_count_for_dynamic_batch(tmp_pat
     prompt = f"{prefix}\n${{item.dynamic}}"
     workflow_path = str(tmp_path / "batch-prefix.pflow.md")
     workflow_ir = {
+        "inputs": {"items": {"type": "array"}},
         "nodes": [
             {
                 "id": "score",
@@ -6054,7 +6061,7 @@ def test_batch_prefix_projection_uses_trace_call_count_for_dynamic_batch(tmp_pat
                 "params": {"model": model, "prompt": prompt},
                 "batch": {"items": "${items}", "as": "item"},
             }
-        ]
+        ],
     }
     builder = TraceFixtureBuilder()
     trace_path = tmp_path / "trace.json"
@@ -6127,6 +6134,7 @@ def test_batch_prefix_projection_promotes_dynamic_batch_prewarm_action(
     prompt = f"{prefix}\n${{item.dynamic}}"
     workflow_path = str(tmp_path / "dynamic-batch-prewarm.pflow.md")
     workflow_ir = {
+        "inputs": {"items": {"type": "array"}},
         "nodes": [
             {
                 "id": "score",
@@ -6134,7 +6142,7 @@ def test_batch_prefix_projection_promotes_dynamic_batch_prewarm_action(
                 "params": {"model": model, "prompt": prompt},
                 "batch": {"items": "${items}", "as": "item"},
             }
-        ]
+        ],
     }
     builder = TraceFixtureBuilder()
     trace_path = tmp_path / "trace.json"
@@ -6344,6 +6352,7 @@ def test_batch_prefix_projection_does_not_ripple_into_rerun_cost_for_undeclared_
     prompt = f"{prefix}\n${{item.dynamic}}"
     workflow_path = str(tmp_path / "batch-prefix-cost.pflow.md")
     workflow_ir = {
+        "inputs": {"items": {"type": "array"}},
         "nodes": [
             {
                 "id": "score",
@@ -6351,7 +6360,7 @@ def test_batch_prefix_projection_does_not_ripple_into_rerun_cost_for_undeclared_
                 "params": {"model": model, "prompt": prompt},
                 "batch": {"items": "${items}", "as": "item"},
             }
-        ]
+        ],
     }
     builder = TraceFixtureBuilder()
     trace_path = tmp_path / "trace.json"

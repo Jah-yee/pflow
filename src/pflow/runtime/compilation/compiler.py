@@ -896,6 +896,7 @@ def compile_workflow(
     initial_params: dict[str, Any] | None = None,
     *,
     input_sources: Mapping[str, InputSource] | None = None,
+    resumed_run: str | None = None,
 ) -> CompiledWorkflow:
     """Compile IR to CompiledWorkflow. No runtime state baked in.
 
@@ -904,6 +905,7 @@ def compile_workflow(
         registry: Registry instance for node metadata lookup
         initial_params: Parameters provided before execution
         input_sources: Where each supplied input value came from (``prepare_inputs``)
+        resumed_run: The run whose recorded inputs are replayed (``prepare_inputs``)
 
     Returns:
         CompiledWorkflow with bare nodes + per-node configs
@@ -931,7 +933,7 @@ def compile_workflow(
 
     # Step 3: Prepare compilation (validate, resolve inputs)
     initial_params, _warnings, resolved_defaults, env_param_names = _prepare_compilation(
-        ir_dict, initial_params, input_sources
+        ir_dict, initial_params, input_sources, resumed_run
     )
 
     template_resolution_mode = initial_params.get("__template_resolution_mode__", "strict")

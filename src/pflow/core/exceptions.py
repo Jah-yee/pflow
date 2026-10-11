@@ -222,6 +222,7 @@ class InputTypeError(PflowError):
         source: InputSource,
         step: str | None = None,
         sub_workflow_path: str | None = None,
+        resumed_run: str | None = None,
     ) -> None:
         self.input_name = name
         self.type_spec = TypeSpec(declared_type)
@@ -229,7 +230,28 @@ class InputTypeError(PflowError):
         self.source = source
         self.step = step
         self.sub_workflow_path = sub_workflow_path
+        self.resumed_run = resumed_run
         super().__init__(self._message())
+
+    def located(
+        self,
+        *,
+        resumed_run: str | None = None,
+        step: str | None = None,
+        sub_workflow_path: str | None = None,
+    ) -> InputTypeError:
+        """This error with what only the boundary knows, not the coercer: the run whose recorded
+        inputs are replayed (named in the ``recorded`` fix line), or the parent step and the child
+        at a sub-workflow boundary (the ``parent`` sentence and path)."""
+        return InputTypeError(
+            name=self.input_name,
+            declared_type=self.type_spec.name,
+            received=self.received,
+            source=self.source,
+            step=step or self.step,
+            sub_workflow_path=sub_workflow_path or self.sub_workflow_path,
+            resumed_run=resumed_run or self.resumed_run,
+        )
 
     @property
     def path(self) -> str:
@@ -273,7 +295,7 @@ class InputTypeError(PflowError):
             case "settings":
                 return f"pflow settings set-env {name} {shlex.quote(example)}, or pass {argument}"
             case "recorded":
-                return f"Override it: pflow resume <run-id> {argument}"
+                return f"Override it: pflow resume {self.resumed_run or '<run-id>'} {argument}"
             case "call":
                 literal = json.dumps(example) if spec.name == "string" else example
                 return f'Pass {spec.accepted_noun}: "{name}": {literal}'
@@ -284,7 +306,7 @@ class InputTypeError(PflowError):
                     f"or the type to `- type: {fitting}`."
                 )
             case "parent":
-                return f"Pass {spec.accepted_text} from the parent."
+                return f"Pass {spec.accepted_noun} from the parent."
             case _:  # argument
                 return f"Pass {spec.accepted_text}: {argument}"
 

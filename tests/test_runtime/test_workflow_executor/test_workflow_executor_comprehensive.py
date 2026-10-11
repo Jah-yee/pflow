@@ -13,12 +13,13 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from pflow.core.exceptions import WorkflowValidationError
 from pflow.core.node import BaseNode
 from pflow.registry import Registry
 from pflow.runtime import compile_workflow
 from pflow.runtime.compilation.compiler import CompilationError
 from pflow.runtime.engine import WorkflowEngine
-from pflow.runtime.workflow_executor import WorkflowExecutor
+from pflow.runtime.workflow_executor import WorkflowExecutor, type_child_inputs
 from tests.shared.markdown_utils import write_workflow_file
 
 
@@ -745,7 +746,7 @@ class TestWorkflowExecutorComprehensive:
     # --- Test 28: missing required child input gives actionable error ---
 
     def test_missing_required_child_input_gives_actionable_error(self, tmp_path):
-        """Missing required child input raises error with provided vs expected."""
+        """A missing required child input and an undeclared one are each a Diagnostic placed at the step."""
         ir_with_inputs = {
             "ir_version": "0.1.0",
             "inputs": {
@@ -758,6 +759,7 @@ class TestWorkflowExecutorComprehensive:
         child_path = _write_child(tmp_path, ir_with_inputs, "missing_req_child")
 
         node = WorkflowExecutor()
+        node.node_id = "call"
         node.set_params({
             "workflow": str(child_path),
             "inputs": {"wrong_name": "hello"},
@@ -765,18 +767,18 @@ class TestWorkflowExecutorComprehensive:
 
         # Missing-required routes through error_action marker (GH #284).
         prep_res = node.prep({})
-        assert "_prep_error" in prep_res
-        error_msg = prep_res["_prep_error"]
-        assert "missing required inputs" in error_msg
-        assert "text" in error_msg  # Shows which input is missing
-        assert "wrong_name" in error_msg  # Shows what was provided
-        # mode has default, should not appear as missing
-        assert "mode" not in error_msg.split("missing required inputs")[0]
+        problems = [(d["message"], d["context"]["path"]) for d in prep_res["_prep_diagnostics"]]
+        # `mode` has a default: satisfied, not missing.
+        assert problems == [
+            (f"{child_path} requires input 'text': The text to process", "nodes[id=call].params.inputs.text"),
+            (f"Unknown input 'wrong_name' — not declared by {child_path}.", "nodes[id=call].params.inputs.wrong_name"),
+        ]
+        assert prep_res["_prep_error"] == "\n".join(message for message, _ in problems)
 
     # --- Test 28b: runtime extras check (defense-in-depth for programmatic callers) ---
 
     def test_undeclared_extras_in_inputs_dict_rejected_at_runtime(self, tmp_path):
-        """Runtime ``_validate_child_params`` rejects extras not declared by the child.
+        """Runtime ``type_child_inputs`` rejects extras not declared by the child.
 
         This is the defense-in-depth path: callers that construct a
         ``WorkflowExecutor`` directly and invoke ``prep()`` without running the
@@ -798,6 +800,7 @@ class TestWorkflowExecutorComprehensive:
         child_path = _write_child(tmp_path, child_ir, "extras_runtime_child")
 
         node = WorkflowExecutor()
+        node.node_id = "call"
         node.set_params({
             "workflow": str(child_path),
             "inputs": {
@@ -808,13 +811,10 @@ class TestWorkflowExecutorComprehensive:
 
         # Undeclared-extras routes through error_action marker (GH #284).
         prep_res = node.prep({})
-        assert "_prep_error" in prep_res
-        error_msg = prep_res["_prep_error"]
-        assert "undeclared input(s)" in error_msg
-        # Diagnostic names the offending key so an agent can recover.
-        assert "typo_field" in error_msg, f"Error should name the extra key: {error_msg}"
-        # Lists declared inputs so the fix is obvious.
-        assert "known_field" in error_msg, f"Error should name declared inputs: {error_msg}"
+        (problem,) = prep_res["_prep_diagnostics"]
+        # Names the offending key, and the declared input, so the fix is obvious.
+        assert problem["message"] == f"Unknown input 'typo_field' — not declared by {child_path}."
+        assert "known_field" in problem["suggestions"][0]
 
     def test_runtime_extras_not_raised_when_all_keys_declared(self, tmp_path):
         """Runtime check does NOT fire when every provided key is declared — no false positives."""
@@ -869,14 +869,14 @@ class TestWorkflowExecutorComprehensive:
     def test_no_declared_inputs_still_rejects_extras_at_runtime(self, simple_workflow_ir, tmp_path):
         """Child with no ``## Inputs`` + parent-provided inputs → runtime raises.
 
-        Regression guard for the silent-drop edge case: before this fix,
-        ``_validate_child_params`` early-returned when declarations were empty,
-        so extras survived silently. Parse-time always caught this; runtime now
+        Regression guard for the silent-drop edge case: the runtime check once
+        early-returned when declarations were empty, so extras survived silently. Parse-time always caught this; runtime now
         does too (defense-in-depth for programmatic callers that bypass
         ``WorkflowValidator``).
         """
         child_path = _write_child(tmp_path, simple_workflow_ir, "no_decl_child")
         node = WorkflowExecutor()
+        node.node_id = "call"
         node.set_params({
             "workflow": str(child_path),
             "inputs": {"anything": "goes"},
@@ -884,8 +884,7 @@ class TestWorkflowExecutorComprehensive:
 
         # Undeclared extras for child with no declared inputs routes through error_action (GH #284).
         prep_res = node.prep({})
-        assert "_prep_error" in prep_res
-        assert "undeclared input(s)" in prep_res["_prep_error"]
+        assert prep_res["_prep_error"] == f"Unknown input 'anything' — {child_path} declares no inputs."
 
     def test_no_declared_inputs_and_empty_inputs_dict_succeeds(self, simple_workflow_ir, tmp_path):
         """Child with no declared inputs + empty/omitted ``inputs:`` → no error.
@@ -916,21 +915,18 @@ class TestWorkflowExecutorComprehensive:
         to ``{}`` instead of crashing with ``AttributeError: 'NoneType' object
         has no attribute 'items'``.
 
-        Regression guard: reverting ``_validate_child_params`` to
-        ``workflow_ir.get("inputs", {})`` (without ``or {}``) makes both
-        directions crash — missing-required loop on ``None.items()`` and
-        extras loop on ``None.keys()``.
+        Regression guard: reading ``workflow_ir.get("inputs", {})`` (without
+        ``or {}``) at the boundary crashes on ``None``.
         """
-        node = WorkflowExecutor()
-        node.set_params({"workflow": "dummy.pflow.md", "inputs": {"extra_key": "oops"}})
-
         # Directly invoke the runtime boundary with a crafted IR having inputs=None.
         # Extras must still be rejected — tolerance at the boundary, strict inside.
-        with pytest.raises(ValueError, match=r"undeclared input\(s\)"):
-            node._validate_child_params({"inputs": None, "nodes": []}, {"extra_key": "oops"}, "dummy")
+        with pytest.raises(WorkflowValidationError, match=r"Unknown input 'extra_key' — dummy declares no inputs"):
+            type_child_inputs(
+                {"inputs": None, "nodes": []}, {"extra_key": "oops"}, step="call", sub_workflow_path="dummy"
+            )
 
         # And the no-extras case must succeed without crashing.
-        node._validate_child_params({"inputs": None, "nodes": []}, {}, "dummy")
+        assert type_child_inputs({"inputs": None, "nodes": []}, {}, step="call", sub_workflow_path="dummy") == {}
 
     # --- Test 31: relative path resolves from base_path ---
 
@@ -1144,11 +1140,9 @@ class TestWorkflowExecutorComprehensive:
                 "optional_param": {"type": "string", "required": False},
             },
         }
-        executor = WorkflowExecutor()
-        # Only provide "text", not "optional_param"
-        child_params = {"text": "hello"}
-        # Should NOT raise
-        executor._validate_child_params(workflow_ir, child_params, str(tmp_path / "child.pflow.md"))
+        # Only provide "text", not "optional_param" — the absent optional input arrives as None.
+        typed = type_child_inputs(workflow_ir, {"text": "hello"}, step="call", sub_workflow_path="./child.pflow.md")
+        assert typed == {"text": "hello", "optional_param": None}
 
     # --- Test 35: required: true with no default IS rejected ---
 
@@ -1168,10 +1162,12 @@ class TestWorkflowExecutorComprehensive:
                 "count": {"type": "integer", "required": True},
             },
         }
-        executor = WorkflowExecutor()
-        child_params = {"text": "hello"}
-        with pytest.raises(ValueError, match="missing required inputs"):
-            executor._validate_child_params(workflow_ir, child_params, str(tmp_path / "child.pflow.md"))
+        with pytest.raises(WorkflowValidationError) as refused:
+            type_child_inputs(workflow_ir, {"text": "hello"}, step="call", sub_workflow_path="./child.pflow.md")
+        (problem,) = refused.value.validation_errors
+        assert problem.message == "./child.pflow.md requires input 'count': No description provided"
+        assert problem.context is not None
+        assert problem.context["path"] == "nodes[id=call].params.inputs.count"
 
 
 class TestBatchCompilationErrorPropagation:

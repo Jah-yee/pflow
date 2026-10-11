@@ -35,7 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
-from pflow.core.templates import TemplateResolver
+from pflow.core.ir_schema import declared_input_types
+from pflow.core.templates import DECLARED_INPUT_TYPES_KEY, TemplateResolver
 from pflow.core.trace_tree import TraceTree
 
 logger = logging.getLogger(__name__)
@@ -48,9 +49,9 @@ _PREDICTION_SKIPPED: Final[str] = "__PREDICTION_SKIPPED__"
 class AnalysisContext:
     """Immutable inputs threaded through the analyzer's helper graph.
 
-    Parameters reach this object **post type-coercion** (via
-    ``coerce_workflow_input`` at the CLI boundary). Raw CLI strings are NOT
-    stored here — int-typed inputs are int, string-typed inputs are string.
+    Parameters reach this object typed by their declarations (``analyze`` runs the
+    input boundary on the supplied values first): an ``integer`` input given ``"3"``
+    on the command line is ``3`` here.
     """
 
     workflow_ir: Mapping[str, Any]
@@ -162,6 +163,12 @@ class AnalysisContext:
         if self.trace is None:
             return None, "unavailable"
         return self.trace.cost_for_node(node_id)
+
+    def declared_input_types(self) -> dict[str, Any]:
+        """The analysed workflow's declared input types as a resolution-context entry, so a
+        reference rooted in a declared input resolves here as it does at run time (never
+        JSON-parsed — ``templates.DECLARED_INPUT_TYPES_KEY``)."""
+        return {DECLARED_INPUT_TYPES_KEY: declared_input_types(dict(self.workflow_ir))}
 
     def parameters_for_workflow(self, workflow_path: str | None) -> Mapping[str, Any]:
         """Return parameters scoped to one workflow in a cross-workflow analysis."""
@@ -386,11 +393,13 @@ class AnalysisContext:
             return None
 
         # Wrap the input value so TemplateResolver can navigate dotted paths.
-        # ``parameters[root]`` is the resolved value (post-coercion); for a
-        # bare ``${root}`` ref this returns the value directly. Sub-paths
-        # (``${root.field}``) are navigated through the value's dict shape.
+        # ``parameters[root]`` is the typed value; for a bare ``${root}`` ref this
+        # returns the value directly. Sub-paths (``${root.field}``) are navigated
+        # through the value's shape — never into JSON text, as at run time.
         try:
-            resolved = TemplateResolver.resolve_template(f"${{{ref}}}", {root: self.parameters[root]})
+            resolved = TemplateResolver.resolve_template(
+                f"${{{ref}}}", {root: self.parameters[root], **self.declared_input_types()}
+            )
         except Exception:
             logger.debug("parameters resolve failed for %s", ref, exc_info=True)
             return None
@@ -417,8 +426,11 @@ class AnalysisContext:
             params = self.parameters
         if root not in params:
             return None
+        # The root workflow's declarations apply to its own parameters only; a child's
+        # parameters are the parent's resolved values, which no child boundary typed here.
+        declared = self.declared_input_types() if params is self.parameters else {}
         try:
-            resolved = TemplateResolver.resolve_template(f"${{{ref}}}", {root: params[root]})
+            resolved = TemplateResolver.resolve_template(f"${{{ref}}}", {root: params[root], **declared})
         except Exception:
             logger.debug("parameters resolve failed for %s in %s", ref, workflow_path, exc_info=True)
             return None

@@ -74,9 +74,15 @@ entry is `engine/plan_node.py::plan_node`, using
 ## Nested workflows
 
 `WorkflowExecutor` owns the child boundary. Consult `ALLOWED_PARAMS` for the
-accepted host parameters and `_validate_child_params` for declared-input checks.
-`workflow` accepts a path or saved name; relative paths use the parent workflow
-file. `_pflow_stack` and `_pflow_depth` guard cycles/depth.
+accepted host parameters. `type_child_inputs` is the child's input boundary,
+called in `prep` for EVERY call (each batch item): the parent's unparsed values
+typed by the child's `## Inputs`, absent inputs resolved env → settings →
+default — so a compile cached from item 0 never stands in for item N's values.
+Its `WorkflowValidationError` is prep-recoverable (routable), and its
+Diagnostics ride the `child_failure` bundle's `diagnostics` list (a pre-120
+trace's `template_diagnostic` is still read). The dry-run planner calls the same
+function per item. `workflow` accepts a path or saved name; relative paths use
+the parent workflow file. `_pflow_stack` and `_pflow_depth` guard cycles/depth.
 
 Children always receive isolated storage. Declared child outputs are exposed
 back through the host namespace; without declarations,

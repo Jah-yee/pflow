@@ -25,7 +25,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 # Imported for the predicted-cache_key contract (Round 4 high-value fix #2):
 # when ``cache.discrepancy`` detection wires up in v1.x, it MUST use the shared
@@ -88,6 +88,9 @@ from .trace_loading import (
     _scope_workflow_paths,
 )
 
+if TYPE_CHECKING:
+    from pflow.core.param_coercion import InputSource
+
 logger = logging.getLogger(__name__)
 
 
@@ -100,6 +103,7 @@ def analyze(
     workflow_ir: dict[str, Any],
     *,
     parameters: dict[str, Any] | None = None,
+    input_sources: Mapping[str, InputSource] | None = None,
     workflow_path: str | None = None,
     base_path: Path | None = None,
     trace_path: Path | None = None,
@@ -109,7 +113,10 @@ def analyze(
     """Compose the full analysis.
 
     ``parameters`` is optional per DD#35; token estimation falls back when
-    input substitution can't fully resolve a prompt.
+    input substitution can't fully resolve a prompt. The values supplied are
+    typed by their declarations first (``input_sources`` labels them, as for a
+    run) — a value that fails its declared type, or an undeclared name, raises
+    ``WorkflowValidationError`` before any analysis; an omitted input stays legal.
 
     ``trace_path`` is an explicit override (mode-4 from-trace). When ``None``
     and ``auto_load_trace`` is ``True``, the analyzer scans
@@ -119,6 +126,13 @@ def analyze(
     ``memo_cache`` is a ``MemoizationCache`` instance for the ``memo`` token
     tier. Pass ``None`` to disable that tier.
     """
+    from pflow.core.exceptions import WorkflowValidationError
+    from pflow.runtime.compilation import check_supplied_inputs
+
+    input_errors, parameters = check_supplied_inputs(workflow_ir, parameters or {}, input_sources=input_sources)
+    if input_errors:
+        raise WorkflowValidationError("Workflow input validation failed", validation_errors=input_errors)
+
     notes: list[str] = []
     suggested_blocks: list[_types.SuggestedBlock] = []
 

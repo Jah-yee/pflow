@@ -113,8 +113,11 @@ making them leaves hides nested cost. Keep first-miss and BFS execute entries on
 Preserve these estimation limits when changing recursion/aggregation:
 
 - A downstream batch sub-workflow is opaque when its item count cannot be known;
-  one child traversal would silently underestimate the batch. Normal child input
-  absence is an error; type-shaped placeholders are downstream-only.
+  one child traversal would silently underestimate the batch. Child inputs are
+  typed at the run's boundary (`runtime/workflow_executor.py::type_child_inputs`):
+  once for a single call, per item for a batch, whose child therefore compiles on
+  type-shaped placeholders (as a downstream child does) so no item's values leak
+  into another's plan and a bad item is a per-item WARNING, not a failed node.
 - Batch child entries group by node ID, not list position, since items can take
   different branches. Counts use items that actually traversed each node.
   A synthetic entry's nested `sub_plan` is the first traversing item's view;

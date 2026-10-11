@@ -6,14 +6,16 @@ and node testing operations.
 
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.diagnostic_render import format_diagnostic
 from pflow.core.exceptions import (
     CompilationError,
     MarkdownParseError,
+    PflowError,
     WorkflowNotFoundError,
     WorkflowValidationError,
 )
@@ -26,7 +28,15 @@ from ..utils.validation import (
 )
 from .base_service import BaseService, ensure_stateless
 
+if TYPE_CHECKING:
+    from pflow.core.param_coercion import InputSource
+
 logger = logging.getLogger(__name__)
+
+
+def _from_the_call(parameters: Mapping[str, Any]) -> dict[str, "InputSource"]:
+    """Every MCP parameter arrives in the call as typed JSON: labelled ``call``, never inferred."""
+    return dict.fromkeys(parameters, "call")
 
 
 def _trace_path_str(result: Any) -> str:
@@ -298,6 +308,7 @@ class ExecutionService(BaseService):
             gate_resolver=build_gate_resolver(frozenset(auto_approve or ()), None),
             workflow_manager=wm,
             workflow_name=workflow_name,
+            input_sources=_from_the_call(validated_params),
         )
 
         try:
@@ -402,7 +413,9 @@ class ExecutionService(BaseService):
         # `setdefault` against `resolved.file_path` — no pre-injection needed.
         runner = WorkflowRunner()
         try:
-            plan = runner.plan(resolved, validated_params, RunnerConfig())
+            plan = runner.plan(
+                resolved, validated_params, RunnerConfig(), input_sources=_from_the_call(validated_params)
+            )
         except WorkflowValidationError as e:
             # Preserve structured validation diagnostics (titles, paths,
             # suggestions, similar_names) so the agent sees the rich error
@@ -498,11 +511,14 @@ class ExecutionService(BaseService):
             analysis = analyze(
                 resolved.ir,
                 parameters=validated_params,
+                input_sources=_from_the_call(validated_params),
                 workflow_path=workflow_path_str,
                 base_path=base_path,
             )
         except (FileNotFoundError, ValueError) as e:
             raise ValueError(str(e)) from e
+        except PflowError:
+            raise  # a supplied value that fails its declaration: the server renders its diagnostics
         except Exception as e:
             logger.error("Cache analysis failed: %s", e, exc_info=True)
             raise RuntimeError(f"❌ Cache analysis failed: {e}") from e

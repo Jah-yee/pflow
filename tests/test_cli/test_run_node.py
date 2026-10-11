@@ -504,33 +504,43 @@ def test_io_output_with_no_json_output_returns_none(tmp_path, monkeypatch) -> No
 # --- Task 175: re-run prefill (read_run_inputs → /api/run-inputs token strings) -------
 
 
-def test_read_run_inputs_tokens_round_trip_faithfully_through_the_cli_parser(tmp_path, monkeypatch) -> None:
+def test_read_run_inputs_tokens_round_trip_faithfully_through_the_input_boundary(tmp_path, monkeypatch) -> None:
     """Re-run FAITHFULNESS — the feature's core promise (load a past run → submit → reproduce it).
 
     Two assertions, one dense test:
     1. FORWARD: read_run_inputs renders each value via format_param_value (str as-is, numbers→str,
-       bool→lowercase, list/dict→COMPACT JSON) — the token shape the form controls consume. Catches a
-       wrong-formatter regression (e.g. str()/repr() → ``['a', 'b']`` that infer_type can't re-parse).
+       bool→lowercase, list/dict→COMPACT JSON) — the token shape the form controls consume.
     2. ROUND-TRIP: those tokens, submitted as the server's ``name=value`` argv (one element per input, no
        shell — exactly ``server.run``'s construction), re-type to the ORIGINAL typed values through the REAL
-       ``parse_workflow_params`` the spawned run uses. THIS is the faithfulness the whole re-run rides on;
-       it catches an ``infer_type`` regression (which the forward assertion alone misses) on the LIVE path.
-       (The only other round-trip pin is coupled to the orphaned ``rerun_display`` module and goes via
-       ``shlex`` — a different transport that dies with that module.)"""
+       path the spawned run takes: ``parse_workflow_params`` (raw text) then the input boundary
+       (``prepare_inputs``), each token read by its input's declared type. Holds for every non-``any``
+       type (ruling (iii)) — including text that LOOKS typed (``02134`` on a ``string`` stays ``02134``)."""
     from pflow.cli.param_parsing import parse_workflow_params
+    from pflow.runtime.compilation import prepare_inputs
 
     debug = _debug(tmp_path, monkeypatch)
     wf = str(tmp_path / "wf.pflow.md")
-    # Representative resolved-value types meta.inputs holds. (A string that LOOKS numeric is deliberately
-    # excluded: meta.inputs stores the RESOLVED value and declared-type coercion — not parse_workflow_params
-    # alone — restores it on re-run; that channel-A interplay is a separate, pre-existing CLI concern.)
-    original = {"name": "World", "count": 3, "flag": True, "tags": ["a", "b"], "cfg": {"k": 1}}
+    original = {"name": "World", "zip": "02134", "count": 3, "flag": True, "tags": ["a", "b"], "cfg": {"k": 1}}
+    declared = {"name": "string", "zip": "string", "count": "integer", "flag": "boolean", "tags": "array"}
+    declared["cfg"] = "object"
     _write_io_trace(debug, wf, "20260101-000000-000020", inputs=original)
 
     tokens = read_run_inputs(wf, "run-1")
-    assert tokens == {"name": "World", "count": "3", "flag": "true", "tags": '["a","b"]', "cfg": '{"k":1}'}
-    reparsed = parse_workflow_params(tuple(f"{name}={value}" for name, value in tokens.items()))
-    assert reparsed == original, "a re-run must reconstruct the exact typed values it loaded"
+    assert tokens == {
+        "name": "World",
+        "zip": "02134",
+        "count": "3",
+        "flag": "true",
+        "tags": '["a","b"]',
+        "cfg": '{"k":1}',
+    }
+    submitted = parse_workflow_params(tuple(f"{name}={value}" for name, value in tokens.items()))
+    assert submitted == tokens  # the CLI parser guesses nothing; the declaration decides
+    errors, updates, _ = prepare_inputs(
+        {"inputs": {name: {"type": kind} for name, kind in declared.items()}}, submitted
+    )
+    assert errors == []
+    assert {**submitted, **updates} == original, "a re-run must reconstruct the exact typed values it loaded"
 
 
 def test_read_run_inputs_omits_sensitive_named_keys(tmp_path, monkeypatch) -> None:
@@ -578,8 +588,7 @@ def test_read_run_inputs_empty_for_trace_predating_meta_inputs(tmp_path, monkeyp
 
 def test_read_run_inputs_omits_none_valued_keys(tmp_path, monkeypatch) -> None:
     """A None-valued input (e.g. an authored ``default: null``) is OMITTED, not rendered as the literal
-    token ``"None"`` — which ``infer_type`` would re-type to the STRING ``"None"`` on re-run (a silent
-    null→"None" change). Omitting it lets it re-resolve to its default, like the form's blank-omission."""
+    token ``"None"`` — which a re-run would read as the TEXT ``"None"`` (a silent null→"None" change). Omitting it lets it re-resolve to its default, like the form's blank-omission."""
     debug = _debug(tmp_path, monkeypatch)
     wf = str(tmp_path / "wf.pflow.md")
     _write_io_trace(debug, wf, "20260101-000000-000020", inputs={"topic": "cats", "opt": None})

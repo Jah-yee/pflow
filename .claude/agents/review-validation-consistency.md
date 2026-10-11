@@ -229,7 +229,7 @@ These boundaries and gaps exist today. If changes touch these areas, check wheth
 - **Static validation not seeing runtime-only facts.** The validator sees declared types and structure, not values — "validation doesn't check the actual data" is the architecture, not drift. Drift requires a check that COULD be static and is missing/contradictory.
 - **Permissive mode being lenient** — it's a mode (`template_resolution_mode`), not a bug.
 - **The CLI probe path lacking workflow validation** — by design; it runs `node.run()` directly for fast iteration. Flag only if a change routes real workflow execution through it. MCP `registry_run` instead uses the runner validation/compilation path.
-- **Asymmetry that validation deliberately delegates to runtime defense-in-depth** (e.g. opaque `inputs: ${item}` skipping the static child-input check, caught per-item by `_validate_child_params`) — the split is documented; verify the runtime half still exists instead of flagging the static half.
+- **Asymmetry that validation deliberately delegates to runtime defense-in-depth** (e.g. opaque `inputs: ${item}` skipping the static child-input check, caught per item by `type_child_inputs`) — the split is documented; verify the runtime half still exists instead of flagging the static half.
 - **A rule NOT being replicated into every layer.** The correct shape is usually one owning layer plus a runtime backstop — demand replication only where a bypass path or the user experience requires it; "add this check everywhere" is noise, not defense.
 
 ## Output Format

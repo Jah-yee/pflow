@@ -470,3 +470,6 @@ class TestTheError:
         assert diagnostic.context["path"] == "nodes[id=call].params.inputs.n"
         assert diagnostic.context["sub_workflow_step"] == "call"
         assert diagnostic.context["sub_workflow_path"] == "./child.pflow.md"
+        # The ruled "(here ${item} resolved to 'x')" clause is not built (the boundary never sees the
+        # parent's template text): the fix line names only what to pass.
+        assert diagnostic.suggestions == ["Pass a whole number from the parent."]

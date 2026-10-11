@@ -1015,8 +1015,9 @@ def _preflight(workflow_key: str, tokens: tuple[str, ...]) -> None:
     from pflow.cli.param_parsing import parse_workflow_params
     from pflow.execution.runner import WorkflowRunner
 
-    typed_params = parse_workflow_params(tokens)  # infer_type per token — channel A (form == CLI)
-    WorkflowRunner().preflight(resolve_workflow(workflow_key), typed_params)
+    # Channel A (form == CLI): the same raw-text tokens the spawn passes; the input boundary types
+    # each by its declaration, exactly as the spawned run will.
+    WorkflowRunner().preflight(resolve_workflow(workflow_key), dict(parse_workflow_params(tokens)))
 
 
 async def run(request: Request) -> Response:
@@ -1304,8 +1305,15 @@ async def resume(request: Request) -> Response:
         pf = preflight_resume(run_target, gate_answer=gate_answer, force=force)
         if pf.side_effect_refusal is not None:
             raise pf.side_effect_refusal  # a non-TTY spawn would refuse — so we do
-        # The spawned child's own pre-trace steps (validation/compile errors → the 400 arm).
-        WorkflowRunner().preflight(pf.resolved, dict(pf.source.inputs or {}))
+        # The spawned child's own pre-trace steps (validation/compile errors → the 400 arm), its
+        # replayed inputs labelled as `pflow resume` labels them.
+        recorded = dict(pf.source.inputs or {})
+        WorkflowRunner().preflight(
+            pf.resolved,
+            recorded,
+            input_sources=dict.fromkeys(recorded, "recorded"),
+            resumed_run=pf.source.execution_id,
+        )
         return pf.source.paused_node_id
 
     try:

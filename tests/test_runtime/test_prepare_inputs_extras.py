@@ -180,24 +180,14 @@ class TestOptionalInputExtras:
         assert not any("Unknown input" in e.message for e in errors)
 
 
-class TestValidateOnlyGap:
-    """Locked-in regression test documenting the intentional `--validate-only` parity gap.
+class TestValidateOnlyCatchesRootExtras:
+    """`--validate-only` with values refuses what the run would (the type/extras half of GH #297).
 
-    `WorkflowRunner.validate()` does NOT call `prepare_inputs`, so the extras
-    check added in GH #288 does NOT fire for `pflow <wf> BOGUS=X --validate-only`.
-    This is an accepted architectural trade-off from the #288 design discussion:
-    extras check lives at the compiler layer (where root missing-required also
-    lives), not the validator layer (where sub-workflow extras lives).
-
-    The proper fix is tracked in GH #297 — unify all input-shape checks in
-    WorkflowValidator. When that refactor lands, this test should be
-    **deliberately flipped** to assert `valid is False` / `len(errors) >= 1`.
-    A silent pass/fail flip during an unrelated refactor would indicate the
-    parity gap was closed accidentally, not by design.
+    `WorkflowRunner.validate()` runs the input boundary over the SUPPLIED values, so an undeclared
+    name fails validation exactly as it fails the run; the shape-check refactor stays #297's.
     """
 
-    def test_validate_only_does_not_catch_root_extras(self):
-        """See GH #297. Documents: `--validate-only` is structural, not runtime-shape."""
+    def test_validate_only_rejects_an_undeclared_input_and_accepts_the_declared_one(self):
         from pflow.execution.runner import WorkflowRunner
 
         workflow_ir = {
@@ -209,18 +199,14 @@ class TestValidateOnlyGap:
             "edges": [],
         }
 
-        # Extras passed to validate() → currently silent (valid=True). The
-        # extras check only fires at compile-time via prepare_inputs.
-        result = WorkflowRunner().validate(workflow_ir, params={"a": "ok", "BOGUS": "X"})
+        refused = WorkflowRunner().validate(workflow_ir, params={"a": "ok", "BOGUS": "X"})
+        accepted = WorkflowRunner().validate(workflow_ir, params={"a": "ok"})
 
-        assert result.valid is True, (
-            "Extras now caught by --validate-only. This is likely the GH #297 refactor "
-            "landing — flip this test to `result.valid is False` with an explicit "
-            "Diagnostic check, and delete this docstring."
-        )
-        assert not any("Unknown input" in d.message for d in result.diagnostics), (
-            "A diagnostic for 'Unknown input' appeared — GH #297 may have landed. Flip this test deliberately."
-        )
+        assert refused.valid is False
+        assert [(d.message, d.context["path"]) for d in refused.errors if d.context] == [
+            ("Unknown input 'BOGUS' — not declared by this workflow.", "inputs.BOGUS")
+        ]
+        assert accepted.valid is True  # the same workflow and value, minus the extra
 
 
 def _skip_uv_sandbox_panic(result: subprocess.CompletedProcess) -> None:

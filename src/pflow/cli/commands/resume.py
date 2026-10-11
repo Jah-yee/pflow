@@ -30,13 +30,14 @@ import click
 
 if TYPE_CHECKING:
     from pflow.core.exceptions import ResumeSideEffectConfirmationError
+    from pflow.core.param_coercion import InputSource
     from pflow.execution.result import ResolvedWorkflow
     from pflow.runtime.resume_source import PausedRun, ResumeSource
 
 logger = logging.getLogger(__name__)
 
 
-def _split_target_and_params(args: tuple[str, ...]) -> tuple[str, dict[str, Any]]:
+def _split_target_and_params(args: tuple[str, ...]) -> tuple[str, dict[str, str]]:
     """Split the raw arg tuple into (TARGET, params). TARGET is required (§E)."""
     from pflow.cli.param_parsing import parse_workflow_params
 
@@ -147,6 +148,7 @@ def _dispatch_resume(
     auto_approve: tuple[str, ...],
     approval_answer: tuple[str, bool] | None,
     dry_run: bool,
+    input_sources: dict[str, InputSource],
 ) -> None:
     """Set up ctx.obj like a normal run and dispatch through the shared pipeline (§E step 7)."""
     from pflow.cli.commands.run import execute_json_workflow
@@ -179,7 +181,7 @@ def _dispatch_resume(
     # The one thing that makes this a resume: the runner threads it to the engine.
     ctx.obj["resume_source"] = source
 
-    execute_json_workflow(ctx, resolved, None, None, params, output_format)
+    execute_json_workflow(ctx, resolved, None, None, params, output_format, input_sources)
 
 
 class ResumeGroup(click.Group):
@@ -340,8 +342,11 @@ def resume_run(
         if not dry_run and pf.side_effect_refusal is not None:
             _prompt_or_raise_side_effect(ctx, pf.side_effect_refusal, print_flag)
 
-        # CLI overrides win over the original run's recorded inputs (Decision 9).
-        params = {**(pf.source.inputs or {}), **cli_params}
+        # CLI overrides win over the original run's recorded inputs (Decision 9). A replayed value
+        # is labelled `recorded` so the input boundary names the run in a type error's fix line.
+        recorded = pf.source.inputs or {}
+        params = {**recorded, **cli_params}
+        input_sources: dict[str, InputSource] = {name: "recorded" for name in recorded if name not in cli_params}
         _dispatch_resume(
             ctx,
             pf.resolved,
@@ -354,6 +359,7 @@ def resume_run(
             auto_approve=auto_approve,
             approval_answer=approval_answer,
             dry_run=dry_run,
+            input_sources=input_sources,
         )
     except click.exceptions.Exit:
         raise

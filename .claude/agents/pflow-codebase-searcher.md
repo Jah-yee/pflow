@@ -159,7 +159,7 @@ These are search surprises — where a thing lives can differ from where you'd e
 | `pflow probe` implementation | `cli/commands/probe.py` + `cli/commands/_probe_impl.py` (formerly `registry_run`) |
 | When MCP tools get discovered | Only `pflow mcp add` (the servers it saved) and `pflow mcp sync`, both in `cli/commands/mcp.py` — workflow runs never sync |
 | Two-tier exception hierarchy | `core/exceptions.py` (internal `PflowError` tree) + `core/user_errors.py` (`UserFriendlyError` branch) |
-| Output routing files | `core/output_controller.py`, `cli/workflow_output.py` (largest), `cli/error_output.py`, `runtime/output_resolver.py`, `cli/rerun_display.py` |
+| Output routing files | `core/output_controller.py`, `cli/workflow_output.py` (largest), `cli/error_output.py`, `runtime/output_resolver.py` |
 | LLM seam | `core/llm_client.py` (LiteLLM adapter, `complete()`) + `core/llm_config.py` (model resolution). Replaced Simon Willison's `llm` library in Task 158. |
 | Skill management split | `core/workflow/skill_service.py` (logic) + `cli/commands/skills.py` (CLI) |
 | Workflow save (shared CLI+MCP) | `core/workflow/save_service.py` |

@@ -10,8 +10,9 @@ import shlex
 import sys
 import time
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import click
 
@@ -37,6 +38,9 @@ from pflow.core.validation_utils import is_valid_parameter_name
 from pflow.core.workflow.manager import WorkflowManager
 from pflow.execution.result import ResolvedWorkflow
 from pflow.execution.workflow_resolver import resolve_workflow
+
+if TYPE_CHECKING:
+    from pflow.core.param_coercion import InputSource
 
 logger = logging.getLogger(__name__)
 
@@ -250,24 +254,26 @@ def _echo_target_node_path(ctx: click.Context, report_dir: Path, events: list[di
             break
 
 
-def execute_json_workflow(  # noqa: C901
+def execute_json_workflow(
     ctx: click.Context,
     workflow: dict[str, Any] | ResolvedWorkflow,
     stdin_data: str | StdinData | None = None,
     output_key: str | None = None,
     execution_params: dict[str, Any] | None = None,
     output_format: str = "text",
+    input_sources: Mapping[str, InputSource] | None = None,
 ) -> None:
-    """Execute a workflow through the shared Runner."""
+    """Execute a workflow through the shared Runner.
+
+    ``execution_params`` are the supplied input values (stdin already routed in);
+    ``input_sources`` says where each came from (absent key: a CLI argument).
+    """
     from pflow.cli.error_output import output_error
     from pflow.execution.result import RunnerConfig
     from pflow.execution.runner import WorkflowRunner
 
     ir_data = workflow.ir if isinstance(workflow, ResolvedWorkflow) else workflow
     params = dict(execution_params or {})
-
-    if stdin_data:
-        _route_stdin_to_params(ctx, stdin_data, ir_data, params)
 
     # `_pflow_workflow_file` is injected by `WorkflowRunner._prepare_workflow`
     # via `setdefault` against the runner's own resolved file_path (canonical
@@ -276,12 +282,14 @@ def execute_json_workflow(  # noqa: C901
     # explicitly through its `source_file_path` kwarg below.
 
     if ctx.obj.get("dry_run"):
-        _display_plan_result(ctx, workflow, params, output_format)
+        _display_plan_result(ctx, workflow, params, output_format, input_sources)
         return
 
     if ctx.obj.get("validate_only"):
         runner = WorkflowRunner()
-        vresult = runner.validate(workflow, params, source_file_path=ctx.obj.get("source_file_path"))
+        vresult = runner.validate(
+            workflow, params, source_file_path=ctx.obj.get("source_file_path"), input_sources=input_sources
+        )
         _display_validation_result(ctx, vresult, output_format)
         return
 
@@ -335,6 +343,7 @@ def execute_json_workflow(  # noqa: C901
                 # `pflow resume` sets this before dispatching here; a normal
                 # run leaves it absent (None) — the runner then behaves exactly as before.
                 resume_source=ctx.obj.get("resume_source"),
+                input_sources=input_sources,
             )
         _display_execution_result(ctx, result, output_key, ir_data, output_format, effective_verbose)
 
@@ -762,6 +771,7 @@ def _display_plan_result(
     workflow: dict[str, Any] | ResolvedWorkflow,
     params: dict[str, Any],
     output_format: str,
+    input_sources: Mapping[str, InputSource] | None = None,
 ) -> None:
     """Display dry-run plan result and exit.
 
@@ -785,6 +795,7 @@ def _display_plan_result(
         ),
         # `pflow resume --dry-run` sets this; a normal --dry-run leaves it None.
         resume_source=ctx.obj.get("resume_source"),
+        input_sources=input_sources,
     )
 
     if output_format == "json":
@@ -959,8 +970,9 @@ def _route_stdin_to_params(
     stdin_data: str | StdinData | None,
     workflow_ir: dict[str, Any],
     params: dict[str, Any],
-) -> None:
-    """Route stdin content to the appropriate workflow input parameter."""
+) -> str | None:
+    """Route stdin content to the workflow input marked ``stdin: true``; return that input's
+    name when stdin supplied its value (an explicit argument for it wins)."""
     stdin_text = _extract_stdin_text(stdin_data)
     if stdin_text is None:
         if isinstance(stdin_data, StdinData) and (stdin_data.binary_data or stdin_data.temp_path):
@@ -968,7 +980,7 @@ def _route_stdin_to_params(
             click.echo("   Binary/large data is not automatically routed to workflow inputs.", err=True)
             click.echo("   Consider using a file path parameter instead.", err=True)
             click.echo("", err=True)
-        return
+        return None
 
     target_input = _find_stdin_input(workflow_ir)
 
@@ -990,8 +1002,10 @@ def _route_stdin_to_params(
             suggestions=['Add "stdin": true to the input that should receive piped data'],
         )
 
-    if target_input not in params:
-        params[target_input] = stdin_text
+    if target_input in params:
+        return None
+    params[target_input] = stdin_text
+    return target_input
 
 
 def _validate_dry_run_flag_combination(
@@ -1050,9 +1064,10 @@ def _validate_and_prepare_workflow_params(
     workflow_ir: dict[str, Any],
     remaining_args: tuple[str, ...],
     stdin_data: str | StdinData | None = None,
-) -> dict[str, Any]:
-    """Validate workflow parameters, route stdin, and apply defaults."""
-    params = parse_workflow_params(remaining_args)
+) -> tuple[dict[str, Any], dict[str, InputSource]]:
+    """Validate parameter names and route stdin: ``(params, input_sources)`` — every value is
+    text; the stdin-routed input is labelled ``stdin``, the rest are CLI arguments."""
+    params: dict[str, Any] = dict(parse_workflow_params(remaining_args))
 
     invalid_keys = [k for k in params if not is_valid_parameter_name(k)]
     if invalid_keys:
@@ -1072,9 +1087,8 @@ def _validate_and_prepare_workflow_params(
             ],
         )
 
-    _route_stdin_to_params(ctx, stdin_data, workflow_ir, params)
-
-    return params
+    stdin_input = _route_stdin_to_params(ctx, stdin_data, workflow_ir, params)
+    return params, ({stdin_input: "stdin"} if stdin_input is not None else {})
 
 
 def _show_workflow_help(
@@ -1156,11 +1170,7 @@ def _handle_named_workflow(
         _show_workflow_help(first_arg, workflow_ir, source)
         return True
 
-    params = _validate_and_prepare_workflow_params(ctx, workflow_ir, remaining_args, stdin_data)
-
-    from pflow.cli.rerun_display import filter_user_params
-
-    ctx.obj["execution_params"] = filter_user_params(params)
+    params, input_sources = _validate_and_prepare_workflow_params(ctx, workflow_ir, remaining_args, stdin_data)
 
     if verbose:
         if source == "library":
@@ -1171,7 +1181,7 @@ def _handle_named_workflow(
             click.echo(f"cli: With parameters: {params}", err=True)
 
     _setup_workflow_execution(ctx, first_arg, source, output_format)
-    execute_json_workflow(ctx, resolved_workflow, stdin_data, output_key, params, output_format)
+    execute_json_workflow(ctx, resolved_workflow, stdin_data, output_key, params, output_format, input_sources)
     return True
 
 

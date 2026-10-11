@@ -2,31 +2,70 @@
 
 - validate_ir_structure: the basic shape of workflow IR (nodes, edges arrays)
 - prepare_inputs: the workflow input boundary — resolve, type, report
+- check_supplied_inputs: the same boundary over the supplied values only
 """
 
 import logging
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.exceptions import CompilationError, InputTypeError
 from pflow.core.param_coercion import InputSource, coerce_declared_input
-from pflow.core.validation_utils import get_parameter_validation_error, is_valid_parameter_name
+from pflow.core.validation_utils import (
+    VALIDATION_PLACEHOLDER,
+    get_parameter_validation_error,
+    is_valid_parameter_name,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _input_error(message: str, path: str, suggestion: str = "") -> Diagnostic:
-    """An input-boundary error that is not a type mismatch (missing, empty, undeclared, misnamed)."""
-    return Diagnostic(
-        severity=Severity.ERROR,
-        message=message,
-        title="Validation Error",
-        suggestions=[suggestion] if suggestion else None,
-        source="validation",
-        context={"category": "validation", "path": path},
-    )
+@dataclass(frozen=True)
+class _Caller:
+    """Who supplied the values, beyond each value's source label — it places every problem:
+    the run being resumed (named in a ``recorded`` value's fix line), or the parent step passing
+    a sub-workflow its inputs (paths point at that step's ``inputs:``)."""
+
+    resumed_run: str | None = None
+    step: str | None = None
+    sub_workflow_path: str | None = None
+
+    @property
+    def workflow(self) -> str:
+        """The workflow whose inputs these are, mid-sentence."""
+        return (self.sub_workflow_path or "the sub-workflow") if self.step else "this workflow"
+
+    @property
+    def subject(self) -> str:
+        """The same workflow opening a sentence."""
+        return (self.sub_workflow_path or "The sub-workflow") if self.step else "Workflow"
+
+    def path(self, name: str) -> str:
+        """Where the value for input ``name`` is supplied."""
+        return f"nodes[id={self.step}].params.inputs.{name}" if self.step else f"inputs.{name}"
+
+    def context(self) -> dict[str, str]:
+        if not self.step:
+            return {}
+        return {"sub_workflow_step": self.step, "sub_workflow_path": self.sub_workflow_path or ""}
+
+    def place(self, error: InputTypeError) -> Diagnostic:
+        located = error.located(resumed_run=self.resumed_run, step=self.step, sub_workflow_path=self.sub_workflow_path)
+        return located.to_diagnostics()[0]
+
+    def error(self, message: str, path: str, suggestion: str = "") -> Diagnostic:
+        """An input-boundary error that is not a type mismatch (missing, empty, undeclared, misnamed)."""
+        return Diagnostic(
+            severity=Severity.ERROR,
+            message=message,
+            title="Validation Error",
+            suggestions=[suggestion] if suggestion else None,
+            source="validation",
+            context={"category": "validation", "path": path, **self.context()},
+        )
 
 
 def _fallback_value(
@@ -51,6 +90,7 @@ def _resolve_input(
     supplied: Any,
     supplied_source: InputSource,
     settings_env: Mapping[str, str],
+    caller: _Caller,
 ) -> tuple[Diagnostic | None, Any, InputSource | None]:
     """One declared input: ``(problem, typed value, source)``; ``source`` is ``None`` when no value exists."""
     value, source = (
@@ -61,7 +101,7 @@ def _resolve_input(
     if source is None:
         if is_required:
             return (
-                _input_error(f"Workflow requires input '{input_name}': {description}", f"inputs.{input_name}"),
+                caller.error(f"{caller.subject} requires input '{input_name}': {description}", caller.path(input_name)),
                 None,
                 None,
             )
@@ -69,11 +109,11 @@ def _resolve_input(
     if is_required and value == "":
         origin = "" if supplied is not None else f" (resolved from {source})"
         message = f"Required input '{input_name}' is empty{origin}: {description}"
-        return _input_error(message, f"inputs.{input_name}", "Provide a non-empty value"), None, source
+        return caller.error(message, caller.path(input_name), "Provide a non-empty value"), None, source
     try:
         return None, coerce_declared_input(input_name, input_spec.get("type"), value, source=source), source
     except InputTypeError as e:
-        return e.to_diagnostics()[0], None, source
+        return caller.place(e), None, source
 
 
 def _is_framework_param_key(key: str) -> bool:
@@ -97,7 +137,9 @@ def _is_framework_param_key(key: str) -> bool:
     return key.startswith("_pflow_") or (key.startswith("__") and key.endswith("__"))
 
 
-def _check_undeclared_extras(declared_names: set[str], provided_params: Mapping[str, Any]) -> list[Diagnostic]:
+def _check_undeclared_extras(
+    declared_names: set[str], provided_params: Mapping[str, Any], caller: _Caller
+) -> list[Diagnostic]:
     """Detect keys in ``provided_params`` that are not declared as workflow inputs.
 
     Framework-internal keys are filtered via :func:`_is_framework_param_key`.
@@ -118,14 +160,14 @@ def _check_undeclared_extras(declared_names: set[str], provided_params: Mapping[
     for extra in extras:
         if sorted_declared:
             similar = find_similar_items(extra, sorted_declared, max_results=2, method="fuzzy")
-            message = f"Unknown input '{extra}' — not declared by this workflow."
+            message = f"Unknown input '{extra}' — not declared by {caller.workflow}."
             suggestion = (
                 f"Did you mean '{similar[0]}'?" if similar else f"Available inputs: {', '.join(sorted_declared)}"
             )
         else:
-            message = f"Unknown input '{extra}' — this workflow declares no inputs."
+            message = f"Unknown input '{extra}' — {caller.workflow} declares no inputs."
             suggestion = "Remove the parameter, or declare it in ## Inputs."
-        errors.append(_input_error(message, f"inputs.{extra}", suggestion))
+        errors.append(caller.error(message, caller.path(extra), suggestion))
     return errors
 
 
@@ -184,6 +226,9 @@ def prepare_inputs(
     settings_env: Mapping[str, str] | None = None,
     *,
     input_sources: Mapping[str, InputSource] | None = None,
+    resumed_run: str | None = None,
+    step: str | None = None,
+    sub_workflow_path: str | None = None,
 ) -> tuple[list[Diagnostic], dict[str, Any], set[str]]:
     """The workflow input boundary: resolve each declared input, type it, report what is wrong.
 
@@ -191,8 +236,11 @@ def prepare_inputs(
     value) → shell environment → settings.env → declared default; with none, a required
     input (``required`` defaults to true) is an error and an optional one is ``None``.
     Every value found is typed by ``coerce_declared_input`` with its source — supplied
-    values take theirs from ``input_sources`` (absent key: ``"argument"``). Does not mutate
-    ``provided_params``.
+    values take theirs from ``input_sources`` (absent key: ``"argument"``). ``resumed_run``
+    is the id of the run whose recorded inputs are being replayed, named in a ``recorded``
+    value's fix line; ``step`` / ``sub_workflow_path`` name the parent step and the child at
+    a sub-workflow boundary, and every problem is placed at that step's ``inputs:``. Does not
+    mutate ``provided_params``.
 
     Returns:
         ``(errors, updates, settings_names)``: one Diagnostic per problem (type mismatch,
@@ -206,16 +254,13 @@ def prepare_inputs(
     settings_names: set[str] = set()
     settings_env = settings_env or {}
     input_sources = input_sources or {}
+    caller = _Caller(resumed_run=resumed_run, step=step, sub_workflow_path=sub_workflow_path)
     inputs: dict[str, Any] = workflow_ir.get("inputs") or {}
-
-    # Reject undeclared extras (GH #288, symmetric with the sub-workflow check in
-    # WorkflowValidator._check_required_inputs).
-    errors.extend(_check_undeclared_extras(set(inputs), provided_params))
 
     stdin_inputs = [name for name, spec in inputs.items() if spec.get("stdin") is True]
     if len(stdin_inputs) > 1:
         errors.append(
-            _input_error(
+            caller.error(
                 f'Multiple inputs marked with "stdin": true: {", ".join(stdin_inputs)}',
                 "inputs",
                 "Only one input can receive piped stdin",
@@ -225,7 +270,7 @@ def prepare_inputs(
     for input_name, input_spec in inputs.items():
         if not is_valid_parameter_name(input_name):
             errors.append(
-                _input_error(
+                caller.error(
                     get_parameter_validation_error(input_name, "input"),
                     f"inputs.{input_name}",
                     "Avoid shell special characters like $, |, >, <, &, ;",
@@ -234,7 +279,7 @@ def prepare_inputs(
             continue
         supplied = provided_params.get(input_name)
         problem, value, source = _resolve_input(
-            input_name, input_spec, supplied, input_sources.get(input_name, "argument"), settings_env
+            input_name, input_spec, supplied, input_sources.get(input_name, "argument"), settings_env, caller
         )
         if problem is not None:
             errors.append(problem)
@@ -244,4 +289,30 @@ def prepare_inputs(
         if source == "settings":
             settings_names.add(input_name)
 
+    # Reject undeclared extras (GH #288, symmetric with the sub-workflow check in
+    # WorkflowValidator._check_required_inputs).
+    errors.extend(_check_undeclared_extras(set(inputs), provided_params, caller))
     return errors, updates, settings_names
+
+
+def check_supplied_inputs(
+    workflow_ir: dict[str, Any],
+    provided_params: Mapping[str, Any],
+    *,
+    input_sources: Mapping[str, InputSource] | None = None,
+) -> tuple[list[Diagnostic], dict[str, Any]]:
+    """``prepare_inputs`` over the supplied values only — for checks that run without a full
+    set of inputs (``--validate-only``, cache analysis).
+
+    An input nobody supplied (or supplied as ``None``) stands in as ``VALIDATION_PLACEHOLDER``:
+    it is neither required nor resolved from the environment, settings or its default. Returns
+    the problems with the supplied values only (type mismatch, undeclared key, empty required
+    text — the declarations' own problems are the validator's) and the supplied values typed
+    by their declarations.
+    """
+    supplied = {name: value for name, value in provided_params.items() if value is not None}
+    padded = {**dict.fromkeys(workflow_ir.get("inputs") or {}, VALIDATION_PLACEHOLDER), **supplied}
+    errors, updates, _ = prepare_inputs(workflow_ir, padded, input_sources=input_sources)
+    supplied_paths = {f"inputs.{name}" for name in supplied}
+    problems = [error for error in errors if (error.context or {}).get("path") in supplied_paths]
+    return problems, {name: updates.get(name, value) for name, value in supplied.items()}

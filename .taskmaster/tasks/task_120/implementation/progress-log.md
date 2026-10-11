@@ -365,3 +365,214 @@ resume path for any successor.
   traps: a declared `## Outputs` name equal to a step id overwrites `shared[step]`, the LLM mock's text response is JSON
   text; zsh does not word-split unquoted `$VAR`.
 - Next: commit review fixes; launch I2.
+
+## [2026-10-11 17:40] I2 (Opus) — PB (entry sites: runner, CLI, MCP, analyze, web preflight)
+- Did: D7 `parse_workflow_params` → raw text (`infer_type` kept for `pflow probe` only); D6 `_fill_declared_defaults` →
+  `_fill_placeholders` (never a real default — f₂ fixed); `validate()` checks the supplied values; D4 `input_sources`
+  on `WorkflowRunner.run/validate/plan/preflight` → `compile_workflow` → `prepare_inputs` (CLI stdin → `stdin`, resume
+  replays → `recorded`, MCP → `call`); `analyze(..., input_sources=)` types supplied values first and raises
+  `WorkflowValidationError`; analyzer synthetic contexts carry `DECLARED_INPUT_TYPES_KEY`; `rerun_display.py` + its
+  tests + the dead `ctx.obj["execution_params"]` write deleted; untyped-input hints → `any`; context.py:52 reworded.
+- Changed: `cli/{param_parsing,commands/run,commands/resume,commands/analyze_cache,commands/_probe_impl}.py`,
+  `cli/rerun_display.py` (deleted), `execution/runner.py`, `execution/formatters/{discovery,workflow_save}_formatter.py`,
+  `runtime/compilation/{ir_preparation,compile_validation,compiler,__init__}.py`, `core/exceptions.py`
+  (`InputTypeError.resumed_run` + `located()`), `core/prompt_cache_analysis/{analyze,context,token_estimation}.py`,
+  `mcp_server/services/execution_service.py`, `ui/{server,run_node}.py`, `nodes/file/delete_file.py` (comment);
+  CLAUDE.md: `cli` (rows), `runtime/compilation` (check_supplied_inputs sentence); `.claude/agents/{pflow-codebase-searcher,
+  review-agent-ux}.md` + codex sync. Tests: new `tests/test_integration/test_declared_input_entry_points.py` (PB-1…8, 10;
+  42 incl. one `e2e` real pipe); UI run/resume preflight rows in `test_ui_interaction_server.py` (PB-9); probe row in
+  `test_probe.py` (PB-11); flipped `test_direct_execution_helpers.py` (parser → text; `TestFormatParamValue` moved here
+  from the deleted file), `test_validate_only.py` (`TestValidateOnlyChecksSuppliedValuesOnly`),
+  `test_prepare_inputs_extras.py` (`TestValidateOnlyGap` → `TestValidateOnlyCatchesRootExtras`, #297 half closed),
+  `test_run_node.py` round trip (now parser → `prepare_inputs`, + a `02134` string row), `test_workflow_resolution.py`
+  (`test_type_inference_for_parameters` → `test_parameters_reach_execution_as_the_text_typed`), docstrings in
+  `test_runner.py`, `test_meta_inputs.py`, `test_run_tailer.py`, `test_delete_file.py`, `test_prepare_inputs_coercion.py`.
+- Verified: `make check` rc 0; `make test` **11324 passed** (baseline 11340 − the deleted `test_rerun_display.py` + new
+  rows); Task-159 `verify.sh` **87/0/0**. Mutation ledger (harness: content restore, `PYTHONDONTWRITEBYTECODE=1`, pyc
+  purged before/after, counted): 23/23 killed after two additions — parser infers; probe stops inferring; real defaults
+  pre-filled; validate skips the supplied check; no supplied-path filter; stdin unlabelled; resume unlabelled; resume
+  labels overrides `recorded` (survived → added `test_an_override_is_a_command_line_argument…`); run id not threaded;
+  `located` drops it; UI resume unlabelled / no run id; MCP unlabelled; MCP analyze re-wrapped; analyze skips the check /
+  keeps raw values; synthetic store / both per-ref resolvers without declarations (two survived → added the
+  `resolve_ref_value[_in_workflow]` row); CLI analyze `PflowError` unrouted; envelope message from `str(e)`; duplicate
+  `Suggestion:` line; extras-before-per-input order. Real surface (isolated HOME `scratchpads/task-120/probes/home`,
+  `.venv/bin/pflow`): §1.1 `typed topics=tea` validate-only AND run → the §1.1 block, exit 1, no resume line; §1.3 two
+  blocks; `count=007 flag=YES` → `int:7 bool:True`; §1.2 env `port=abc` → env row, `port=9090` → 9090, `port=1` beats env;
+  default `abc` → the default sentence at `inputs.n.default` (run); `text=02134|1.10|TRUE|1e3|{"a":1,"b":[1,2]}| 42` →
+  byte-identical, piped stdin agrees; stdin `abc` → the stdin row; §1.13 any `02134`→str, `1.10`→str, `42`→int,
+  `true`→bool; §1.10 lenient-era trace (hand-edited `meta.inputs.count="abc"`) → `Override it: pflow resume <real id>
+  count=3`, and that command (with `count=4`) completes; resume `zip=0042` → `0042`; MCP `{"count": 3.0}` → "in the
+  call's parameters" + `"count": 3`; `{"topics": null}` → requires input; §1.12 `topics=tea BOGUS=1 --validate-only` →
+  both, in the checkpoint's order; §1.15 analyze-cache text + `--format=json` envelope (message + fix), required input
+  omitted → analyses; MCP analyze → `WorkflowValidationError`.  |  Assumed: the web form's spawn (`/api/run` driven via
+  the test client only — the spawn argv carries the raw token, pinned).
+- Deviations/surprises:
+  1. **Run-id threading** (PA dev 4): `resumed_run` kwarg on `compile_workflow` → `_prepare_compilation` →
+     `prepare_inputs`, and `InputTypeError.located(resumed_run=)` builds the placed copy where the boundary catches it —
+     the coercer's signature stays `(name, type, value, *, source)`. The runner derives the id from `resume_source` (run,
+     plan); `preflight(..., input_sources=, resumed_run=)`. Rejected: post-fixing a `<run-id>` placeholder in the
+     rendered suggestion (string surgery on frozen diagnostics, two catch sites). PD reuses `located()` for
+     step/child-path/template (importance 2).
+  2. **UI resume pre-flight labels its replay too** (`ui/server.py` resume arm: `input_sources` all `recorded` +
+     `resumed_run`) — the plan said "nothing" for `ui/server.py`, which is right for `/api/run` (arguments) but the
+     resume arm replays recorded values; unlabelled, an `any` recorded `"42"` would be inferred there and a lenient-era
+     error would say "from the command line". Pinned (UI test + 2 mutants).
+  3. **One stdin routing site**: `execute_json_workflow`'s second `_route_stdin_to_params` was a no-op on both callers
+     (run pre-routes; resume passes no stdin) — deleted; `_route_stdin_to_params` returns the routed name;
+     `execute_json_workflow(..., input_sources)` is the explicit channel (resume passes its `recorded` map).
+  4. **`check_supplied_inputs`** (new, `ir_preparation`): `prepare_inputs` over the supplied values with placeholders
+     for the rest — the one helper behind `validate()` and `analyze()`. It returns only problems whose path is a
+     supplied name, so a declaration problem both layers see (two `stdin: true`) is reported once (pinned). Also moved
+     the undeclared-extras check AFTER the per-input loop in `prepare_inputs` (checkpoint §1.12 order: `topics` then
+     `BOGUS`) — affects run output order too.
+  5. **`analyze()` refuses undeclared parameters** (D6) — 15 analyzer tests passed params their IR never declared
+     (`items`, `content`, `concept`, `source`): fixtures now declare them (production-shaped; a real workflow must).
+     `test_sub_workflow_projection_node_ref_does_not_resolve_from_root_parameter`'s premise (an undeclared root param
+     colliding with a node id) is now refused up front — rewritten to assert that refusal + keep its memo-sourcing
+     assertion with a declared param.
+  6. **analyze-cache JSON envelope**: the input-error path puts each diagnostic's message and first fix in
+     `error.message` / `error.suggestion`; `_emit_error` no longer echoes a duplicate `Suggestion:` line when a rendered
+     `stderr_text` is given (affects no prior caller). My first cut routed every `_try_or_emit_diagnostic` error the same
+     way and drifted Task-159 case `03/07-json-error-envelope-unknown-workflow` (suggestion added) — reverted to keep the
+     old path byte-identical; baseline back to 87/0/0. `_analyze_or_emit` extracted (ruff C901).
+  7. **Files outside PB's list, forced by the deletion/parser**: `.claude/agents/{pflow-codebase-searcher,
+     review-agent-ux}.md` (+ `make sync-claude-assets`) dropped `cli/rerun_display.py` (else `test_agent_references`
+     fails — PF still owns the searcher def's new-names edit); `test_run_node.py` round trip + `ui/run_node.py` docstring
+     (D13 — the parser change broke the pin); `test_workflow_resolution.py`'s inference test.
+  8. Analyzer limit: the workflow-scoped per-ref resolver applies the ROOT's declarations only to root parameters; a
+     child's analysis parameters are the parent's resolved values, which nothing types in analysis (PD types them at run).
+  9. For PE/PZ, observed not changed: checkpoint §1.13 `[1, 2]` on an `any` input shows `list` (not `str:'[1, 2]'`) in the
+     `anyin` probe because its code step's `data: Any` input auto-parses an `any` root (plan §8 accepted cost (b)); the
+     boundary keeps it text. `bad-default`/`container` `--validate-only` stay ✓ until PE (D11 a/b).
+- Self-checks: fully-happy + test-reflect: pending orchestrator direction.
+- Next: PD.
+
+## [2026-10-11 18:55] I2 (Opus) — PD (the sub-workflow boundary, per item, routable)
+- Did: D10 — `workflow_executor.type_child_inputs(child_ir, child_params, *, step, sub_workflow_path)`: the child input
+  boundary, called in `prep` for EVERY call (each batch item) = `prepare_inputs` with `parent` labels, the step placement
+  and settings.env; raises `WorkflowValidationError` (one Diagnostic per problem). `_validate_child_params` deleted; the
+  `exec` seeding loop over the cached compile's `resolved_defaults` + the KNOWN LIMITATION comment deleted (#188);
+  `_PREP_RECOVERABLE` += `WorkflowValidationError`; the prep marker carries `_prep_diagnostics`, `exec`'s short-circuit
+  builds a `child_failure` bundle from them; bundle key `diagnostics` (list) for input AND template failures, reader
+  also takes the legacy `template_diagnostic`; a diagnostic already placed at the parent step is not re-wrapped
+  "In step '…' sub-workflow:". `prepare_inputs(step=, sub_workflow_path=)` (private `_Caller`) places every problem
+  at `nodes[id=<step>].params.inputs.<name>` and names the child in missing/unknown-input messages. Planner: each batch
+  item typed through the same function (`_resolve_per_item_sub_workflow_inputs`), a non-batch child typed before its
+  compile, a batch child compiled on type-shaped placeholders; child compiles (runtime + planner) labelled `parent`.
+- Changed: `runtime/workflow_executor.py`, `runtime/compilation/{ir_preparation,compile_validation}.py`
+  (`_load_settings_env` → public `load_settings_env`), `core/exceptions.py` (`located(step=, sub_workflow_path=)`;
+  `parent` fix line uses `accepted_noun` per checkpoint §1.5), `execution/{executor_service,plan}.py`; CLAUDE.md:
+  `runtime` (Nested workflows), `runtime/compilation` (limitation sentence → `type_child_inputs`), `execution` (planner
+  limits); `.claude/agents/review-validation-consistency.md` (+ codex sync; named the deleted method). Tests: new
+  `tests/test_runtime/test_workflow_executor/test_child_input_boundary.py` (PD-1 seq×parallel, 1b env/settings/default
+  seq×parallel, 1c, 2, 3, 4, 5, 7); `test_plan_drift.py` +3 (PD-6 typed per item against the run's memo, bad item 0 under
+  `continue`, non-batch placed message) and the per-item test's new signature (now asserts `n` typed `7`);
+  `test_compile_once_regression.py` + `test_each_batch_item_is_typed_by_the_child_on_its_own` (the deepening — the
+  string test cannot see a leak); flipped `test_workflow_executor_comprehensive.py` (missing/extras/no-decl/None-inputs/
+  required true|false → structured diagnostics via prep or `type_child_inputs`), `test_prep_error_action.py:156,219,276,352`
+  (+ bundle paths), `test_workflow_executor.py:204`, `test_failed_node_invariant.py:1887` (writer key); docstrings in
+  `test_integration.py`, `test_workflow_name.py`.
+- Verified: `make check` rc 0; `make test` **11342 passed**; `make test-e2e` 54 passed / 2 skipped; Task-159 `verify.sh`
+  **87/0/0**. Mutation ledger (same harness): 15/15 killed after two additions — prep skips typing; input error not
+  recoverable; marker drops diagnostics; exec builds no bundle; labelled `argument`; no step placement; no per-call
+  fallbacks; placed diagnostic re-wrapped; legacy key unread; writer back to the old key; planner skips per-item typing;
+  settings not consulted per call; child message says "this workflow"; planner batch compiles with item 0 and non-batch
+  planner untyped (both survived → added the bad-item-0 and placed-message plan rows, now killed). Real surface (isolated
+  HOME): §0 `parent-batch` → items 0/2 run (`7`/`9`), item 1 one error record with the §1.5 sentence, `At:
+  nodes[id=call].params.inputs.n`, `Sub-workflow: ./child.pflow.md`, run DEGRADED exit 0; `parent` (emit `{"a":1}` → child
+  `s: string`, `n: "7"`) → `str:'{"a":1}' int:7`; a non-batch bad value → the §1.5 non-batch block, exit 1, resume hint
+  kept; `--dry-run` of the batch with a cached emitter → `show 1/3 would execute` (items 0/2 cached against the run's
+  memo) + the item-1 WARNING with the same sentence; `parent-inline` runtime → per item, routable.  |  Assumed: nothing
+  beyond the checkpoint gaps below.
+- Deviations/surprises:
+  1. **NEEDS YOUR CALL — the §1.5 clause "(here ${item} resolved to 'x')" is NOT built.** PA dev 5 / the handoff said PD's
+     call site has the template text; it does not: the engine sets `node.params` to the RESOLVED map before `prep`
+     (`engine.py::_execute_single_node`), the raw templates live only on `TemplateConfig`, which the node never sees.
+     Options: (A) the compiler stamps the authored `inputs:` on the `WorkflowExecutor` instance (beside `node_id`,
+     `compiler.py` ~5 lines + `InputTypeError(template=)` + one test) — outside PD's file list; (B) ship without the clause
+     (the sentence already shows the received value and the path names the step's `inputs:` key). Recommendation: **B**
+     (importance 2) — the clause repeats what the message and `At:` already say; A adds a node-type-specific compile stamp
+     for one sub-clause. Today's fix line: `→ Pass a whole number from the parent.`
+  2. **Batch-record rendering repeats the headline** (`[1] Step 'call' passes …` then the same sentence again above `At:`)
+     — `execution/formatters/batch_errors.py::_format_child_failure_lines` renders every child diagnostic's message
+     under the item headline (pre-existing shape: other child failures repeat it with a provenance prefix). The §1.5
+     AFTER shows it once. A 3-line fix (skip a rendered first line equal to the headline) is in a file outside PD's list
+     — not made; handed up (importance 1).
+  3. **Bundle key `diagnostics` (a list), not the plan's single `diagnostic`** — a child with two bad inputs has two
+     Diagnostics; one key would drop the second from JSON/MCP (silent-failure class). The reader still takes the legacy
+     `template_diagnostic` (pinned). Importance 2, decided here.
+  4. **`create_planner_shared` NOT changed** (plan D10: drop the `resolved_defaults` overwrite). Executed reasoning:
+     `stages/discrepancy/predict.py:479-480` compiles a COPY of walker-resolved child params and relies on that overwrite to
+     type them, so dropping it would mis-key predictions. The item-0 leak is fixed at its root instead: no planner child
+     compile coerces per-item values any more (batch → placeholders, whose `resolved_defaults` are empty; non-batch → typed
+     inputs, also empty; per-item values typed by `type_child_inputs`). Pinned by the PD-6 memo-parity row and the D12 mutant.
+  5. **A batch child compiles on type-shaped placeholders in the planner** (new `_prepare_sub_workflow(per_item=True)`;
+     `_effective_child_inputs` folded away; untyped/`any` placeholder is now the placeholder string, not `None`, which the
+     strict boundary would read as a missing required input). A bad item 0 under `continue` is a per-item WARNING, as at
+     run time (the R10 twin); an item that fails its types is still planned with its resolved values (the existing "Runtime
+     will reject this item" convention keeps the per-item output zip intact) — so the plan counts its child cost.
+  6. **Child-boundary messages name the child**: `./child.pflow.md requires input 'n': …` / `Unknown input 'x' — not
+     declared by ./child.pflow.md.` (root text unchanged: `Workflow requires input …`, `… by this workflow.`). Replaces
+     the deleted `Child workflow '…' is missing required inputs: … You provided: …` text; the suggestion lists the inputs.
+  7. **`WorkflowValidationError` in `_PREP_RECOVERABLE` also routes a saved child that fails to load**
+     (`WorkflowManager.load` raises it, `manager.py:287`) — the plan said prep raises it only from the boundary. Now
+     consistent with a file child's `MarkdownParseError`, already recoverable; comment says so. Not separately tested.
+  8. PD-2's "no resume hint for a step-1 failure": not asserted — `has_resumable_step()` is true for ANY failed step
+     (`workflow_trace.py:1557`), and the checkpoint keeps the hint for child-input failures; the no-hint half is PB's
+     pre-execution row.
+  9. Settings.env is loaded per call (`load_settings_env`, ~8 µs uncached on an empty settings file — measured).
+- Self-checks: fully-happy + test-reflect: pending orchestrator direction.
+- Next: hand back (decisions: dev 1 clause A/B; dev 2 formatter tweak).
+
+## [2026-10-11 19:40] I2 (Opus) — PB + PD self-checks (directed: fully-happy + test-reflect) and the ruled formatter fix
+- Did: PD dev 2 (authorized) — `batch_errors._format_child_failure_lines(..., headline)` drops a child diagnostic's
+  message line when it IS the item's `[idx]` headline and dedents its detail lines, so a batch record reads as §1.5
+  (`[1] <sentence>` / `item:` / `At:` / `Sub-workflow:` / `→`); PD dev 1 = B (clause not built) pinned as today's fix
+  line. Then the two self-checks below.
+- Changed: `execution/formatters/batch_errors.py`, `execution/plan.py` (per-item WARNING `source="planner"`, like its
+  sibling warnings); tests: `test_child_input_boundary.py`, `test_declared_input_entry_points.py`,
+  `test_param_coercion.py` (parent-boundary row asserts `Pass a whole number from the parent.`).
+- Verified: `make check` rc 0; `make test` **11342 passed**; `verify.sh` **87/0/0**. Mutants (same harness, counted):
+  headline repeated → 1 failed; stdin label kept when an argument wins → 1 failed; runner params not typed in place
+  (`last_execution_params` raw) → 1 failed; inputs exposed as child outputs → 1 failed. Real CLI: `parent-batch` record now
+  `[1] Step 'call' passes 'x' …` / `item: 'x'` / `At: nodes[id=call].params.inputs.n` / `Sub-workflow: ./child.pflow.md`
+  / `→ Pass a whole number from the parent.` — sentence once.  |  Assumed: nothing.
+- Deviations/surprises:
+  1. **Behaviour change found in self-check (kept, now pinned):** without declared `## Outputs`, a child's store is
+     mirrored back minus its INPUTS (`_expose_child_outputs`, `workflow_executor.py:613`). Before PD, an input resolved
+     from its default was seeded outside `child_params`, so `${call.limit}` exposed the child's default; now every
+     resolved input is in `child_params` and stays unexposed — consistent with "excluding child inputs" (runtime/CLAUDE.md)
+     and with the planner's mirror (also reads the typed complete inputs). Test
+     `test_a_childs_fallback_inputs_are_inputs_not_outputs` (presence: the child's step output IS exposed).
+  2. The once-only rule compares against the untruncated headline line; a provenance-wrapped child failure never equals
+     its headline, so every other child-failure kind renders unchanged (pinned by the presence half: an in-child shell
+     failure still prints `In step 'call' sub-workflow: Command failed with exit code 1`).
+- Self-checks: fully-happy — raised and fixed: the input-exposure change above (pinned); planner per-item warning
+  `source` aligned with its siblings; `--only` row asserted a substring (now exact); the stdin label had no row for an
+  argument beating stdin (added). Claims re-checked: PB mutant count corrected to 23/23 in its entry; nothing else I would
+  not stake. test-reflect (directed): PB — deepened `test_an_only_run_delivers_the_override_byte_identical` (exact
+  output), added `test_an_argument_beats_stdin_and_is_labelled_an_argument` (killed its mutant), kept the seven
+  `test_the_run_exits_1_with_the_typed_input_error` rows deliberately (they are the spec's breaks 1/4/5/6/7 on the real
+  CLI, plan §5's evidence for PB-2 — the grammar itself is PA's table; `ratio=abc` is the no-consumer case), kept the rest
+  (each mutation-killed in the PB ledger, absence rows paired). PD — deleted
+  `test_a_child_input_with_a_default_is_satisfied_without_required_false` (duplicated the named test's `limit` default,
+  which also lacks `required: false`) and `TestTheBundleRendersEveryShape::test_an_input_failure_is_rendered_as_placed`
+  + the `current`-key template row (hand-built bundles for what the real CLI rows and `test_failed_node_invariant` cover
+  end to end; legacy-key row kept as `TestTheLegacyBundleKey` — only a hand-written bundle has that shape); deepened
+  `test_fail_fast_stops_at_the_bad_item_with_the_same_message` (per-item marker files: item 0 ran, item 2 never did —
+  the old test could not see whether the batch stopped); added the once-only render row and the exposure row; kept the
+  rest (D-ledger 15/15).
+- Next: hand back.
+
+## [2026-10-11 19:50] task-orchestrator — PB+PD accepted; rulings logged; committed
+- Did: read I2's [17:40]/[18:55]/[19:40]; accepted PB devs 1–9, PD devs 3–9.
+- Rulings: PD dev 1 — **B** (2/5): the CP-1 §1.5 clause "(here ${item} resolved to 'x')" is NOT built (the node sees
+  resolved params in `prep`; adding it needs a compile-time stamp of the authored `inputs:` for one sub-clause). The
+  parent fix line reads `→ Pass a whole number from the parent.` **This is a deviation from user-ruled text — carried
+  to the PF screenshot checkpoint for the user to overrule (A stays a cheap follow-on).** PD dev 2 — authorized (1/5):
+  `batch_errors.py` prints the §1.5 sentence once.
+- Noted for the task-review: a child with no `## Outputs` no longer leaks its default-filled inputs back to the parent
+  (`${call.limit}` read a child default before PD; consistent now with "a child's inputs are never outputs"; dry-run
+  agrees; pinned by I2).
+- Verified: I2's `make check` rc 0, `make test` 11342 passed, `verify.sh` 87/0/0 (re-run by me at commit time below).
+- Next: commit PB+PD; fresh Opus · high I3 for PE (I2 at ~665k tokens); mid-task review #2 after PE.
