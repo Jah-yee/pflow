@@ -8,7 +8,10 @@ the loop's limit on every pause surface, and add an opt-in "Approve all remainin
 web UI so a gated loop can be finished from the browser in one click.
 
 ## Status
-not started
+done
+
+## Completed
+2026-10-11
 
 ## Priority
 
