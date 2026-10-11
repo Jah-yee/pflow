@@ -23,6 +23,7 @@ Shared parsing, diagnostics, configuration, and execution utilities.
 | Change usage aggregation or trace reports | `metrics.py`, `llm_usage.py`, `trace_tree.py`, `trace_report.py` |
 | Read persisted traces | `trace_io.py::load_trace_file` — shared JSONL reconstruction boundary |
 | Change input coercion, name rules, or redaction | `param_coercion.py`, `validation_utils.py`, `security_utils.py` |
+| Show how a caller supplies a declared input (required/optional, placeholder, default) | `types.py::input_usage` / `usage_arguments` — every describing surface reads it; `tests/test_core/test_input_usage.py` pins each surface and the run's rule |
 | Change probe result storage or UI narration | `execution_cache.py`; `tts.py::synthesize` |
 
 Cross-package paths below are relative to `src/pflow/`.

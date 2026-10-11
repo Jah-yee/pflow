@@ -44,10 +44,10 @@ class TestFormatWorkflowInterface:
         assert "Workflow: pr-analyzer" in result
         assert "Description: Analyzes GitHub pull requests" in result
         assert "\nInputs:" in result
-        assert "  - repo (required): Repository name (org/repo format)" in result
-        assert "  - pr_number (required): Pull request number" in result
-        assert "  - verbose (optional): Enable verbose output" in result
-        assert "    Default: False" in result
+        assert "  - repo (any, required): Repository name (org/repo format)" in result
+        assert "  - pr_number (any, required): Pull request number" in result
+        assert "  - verbose (any, optional): Enable verbose output" in result
+        assert "    Default: false" in result
         assert "\nOutputs:" in result
         assert "  - analysis: Detailed PR analysis" in result
         assert "  - summary: Executive summary" in result
@@ -121,8 +121,8 @@ class TestFormatInputsSection:
 
         result = _format_inputs_section(ir)
 
-        assert "required_param (required):" in result
-        assert "optional_param (optional):" in result
+        assert "required_param (any, required):" in result
+        assert "optional_param (any, optional):" in result
 
     def test_formats_inputs_with_defaults(self):
         """INPUTS: Shows default values indented."""
@@ -150,7 +150,7 @@ class TestFormatInputsSection:
 
         # Verify defaults are shown with proper indentation
         assert "    Default: 10" in result
-        assert "    Default: True" in result
+        assert "    Default: true" in result
         assert "    Default: Hello" in result
 
     def test_formats_input_defaults_with_none_value(self):
@@ -169,7 +169,7 @@ class TestFormatInputsSection:
 
         # None is treated same as missing default - not displayed
         assert "Default:" not in result
-        assert "value (optional): Optional value" in result
+        assert "value (any, optional): Optional value" in result
 
     def test_formats_input_defaults_with_zero(self):
         """INPUTS: Zero default value is shown (not hidden as falsy)."""
@@ -215,8 +215,8 @@ class TestFormatInputsSection:
         result = _format_inputs_section(ir)
 
         # Should not crash, should show empty description
-        assert "param1 (required):" in result
-        assert "param2 (optional):" in result
+        assert "param1 (any, required):" in result
+        assert "param2 (any, optional):" in result
 
     def test_formats_inputs_defaults_to_required_true(self):
         """INPUTS: Missing 'required' key defaults to True."""
@@ -228,7 +228,7 @@ class TestFormatInputsSection:
 
         result = _format_inputs_section(ir)
 
-        assert "implicit_required (required):" in result
+        assert "implicit_required (any, required):" in result
 
     def test_stdin_input_gets_marker(self):
         """INPUTS: Input with stdin: True renders the [stdin] badge.
@@ -246,7 +246,7 @@ class TestFormatInputsSection:
 
         result = _format_inputs_section(ir)
 
-        assert "  - data [stdin] (required): Piped input" in result
+        assert "  - data [stdin] (any, required): Piped input" in result
         # Unmarked inputs keep their normal rendering — no marker leak
         assert "other [stdin]" not in result
 
@@ -444,8 +444,9 @@ class TestEdgeCases:
         result = _format_inputs_section(ir)
 
         # Should show string representation of complex types
-        assert "['tag1', 'tag2']" in result
-        assert "{'key': 'value', 'count': 5}" in result
+        # As a caller types them: JSON, not Python's repr
+        assert '    Default: ["tag1", "tag2"]' in result
+        assert '    Default: {"key": "value", "count": 5}' in result
 
 
 class TestCLIParity:
@@ -493,5 +494,5 @@ class TestCLIParity:
         result = format_workflow_interface("test", metadata)
 
         # Verify exact indentation
-        assert "  - param (optional):" in result  # 2 spaces
+        assert "  - param (any, optional):" in result  # 2 spaces
         assert "    Default: value" in result  # 4 spaces

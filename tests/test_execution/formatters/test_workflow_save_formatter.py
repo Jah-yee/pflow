@@ -96,30 +96,22 @@ class TestTypePlaceholderGuards:
     """Tests that catch type hint mapping bugs."""
 
     def test_execution_hint_uses_correct_type_placeholders(self):
-        """TYPE HINTS: Ensure correct placeholders for each parameter type.
+        """Each input shows its type's placeholder — an integer input once fell through to <value>.
 
-        Real bug this catches: Boolean param shows <value> instead of
-        <true/false>, confusing users about expected input format.
+        Every type, on every surface, is pinned by tests/test_core/test_input_usage.py.
         """
         result = format_execution_hint(
             name="typed-workflow",
             workflow_ir={
                 "inputs": {
                     "flag": {"required": True, "type": "boolean"},
-                    "count": {"required": True, "type": "number"},
+                    "count": {"required": True, "type": "integer"},
                     "name": {"required": True, "type": "string"},
                 }
             },
         )
 
-        # Check each type maps correctly (focus on most important ones)
-        assert "flag=<true/false>" in result
-        assert "count=<number>" in result
-        assert "name=<value>" in result
-
-        # Ensure all params are present
-        assert "typed-workflow" in result
-        assert "flag=" in result and "count=" in result and "name=" in result
+        assert result == "pflow typed-workflow flag=<true/false> count=<integer> name=<string>"
 
     def test_execution_hint_orders_required_before_optional(self):
         """PARAMETER ORDER: Required params must come before optional.

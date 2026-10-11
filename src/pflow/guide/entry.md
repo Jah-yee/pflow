@@ -18,6 +18,7 @@ Running Workflows:
 
   pflow ./workflow.pflow.md param1=value1    Run from file
   pflow my-workflow param1=value1            Run saved workflow
+  pflow describe my-workflow                 Inputs (type, required, default) and an example command
 
 If execution succeeds, present results concisely. Do not re-run.
 
