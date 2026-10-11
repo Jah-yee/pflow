@@ -64,7 +64,7 @@ Nodes write their outputs to the shared store, making them available for templat
 
 ### Automatic JSON parsing
 
-When a node outputs a JSON string and the next node expects an object, pflow automatically parses it. This means shell commands that output JSON work directly with other nodes — no extra conversion steps needed.
+When a node outputs a JSON string and the next node expects an object, pflow automatically parses it. This means shell commands that output JSON work directly with other nodes — no extra conversion steps needed. A workflow input is the exception: it keeps the type its `## Inputs` entry declares and is never re-parsed (except an `any` input).
 
 ### Output keys
 

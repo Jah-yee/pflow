@@ -49,6 +49,7 @@ The system only converts types when something signals that conversion is needed:
 | Target node declares type | Interface says `param: dict` | Node developer |
 | Batch items declaration | `items: ${node.output}` | Workflow author |
 | Inline structured object | `{"data": "${node.stdout}"}` | Workflow author |
+| Declared workflow input type | `## Inputs` `- type: object` | Workflow author |
 
 ### 3. Guards prevent false positives
 
@@ -66,17 +67,39 @@ Parsing at the CLI output boundary (for pretty-printing) never affects data flow
 
 ## Complete Auto-Parse Inventory
 
-Every location in pflow where automatic JSON parsing or type coercion occurs:
+Every location in pflow where automatic JSON parsing or type coercion occurs. A value's type is decided once, where it
+enters, by the declared type of what receives it; nothing downstream re-infers it (ADR-0017).
 
-### Point 1: Template Traversal (GOOD)
+### Point 0: The Workflow Input Boundary (DECLARED)
 
-**Location**: `src/pflow/core/templates.py` — `_json_container()` (called by the path walk `_walk`)
+**Location**: `src/pflow/core/param_coercion.py` — `coerce_declared_input()`, called by
+`runtime/compilation/ir_preparation.py::prepare_inputs` (root workflow; `check_supplied_inputs` for `--validate-only`
+with values and cache analysis) and `runtime/workflow_executor.py::type_child_inputs` (a sub-workflow, per call and per
+batch item).
+
+**When it fires**: Once per workflow input, whatever the source — CLI argument, stdin, environment, settings.env,
+`default:`, MCP call, a parent workflow's `inputs:`, a resumed run's recorded value.
+
+**Intent signal**: The `## Inputs` `type:`. Text reads through the strict grammar `TypeSpec.parse_text`
+(`core/types.py`); a typed value must satisfy `TypeSpec.accepts`, except that a `string` takes any scalar as
+`to_string` renders it. `any`/untyped: a CLI argument is inferred losslessly (typed only when it reads back as the same
+compact JSON); every other source is kept as given. The CLI parser (`cli/param_parsing.parse_workflow_params`) infers
+nothing.
+
+**Guards**: A value that does not fit raises `InputTypeError` (a Diagnostic naming the source) — never a warning.
+
+### Point 1: Template Traversal
+
+**Location**: `src/pflow/core/templates.py` — `_json_container()` (called by the path walk `_walk` / `_step`)
 
 **When it fires**: User writes `${node.stdout.field}` — dot notation on a string value.
 
-**Intent signal**: The dot notation is an explicit declaration: "I want to access a field inside this value." If the value is a string, the system tries to parse it as JSON to enable traversal.
+**Intent signal**: The dot notation is an explicit declaration: "I want to access a field inside this value." If the
+value is a string, the system tries to parse it as JSON to enable traversal.
 
 **Guards**: Only parses to `dict`/`list`. Primitives (int, float, bool) are never parsed — preserves numeric strings.
+Never under a reference whose root is a declared non-`any` workflow input (root-wide: a JSON-text descendant of an
+`object` input stays text; `unparsed_declared_text` names it in the miss).
 
 **Example**:
 ```
@@ -85,112 +108,90 @@ Every location in pflow where automatic JSON parsing or type coercion occurs:
 # Result: 3 (parsed on demand, original string untouched)
 ```
 
-### Point 2: resolve_nested Simple Template (ACCEPTABLE)
+### Point 2: The `auto_parse` Leaf
 
-**Location**: `src/pflow/core/templates.py` — the `auto_parse` leaf rule in `_resolve_string()` (`resolve_nested` = `resolve(..., auto_parse=True)`)
+**Location**: `src/pflow/core/templates.py` — `_resolve_simple()` under `resolve(..., auto_parse=True)`; the caller
+decides `auto_parse` per consumer in `src/pflow/runtime/engine/template_resolution.py::resolve_templates` and
+`runtime/engine/batch_executor.py::resolve_batch_items`.
 
-**When it fires**: A simple template (`${var}` as the entire value) inside an inline structured object resolves to a JSON string.
+**When it fires**: A simple template (`${var}` as the entire value) resolves to JSON object/array text, and the consumer
+wants structure: a value in a step's `inputs:` map, a string leaf of a dict/list param, a param whose interface type is
+`dict`/`list`, or `batch.items`.
 
-**Intent signal**: Partial — the user constructed a structured object (`{"data": "${shell.stdout}"}`) implying they want structured data. But they didn't explicitly say "parse this."
+**Intent signal**: The consumer. `parses_leaves` says no for the text consumers in `_CONSUMER_TYPES_LEAVES` (`shell.env`,
+`http.headers`, a workflow step's `inputs:` — the child's own boundary, Point 0, types those) and for a code `inputs:`
+key whose annotation is `str` (`TemplateConfig.text_input_keys`, read at compile time).
 
-**Guards**: Only fires for simple templates (full `${var}` replacement). Only parses to containers. Complex templates like `"prefix ${var}"` always stay as strings. A shell step's `env:` values are the first leaves it does not apply to: they bind as text (`template_surfaces.binds_as_text`, consulted by the resolver's `parses_leaves`).
+**Guards**: Simple templates only (`"prefix ${var}"` stays a string). Only parses to containers. Never parses a value
+whose supplying operand is rooted in a declared non-`any` input (the source-side rule, read from the store key
+`DECLARED_INPUT_TYPES_KEY`). A well-formed container of the wrong shape for its param is an error, not a pass-through.
 
-**Why it exists**: Without this, `{"body": "${shell.stdout}"}` where stdout is `'{"key":"value"}'` would produce `{"body": '{"key":"value"}'}` — double-encoded. This prevents that.
+**Why it exists**: Without this, `{"body": "${shell.stdout}"}` where stdout is `'{"key":"value"}'` would produce
+`{"body": '{"key":"value"}'}` — double-encoded.
 
-**Tech debt note**: This is the weakest link in the design — it has no schema signal from the consumer. Revisit when Task 66 (structured output) lands.
+### Point 3: Serialize for a `str` Param
 
-### Point 3: Node Wrapper Target-Side Coercion (GOOD)
+**Location**: `src/pflow/core/param_coercion.py::coerce_param_for_node` (called by `resolve_templates` and
+`split_params`)
 
-**Location**: `src/pflow/runtime/wrappers/template_wrapper.py:827-842`
+**When it fires**: A resolved `dict`/`list` reaches a param whose node interface declares `str`.
 
-**When it fires**: After template resolution, if the resolved value is a string and the target node's interface declares the parameter as `dict`, `list`, `object`, or `array`.
+**Guards**: Only that direction; every other value passes through.
 
-**Intent signal**: The receiving node's interface declaration. This is schema-driven — the node developer explicitly declared "I expect a dict here."
+### Point 4: Display Layer
 
-**Guards**: Type-safe — only parses when the parsed type matches the declared type. `dict` expects `dict`, `list` expects `list`.
+**Location**: `src/pflow/execution/formatters/success_formatter.py` (`parse_json_or_original`)
 
-**Also handles the reverse**: If a resolved value is a `dict`/`list` but the target expects `str`, it serializes to JSON string (lines 844-849).
+**When it fires**: At the output boundary, when displaying workflow results. An explicit `-o <path>` into a declared
+input is not re-parsed (`TemplateResolver.reads_declared_input`).
 
-### Point 4: Batch Node Items Parse (GOOD)
+**Impact**: Read-only. Never affects the shared store or downstream nodes.
 
-**Location**: `src/pflow/runtime/wrappers/batch_node.py:262-271`
-
-**When it fires**: Batch items template resolves to a string (typically from shell stdout).
-
-**Intent signal**: The workflow author declared this as batch items, which semantically means "iterate over this." A string can't be iterated as items — parsing to list is the only useful interpretation.
-
-**Guards**: Only parses to `list`. If the string isn't a JSON array, it stays as-is and the batch node raises a clear error.
-
-### Point 5: Display Layer (FINE)
-
-**Location**: `src/pflow/cli/main.py:973-997`, `src/pflow/execution/formatters/success_formatter.py:120-141`
-
-**When it fires**: At the CLI output boundary, when displaying workflow results.
-
-**Intent signal**: N/A — this is presentation, not data flow.
-
-**Impact**: Read-only. Parses JSON strings for pretty-printing. Never affects the shared store or downstream nodes. Every CLI tool does this.
-
-### Point 6: LLM Node JSON Auto-Parsing (REMOVED)
+### Point 5: LLM Node JSON Auto-Parsing (REMOVED)
 
 **Location**: `src/pflow/nodes/llm/llm.py` — `_strip_code_block()` (replaces removed `parse_json_response`)
 
-**What was removed**: The `parse_json_response` method that speculatively extracted content from markdown code blocks and attempted `json.loads()` on every LLM response. No consumer type declaration, no user intent signal.
+**What was removed**: The `parse_json_response` method that speculatively attempted `json.loads()` on every LLM
+response. It caused a data-loss bug where prose responses containing JSON code blocks had the prose discarded.
 
-**Why it was removed**: Violated principle #1 (producer should store raw value) and #2 (no intent signal). Caused a data-loss bug where prose responses containing JSON code blocks had the prose silently discarded. See `scratchpads/json-parse-bug/bug-report.md`.
-
-**What remains**: `_strip_code_block()` strips markdown code block fences when the entire response is a single code block (a common LLM transport artifact). This is producer-side cleanup — it removes wrapping syntax, not parse content. Prose with embedded code blocks passes through untouched. The return value is always a string.
-
-**What replaces JSON parsing**: The template system (Points 1-4) already handles all legitimate use cases. Task 66 (planned) will add explicit structured output for workflows that need guaranteed JSON.
+**What remains**: `_strip_code_block()` strips markdown code block fences when the entire response is a single code
+block. The return value is always a string.
 
 ---
 
 ## How They Interact
 
-Data flows through these coercion points in order:
-
 ```
-Node Output (raw value)
+Workflow input (any source)
+    │
+    └── Point 0: typed once by its declared type — or InputTypeError
     │
     ▼
-Template Resolution (resolve_nested)
-    │
-    ├── Simple template ${var} inside inline object?
-    │   └── Point 2: Auto-parse to container if JSON string
-    │
-    ├── Dot notation ${node.stdout.field}?
-    │   └── Point 1: Parse on demand for traversal
-    │
-    └── Other templates: preserve as-is
+Shared store ──── step outputs stored raw
     │
     ▼
-Node Wrapper Type Coercion
+Template resolution (resolve_templates / resolve_batch_items)
     │
-    ├── Resolved string, target expects dict/list?
-    │   └── Point 3: Schema-driven parse
-    │
-    ├── Resolved dict/list, target expects string?
-    │   └── Point 3 (reverse): Serialize to JSON
-    │
-    └── Types match: pass through
+    ├── Root is a declared non-`any` input?  → value as typed; never parsed (Points 1 and 2 skip it)
+    ├── Dot notation ${node.stdout.field}?    → Point 1: parse on demand for traversal
+    ├── Simple ${var} into a structured consumer that parses? → Point 2
+    └── Otherwise: value as-is
     │
     ▼
-Node Input (coerced value)
-    │
-    ... (node executes) ...
+Point 3: dict/list into a `str` param → JSON text
     │
     ▼
-CLI Output Display
-    └── Point 5: Parse for pretty-printing (read-only)
+Node input ... (node executes) ...
+    │
+    ▼
+Point 4: output display (read-only)
 ```
-
-Points 1, 2, and 3 may fire on the same data in a single resolution pass. They are ordered by specificity: traversal is most targeted, resolve_nested is intermediate, node wrapper is the final safety net.
 
 ---
 
 ## Shared Infrastructure: json_utils.py
 
-All auto-parse points (except the removed LLM node) use the shared utility at `src/pflow/core/json_utils.py`:
+The parse points use the shared utility at `src/pflow/core/json_utils.py`:
 
 ### `try_parse_json(value) -> tuple[bool, Any]`
 
@@ -213,7 +214,7 @@ Convenience wrapper for when you don't need to distinguish success from failure.
 
 ## Known Limitations & Tech Debt
 
-1. **resolve_nested auto-parse (Point 2)** has no schema signal from the consumer. It's the weakest design point. Could surprise users if `${shell.stdout}` happens to be valid JSON but they wanted the raw string in an inline object. Mitigated by the container-only guard.
+1. **The `auto_parse` leaf (Point 2)** has no schema signal from most consumers. Could surprise users if `${shell.stdout}` happens to be valid JSON but they wanted the raw string in an inline object. Mitigated by the container-only guard, the text consumers in `_CONSUMER_TYPES_LEAVES`, and a code input annotated `str`.
 
 2. **No caching of parsed JSON**. The same string may be parsed multiple times if referenced in multiple templates. Acceptable for MVP (parsing is <1ms vs node execution 100-1000ms). Consider caching if profiling shows this as a bottleneck.
 

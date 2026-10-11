@@ -22,7 +22,7 @@ import { ioCardIcon } from "../utils/icons";
 import type { ApiErrorEntry, RFGraph, RunInfo } from "../types";
 
 // The token string a field PREFILLS with: its declared default, encoded the way the
-// CLI's infer_type reads it back (channel A). A sensitive-named field stays blank —
+// CLI reads it back by the input's declared type (channel A). A sensitive-named field stays blank —
 // the form never holds a secret; the spawned run re-resolves it from settings/env.
 function defaultToken(field: InputField): string {
   if (field.sensitive || field.defaultValue == null) return "";
@@ -59,7 +59,7 @@ export function RunPanel({
   // non-blank). An untouched field is omitted so the spawned run resolves it via the CLI's normal
   // precedence (CLI arg → env → settings → default), faithful to a hand-typed `pflow run` that just
   // doesn't pass the arg. (Forcing every shown default as an explicit arg would override an env/settings
-  // value a no-arg run uses, and re-infer string defaults like `001`/`false` — Codex F2.)
+  // value a no-arg run uses, and re-type an `any` input's string default like `false` — Codex F2.)
   const [dirty, setDirty] = useState<Set<string>>(() => new Set());
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<ApiErrorEntry[]>([]);

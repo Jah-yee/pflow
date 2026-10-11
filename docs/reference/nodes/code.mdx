@@ -101,14 +101,17 @@ Workflow `## Inputs` / `## Outputs` use canonical names. Code blocks use Python 
 
 ## Inputs are native objects
 
-Upstream JSON is auto-parsed before your code runs. If the source node produced a JSON string, declare `dict` or `list`, not `str` — you get real Python objects, not strings.
+Upstream JSON object and array text is parsed before your code runs. If the source node produced a JSON string, declare `dict` or `list` to get real Python objects — or `str` to get the text exactly as produced.
 
 | Upstream output | Declare as | You get |
 |-----------------|------------|---------|
 | JSON string `'{"a": 1}'` | `dict` | `{"a": 1}` |
 | JSON array `'[1, 2, 3]'` | `list` | `[1, 2, 3]` |
+| JSON string `'{"a": 1}'` | `str` | `'{"a": 1}'`, unchanged |
 | Plain text | `str` | The text string |
 | Number | `int` or `float` | The number |
+
+A workflow input declared with a type other than `any` is never parsed: it arrives as its declared type. Binding a `- type: string` input to a `dict` or `list` annotation is a validation error — declare the input `object` or `array` instead.
 
 ## Examples
 

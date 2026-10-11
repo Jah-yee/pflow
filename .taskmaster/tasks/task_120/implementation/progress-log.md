@@ -775,3 +775,128 @@ resume path for any successor.
   remain (simplicity lens). PF adds `core/workflow/declared_inputs.py` to the searcher def.
 - Next: commit; fresh Opus · medium I4 for PF (docs/guide/instruction files/web comments + run-form screenshots) →
   embedded USER checkpoint (screenshots + before/after) before PZ.
+
+## [2026-10-11 14:18] I4 (Opus) — PF (guide, docs, instruction files, web comments, CLAUDE.mds, web run-form real surface) + CP evidence
+- Did: rewrote every stale surface against the code (not the plan): the auto-parse section and type table (decision (b)
+  grammar per type, `any` lossless, the source-naming `Invalid input value` sentence, "omitted `type` = `any`", "default
+  must fit") in `guide/core.md` AND both MCP instruction copies (by hand, same three edits + the code-node rule + the
+  batch `items` row); `guide/nodes/{code,shell}.md`, `guide/features/{batch,sub-workflows}.md`; four docs pages;
+  `architecture/core-concepts/data-type-coercion.md` inventory rewritten to the built points (0 boundary, 1 traversal,
+  2 `auto_parse` leaf + consumer table, 3 serialize-for-`str`, 4 display, 5 removed LLM parse; the deleted
+  `runtime/wrappers/*` citations gone); `architecture/reference/template-variables.md`, `core/templates.py:43-46`,
+  `core/CLAUDE.md` (the `TypeSpec.accepts`-in-use claims → `coerce_declared_input`); web comments; searcher def; then
+  drove the web run form (below) and wrote `scratchpads/task-120/pf/evidence.md`.
+- Changed: `src/pflow/guide/{core.md,nodes/code.md,nodes/shell.md,features/batch.md,features/sub-workflows.md}`,
+  `src/pflow/mcp_server/resources/instructions/{mcp-agent,mcp-sandbox-agent}-instructions.md`,
+  `docs/reference/cli/index.mdx`, `docs/reference/nodes/{code,index}.mdx`, `docs/how-it-works/template-variables.mdx`,
+  `architecture/core-concepts/data-type-coercion.md`, `architecture/reference/template-variables.md`,
+  `src/pflow/core/{CLAUDE.md,templates.py}` (comment), `src/pflow/core/workflow/CLAUDE.md` (a blank line PC left inside
+  the Task table split it in two — removed), `src/pflow/runtime/compilation/compile_validation.py` (`_prepare_compilation`
+  docstring said a 2-tuple, returns 4; plan §6 item), `web/src/{components/RunForm.tsx,components/RunPanel.tsx,
+  utils/controlForType.ts,api/client.ts}` (comments only), `.claude/agents/pflow-codebase-searcher.md` (+ `.codex` sync).
+- Verified: every guide/doc sentence checked against code or executed — `coerce_declared_input` table run in-process
+  (`007`→7 integer, `3.0`/`true` rejected for MCP integer, `1e3` number→1000.0, `any` `007`/`null` stay text,
+  `[1,2]`→list, ` 7\n` stdin→7, string keeps spaces); a real parse probe (`pf/wf/parse-probe.pflow.md`): upstream
+  `'42\n'` into an `inputs:` map stays `str:'42'` (the old guide rows `'42\n'`→42 / `'true'`→true were false — replaced
+  by one correct row), JSON object text → dict, a `str`-annotated key → str, a declared `string` → str, an `any` → dict;
+  `extract_code_annotation_type`: `str`, `str | None`, `Optional[str]` → text, `str | dict`/`Any` → not. `uv run pflow
+  guide` renders; `tests/test_docs` + `tests/test_mcp_server` 157 passed; web `vitest run` 918 passed; `make check` rc 0
+  (MDX fence check passed); `make test` **11437 passed** (= baseline; no test changed).
+  **Web real surface** (one `pflow ui` from this worktree, port 8791, PID 71527 (uv wrapper 71523), isolated HOME
+  `pf/home`, bundle rebuilt with `make ui-build`), workflow `scratchpads/task-120/pf/typed-form.pflow.md`
+  (`count` integer required · `flag` boolean default false · `topics` array required), driven by
+  `pf/drive-run-form.pflow.md` (reuses the skill's `shared/open-and-settle`, real HOME for the chrome-devtools MCP):
+  `count=3.0` → no launch, panel shows `Input 'count' is declared `- type: integer` but received '3.0' from the command
+  line.` + `Pass a whole number (e.g. 3): count=3` (= the server's `errors[0]` message + suggestion) — shot 01;
+  `count=3.0 topics=tea` → two error blocks, each with its fix — shot 04; `count=3 flag=true topics=["a"]` → launched,
+  overlay pinned to run `d71409bf…` "Run success", trace `meta.inputs` `{"count": 3, "flag": true, "topics": ["a"]}`,
+  step output `count=int:3 flag=bool:True topics=list:['a']` — shot 02; re-open → "load inputs from" that run →
+  fields `3` / `true` / `["a"]` (`/api/run-inputs` returned the same tokens) — shot 03; presence pair: the Defaults
+  state of the same form reads `""` / `false` / `""` — shot 00. Shots in `scratchpads/task-120/pf/shots/`
+  (`00-run-form-defaults-before-load.png`, `01-count-3.0-typed-input-error.png`, `02-count-3-run-launched.png`,
+  `03-rerun-prefill-from-run-d71409bf.png`, `04-two-typed-input-errors.png`). Server killed by PID; port 8791 free;
+  both PIDs gone. | Assumed: nothing in the docs beyond what the probes show; MCP `workflow_validate` "takes no
+  parameters" taken from the spec + PB (not re-driven).
+- Deviations/surprises:
+  1. **NEEDS A CALL (src fix outside PF) — the ruled `settings` source text is unreachable.** `pflow run`
+     (`cli/commands/run.py:1373`), `pflow ui` (`ui.py:446`) and the MCP server (`mcp.py:732`) run
+     `llm_config.inject_settings_env_vars()` at startup, copying settings.env into `os.environ`;
+     `ir_preparation._fallback_value` reads `os.environ` first, so a settings value is labelled `env` ("from the
+     environment variable port", fix "export port=3 …") — executed in evidence a3. Pre-existing twin, not widened: on main
+     too, a settings-sourced input never reached `settings_names` → `__env_param_names__` (`runner.py:849`, the trace's
+     always-redact set) under `pflow run`. Fix sketch (importance 2, ~5 lines + one test): `_fallback_value` treats a name
+     in `llm_config._settings_injected_env_vars` (expose a public accessor) as `settings`. Not made — outside PF's files.
+  2. The plan's "fix the searcher row that points code-annotation extraction at `data_flow.py`/`type_validation.py`":
+     no such row exists in `.claude/agents/pflow-codebase-searcher.md` (grepped `.claude/agents`, the CLAUDE.mds) — nothing
+     to fix; the new row names `nodes/python/python_code.py::extract_code_annotation_type` instead.
+  3. Beyond the plan's list, same stale class: `web/src/api/client.ts:128` (`infer_type` comment), the MCP copies' batch
+     `items` row, and a `guide/features/sub-workflows.md` bullet (the child types each value per call/item; an `any` child
+     input receives the parent's value as passed — a behaviour change worth stating; verified in `coerce_declared_input`'s
+     `any` branch: only `argument` infers). `guide/nodes/code.md` gained one sentence (a declared `string` into a
+     `dict`/`list` annotation is the same type-mismatch error). Not touched: `releases/*-context.md` (history),
+     ADR-0017's `infer_type` BEFORE sentence (ADR — main orchestrator's), `python_code.py:198-199` (#735's).
+  4. **UX observations from the screenshots, for the user checkpoint (not fixed; text is CP-1's domain):** (a) a web-form
+     error says "from the command line" and the fix is CLI syntax (`count=3`) — the form spawns the CLI, so source =
+     `argument` is technically right but reads oddly in a form; (b) the message's backticks (`` `- type: integer` ``)
+     render literally in the panel (pre-existing for all diagnostics); (c) headless Chrome shows a number input's
+     `3.0` as `3,0` (locale) — the value sent is `3.0`; screenshot artefact. The panel needed `scrollIntoView` for the
+     error to be visible (it sits below the fold of the panel) — layout pre-existing, no change made.
+  5. No `web/` behaviour change was needed: `RunForm` already renders every `errors[]` entry's `message` + each
+     `suggestions[]` line (D13 bullet satisfied as-is), so no vitest added.
+  6. Evidence observations (in `evidence.md`, not changed): the batch header is the formatter's `Batch 'call' errors:`
+     (ruled `… completed with 1 failed item (continue):`); validator rows render `At: node 'x', nodes[id=x]…`; §1.7's
+     array/object hints read `${items[0]}` / `${cfg.<field>}` (ruled `${items[0].name}` / `${cfg.name}`); §1.12 lists
+     available inputs sorted; MCP `workflow_execute` surfaces the rendered text in its pre-existing `RuntimeError` wrap,
+     not the §1.4 JSON entry; a stray `WARNING: Template validation found 1 errors` log line still precedes Pass 6/9
+     errors.
+- Self-checks: fully-happy — one-home rule: the new `coerce_declared_input` pointer sits in `core/templates.py` (code
+  site) and `core/CLAUDE.md` (rule owner) as a pointer, not a restated invariant; the guide's grammar table is the one
+  user-facing home and both MCP copies mirror it verbatim (diffed equal before editing; same script applied to all
+  three). test-reflect: not needed — docs/comments phase, no test added.
+- Tooling postmortem (screenshot skill): worked well — `shared/open-and-settle` reused as a sub-workflow by absolute
+  path; `-p` stdout = just the result. Friction: (S) no workflow fills or submits a form (`click` is one synthetic click,
+  no typing) — wrote `scratchpads/task-120/pf/drive-run-form.pflow.md` (native value setters + `input`/`change`
+  events, optional run-picker load, submit, reads errors/fields); candidate for the skill (M if generalised to any
+  panel form). (S) `fullPage` screenshots do not reach content inside a scrolled panel — the run-form error was clipped
+  until the driver `scrollIntoView`'d it; a `scroll_to` selector on `screenshot`/`click` would close it. (S) headless
+  Chrome's locale renders number inputs with a decimal comma (`3,0`) — set `--lang=en-US` in the registration or note
+  it. (known) out paths must live under `/tmp`, then copied.
+- Next: hand back — decision 1 (settings label fix), the UX items in 4, and the CONTEXT.md noun; then the user
+  checkpoint (screenshots + `scratchpads/task-120/pf/evidence.md`), then PZ.
+
+## [2026-10-11 14:24] I4 (Opus) — authorized fix: the `settings` source label (PF dev 1)
+- Did: `ir_preparation._fallback_value` labels an environment value `settings` when startup copied it out of settings.env
+  — signal: the injector's own record (`llm_config._settings_injected_env_vars`, exposed as `is_settings_injected`),
+  preferred over the `os.environ[name] == settings_env[name]` equality the orchestrator sketched (the injector never
+  overwrites an exported name and records exactly what it set, so the record is unambiguous where equality is not).
+  The `settings_names` → `__env_param_names__` set is left as before for such values (explicit guard + comment).
+- Changed: `src/pflow/core/llm_config.py` (`is_settings_injected`), `src/pflow/runtime/compilation/ir_preparation.py`;
+  test `tests/test_integration/test_declared_input_entry_points.py::TestASettingsValueIsLabelledSettings` (2 rows, real
+  `python -m pflow.cli` subprocesses, function-scoped HOME, `PYTEST_CURRENT_TEST` stripped so injection runs).
+- Verified: new test red before the fix (said "from the environment variable port"), green after; mutant "label
+  `settings` whenever the name is in settings.env" killed by the presence row (exported `port=xyz` + setting `abc` →
+  "received 'xyz' from the environment variable port", no "settings.env"). Real CLI under the isolated HOME: evidence a3
+  re-run and `scratchpads/task-120/pf/evidence.md` updated (settings sentence + `pflow settings set-env port 3, or pass
+  port=3`; presence block). `make check` rc 0; `make test` **11439 passed** (11437 + 2).
+- Deviations/surprises: (1) **correction to my PF entry, dev 1:** the injection sites are `pflow run`
+  (`run.py:1373`), `pflow resume` (`resume.py:328`) and the MCP server (`mcp_server/main.py:42`); `ui.py:446` (TTS) and
+  `mcp.py:732` (`mcp find`) are unrelated commands — the web form is covered because it spawns `pflow run`.
+  (2) **Follow-up (not changed, as ruled):** a settings value copied into the environment still stays out of
+  `__env_param_names__`, the trace's always-redact set (`runner.py:849`) — pre-existing on main.
+- Self-checks: fully-happy — clean. test-reflect: not separately directed; both rows mutation-relevant (red pre-fix;
+  presence row kills the equality mutant).
+- Next: hand back.
+
+## [2026-10-11 22:40] task-orchestrator — PF accepted; settings label fix accepted; committed
+- Did: read I4's [14:18]/[14:24]; viewed shots 01 and 03 myself (error text + prefill match the server's `errors[0]` and
+  the trace). Accepted devs 2–6; the settings-label fix (authorized 2/5) uses the injector's record — better than my
+  equality sketch.
+- Tooling postmortem dispositions (screenshot skill): (1) no form fill/submit workflow → **issue** (proposed to the main
+  orchestrator in my handback; I4's `scratchpads/task-120/pf/drive-run-form.pflow.md` is the seed); (2) `fullPage`
+  misses content inside a scrolled panel (`scroll_to` selector) → **same issue**; (3) headless Chrome decimal-comma
+  locale on number inputs → **note in that issue**, not fixed here; (4) `/tmp` out paths → **drop** (known, documented).
+- Follow-ups for the task-review (pre-existing, not widened): settings values copied into `os.environ` stay out of the
+  trace's always-redact set (`runner.py:849`); web-form errors say "from the command line" with CLI-syntax fixes (the
+  form spawns the CLI) — carried to the user checkpoint.
+- Next: commit; draft the user checkpoint page from I4's shots + `evidence.md`; hand back (embedded USER checkpoint)
+  BEFORE the completion gate.

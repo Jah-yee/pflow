@@ -623,11 +623,14 @@ TYPE_COMPATIBILITY_MATRIX = {
 ```
 
 This is **template-flow** compatibility (a value flowing through `${…}` may be auto-parsed or
-stringified), not a literal-value check: `is_type_compatible("int", "str")` is `True`. Literal or
-coerced values are checked against a declared type with `TypeSpec.accepts` (`src/pflow/core/types.py`).
+stringified), not a literal-value check: `is_type_compatible("int", "str")` is `True`. A workflow
+input's value is checked against its declared type by `core/param_coercion.coerce_declared_input`
+(`TypeSpec.parse_text` for text, `TypeSpec.accepts` for typed values — `src/pflow/core/types.py`).
 
 **Interpretation**:
-- `str` can be used where `str`, `dict`, `list`, or `any` is expected (because of JSON auto-parsing)
+- `str` can be used where `str`, `dict`, `list`, or `any` is expected (because of JSON auto-parsing) —
+  except a declared `string` workflow input, which is never parsed: the validator rejects it by the
+  reference's root, not through this matrix
 - `int` can be used where `int`, `float`, `number`, or `str` is expected
 - `dict` and `list` can be used where `str` is expected (auto-serializes to JSON)
 

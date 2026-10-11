@@ -109,8 +109,9 @@ so a grammar change edits it in the same step.
   cannot see that consumption — over text that may hold `$${`, use `parse()`.
 - **Type rules.** `is_type_compatible` is template-flow compatibility (a value may be
   auto-parsed or stringified on its way through `${…}`), not a literal-value check:
-  literal and coerced values use `types.TypeSpec.accepts`. `to_string` is complex
-  interpolation's stringification; `prompt_cache.deterministic_serialize` differs on
+  a workflow input's value is typed by `param_coercion.coerce_declared_input` (see
+  **Types, coercion, and security boundaries**). `to_string` is complex interpolation's
+  stringification; `prompt_cache.deterministic_serialize` differs on
   purpose (canonical bytes for cache keys).
 - **A declared input is never re-parsed** (ADR-0017): when the context carries
   `DECLARED_INPUT_TYPES_KEY`, a reference whose root is a declared non-`any` input

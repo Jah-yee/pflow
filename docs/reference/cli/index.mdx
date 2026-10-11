@@ -149,13 +149,9 @@ Pass parameters to workflows using `key=value` syntax:
 pflow my-workflow input=data.txt count=10 enabled=true
 ```
 
-**Type inference:**
-- `true` / `false` → boolean
-- `10` → integer
-- `3.14` → float
-- `'["a","b"]'` → JSON array
-- `'{"key":"val"}'` → JSON object
-- Everything else → string
+**Types come from the workflow's `## Inputs`:** each `name=value` is read by its input's declared type, so `zip=02134` on a `string` input stays `02134`, and `count=3.0` on an `integer` input fails with `Invalid input value` before any step runs. An input declared `any` (or with no `type`) is typed only when the text reads back unchanged: `true` → boolean, `10` → integer, `'["a","b"]'` → array, `'{"key":"val"}'` → object; `02134`, `1.10` and everything else stay strings.
+
+`--validate-only` with values checks them the same way (the CLI only — MCP `workflow_validate` takes no parameters).
 
 ## Stdin input
 

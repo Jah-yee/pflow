@@ -122,6 +122,8 @@ Even though `fetch.stdout` is a string containing JSON, the nested access `${fet
   This means shell commands that output JSON work directly with template variables — no manual `json.loads()` needed.
 </Tip>
 
+A reference rooted in a workflow input declared with a type other than `any` is never re-parsed. `${config.field}` reads a `- type: object` input directly, but JSON text held in a `- type: string` input stays text — `${text.field}` on it is a validation error (declare the input `object` instead).
+
 ## Workflow inputs
 
 Template variables also reference workflow inputs declared in the workflow definition:
@@ -159,6 +161,8 @@ When running this workflow, inputs are provided via CLI arguments:
 ```bash
 pflow my-workflow api_key="sk-..." endpoint="https://api.example.com"
 ```
+
+Each value is read by its input's declared type — see [Parameter syntax](/reference/cli/index#parameter-syntax).
 
 ### Stdin input
 

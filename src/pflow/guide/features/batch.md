@@ -34,7 +34,7 @@ Current item: `${item}` (or custom `as`). Index: `${__index__}` (0-based). Resul
 **Options**:
 | Field | Default | Notes |
 |-------|---------|-------|
-| `items` | required | Template reference OR inline array (must resolve to JSON array, not newline-separated string) |
+| `items` | required | A declared `array` input, an upstream list or JSON-array text, OR an inline array (not a newline-separated string; a `- type: string` input is a validation error) |
 | `as` | `"item"` | Custom name: `"file"` → `${file}` |
 | `parallel` | `false` | Concurrent execution |
 | `max_concurrent` | `10` | 1-100; use 30-50 for LLM APIs (rate limits) |

@@ -125,7 +125,7 @@ export async function fetchRuns(workflow?: string): Promise<RunInfo[]> {
 
 /** Spawn a detached `pflow run` for `workflow` with `inputs` (Task 175). `inputs`
  *  values are TOKEN STRINGS — they become the CLI's `name=value` argv verbatim
- *  (channel A: the spawned run's infer_type + declared-type coercion re-type them).
+ *  (channel A: the spawned run types each by its input's declared type).
  *  Resolves with the spawned run's `run_id` (Task 175 — the server mints it so the
  *  caller can PIN the overlay to the exact run, not follow-newest); throws ApiError on
  *  a 400 (malformed body OR a pre-flight failure carrying actionable diagnostics in

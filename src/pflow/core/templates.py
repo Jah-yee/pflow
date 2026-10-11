@@ -43,7 +43,7 @@ TRUSTED_TRAVERSABLE_TYPES = frozenset({"dict", "object", "any"})  # ...without a
 # Template-flow type compatibility: may a value of the declared SOURCE type flow
 # through a template into a param of the TARGET type? It encodes auto-parse
 # (str → dict) and stringification (int → str), so it is NOT a value-vs-declared-type
-# check — a literal or coerced value is checked with `TypeSpec.accepts` (`core/types.py`).
+# check — a workflow input's value is typed by `param_coercion.coerce_declared_input`.
 # source_type -> list of compatible target types
 #
 # BIDIRECTIONAL JSON compatibility for dict/list ↔ str:

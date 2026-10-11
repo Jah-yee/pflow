@@ -13,6 +13,7 @@ from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.exceptions import CompilationError, InputTypeError
+from pflow.core.llm_config import is_settings_injected
 from pflow.core.param_coercion import InputSource, coerce_declared_input
 from pflow.core.validation_utils import (
     VALIDATION_PLACEHOLDER,
@@ -76,7 +77,8 @@ def _fallback_value(
     ``(None, None)`` when none has one (a ``default: null`` is no value).
     """
     if input_name in os.environ:
-        return os.environ[input_name], "env"
+        # CLI/MCP startup copies settings.env into the environment, never over an exported name.
+        return os.environ[input_name], "settings" if is_settings_injected(input_name) else "env"
     if input_name in settings_env:
         return settings_env[input_name], "settings"
     if input_spec.get("default") is not None:
@@ -288,7 +290,9 @@ def prepare_inputs(
             continue
         if input_name not in provided_params or value is not supplied:
             updates[input_name] = value
-        if source == "settings":
+        # A settings value copied into the environment stays out of this set, as before (follow-up: the trace's
+        # always-redact set misses it — Task 120 progress log).
+        if source == "settings" and not is_settings_injected(input_name):
             settings_names.add(input_name)
 
     # Reject undeclared extras (GH #288, symmetric with the sub-workflow check in

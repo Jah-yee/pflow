@@ -130,9 +130,12 @@ def _prepare_compilation(
     printed directly to stderr is removed — warnings route through the Runner.
 
     Returns:
-        (mutated initial_params, validation_warnings)
+        (mutated initial_params, validation_warnings, resolved_defaults, resolved_env_param_names).
         Warnings are currently always [] — template warnings come from
         WorkflowValidator, not the compiler.
+
+    Raises:
+        WorkflowValidationError: one Diagnostic per input problem (``prepare_inputs``).
     """
     # Structure validation — compiler prerequisite (prevents KeyError on ir_dict["nodes"])
     try:

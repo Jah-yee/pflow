@@ -12,7 +12,6 @@
 | Add a template-bearing IR location (every template check sees it) | `template_surfaces.py::iter_template_surfaces` |
 | Make a param a plain-code body (never a Template) | `template_surfaces.py::_BODIES` (definitions: `param_mode`); the body rule is `data_flow.py` "Code bodies" |
 | Make an MCP tool param embedded code (only `${x|json}` is pflow's) | `template_surfaces.py::EMBEDDED_CODE` (definitions: `param_mode`); bare names in it are `data_flow.py::embedded_references` |
-
 | Shared loop/gate validation rules | `loop_validation.py::check_loop_polarity`, `gate_validation.py::check_approval_allowed` (also used by the compiler) |
 | Resolve child workflows and external files | `sub_workflow_resolver.py`, `dependency_discovery.py` |
 | Change static graph construction or rendering | `graph/CLAUDE.md`; compatibility entry point in `mermaid/CLAUDE.md` |

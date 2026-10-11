@@ -814,7 +814,7 @@ metadata:
 ⚠️ **Code node rules:**
 - The `python code` block is plain Python — pflow never fills in `${…}` there. Values arrive only through `- inputs:`, each key bound as a Python variable. A `${…}` in a string that names a pflow value this step could read (`"${name}".upper()`) fails validation; `f"${total}"` is a dollar sign followed by Python's own interpolation
 - All inputs and `result` MUST have type annotations: `data: list`, `result: dict = ...`
-- Upstream JSON is auto-parsed before your code runs — if source is JSON, declare `dict`/`list` not `str`
+- Upstream JSON object/array text is parsed before your code runs — declare `dict`/`list` to get the structure; a `str` annotation (or `str | None`) receives the text as is. A workflow input declared with a type other than `any` arrives as that type, never parsed
 - Type annotations follow modern Python (PEP 585 + PEP 604): lowercase generics (`list[T]`, `dict[K, V]`), pipe unions (`A | B`). `Any`, `Optional`, and the `typing` module are auto-injected; other typing names require `from typing import X`. Do NOT use `List[T]` / `Union[A, B]` — pflow rejects them with a canonical-replacement hint.
 - Single output via `result` variable — use dict for structured output
 - Downstream access: `${node.result}` or `${node.result.field}` for dict results
@@ -981,7 +981,7 @@ What this output contains.
 - source: ${final_node.output}
 `````
 
-**Input fields**: `type` (string|number|integer|boolean|array|object|any), `required` (true|false), `default` (only when required: false), `stdin` (true|false -- only one input can have this), description as prose.
+**Input fields**: `type` (string|number|integer|boolean|array|object|any — omitted means `any`), `required` (true|false), `default` (only when required: false; must fit `type`), `stdin` (true|false -- only one input can have this), description as prose.
 
 **Output fields**: `source` (required -- template expression like `${node.key}`), `type` (optional hint), `stdout` (true|false -- at most one output may set this; marks the output that streams to stdout in text mode). Single-output workflows don't need a marker. Multi-output workflows without a marker stream the first declared output and emit a stderr warning.
 
@@ -1000,17 +1000,21 @@ What this output contains.
 
 #### Critical: Automatic JSON Parsing for Simple Templates
 
-**Simple templates (`${var}`) automatically parse JSON strings.** This enables direct data access without intermediate extraction steps.
+**A simple template (`${var}`) parses JSON object and array text from a step's output** wherever a structure is wanted. This enables direct data access without intermediate extraction steps.
 
-**Two contexts where auto-parsing occurs:**
+**Where parsing happens:**
 
 1. **Path traversal**: `${node.stdout.field}` parses JSON to access nested properties
-2. **Inline objects**: `{"data": "${node.stdout}"}` parses JSON for structured data composition
+2. **Structured values**: inline objects `{"data": "${node.stdout}"}`, a step's `inputs:` map, `batch.items`, and a param that expects a dict or list
 
 **What gets parsed:**
-- All JSON types: objects `{}`, arrays `[]`, numbers, booleans, strings, null
+- JSON objects `{}` and arrays `[]` only — a number, boolean or plain text stays a string (`'42'` stays `'42'`)
 - Shell **stdout** with trailing `\n` is automatically stripped (disable with `strip_newline: false`). stderr is never modified.
-- Plain text and invalid JSON gracefully stay as strings
+- Invalid JSON gracefully stays a string
+
+**What is never parsed** (the value arrives as it is):
+- A workflow input with a declared type other than `any` — `${input}` is exactly what its `## Inputs` type made it, at every step. JSON text inside a declared input stays text, so `${input.field}` cannot reach into it (declare `- type: object` instead). An `any` or untyped input is parsed like a step output.
+- A code `inputs:` key annotated `str` (or `str | None`), a shell `env:` value, an http `headers` value, and a sub-workflow step's `inputs:` — the child types each value by its own `## Inputs`
 
 **Concrete examples** (inline object context):
 | Template | Source value | After resolution |
@@ -1019,8 +1023,7 @@ What this output contains.
 | `{"resp": "${http.response}"}` | `'{"status": "ok"}'` | `{"resp": {"status": "ok"}}` |
 | `{"items": "${mcp-node.result}"}` | `'[{"id": 1}, {"id": 2}]'` | `{"items": [{"id": 1}, {"id": 2}]}` |
 | `{"config": "${read-file.content}"}` | `'{"debug": true}'` | `{"config": {"debug": true}}` |
-| `{"count": "${shell-node.stdout}"}` | `'42\n'` | `{"count": 42}` |
-| `{"valid": "${check.stdout}"}` | `'true'` | `{"valid": true}` |
+| `{"count": "${shell-node.stdout}"}` | `'42\n'` | `{"count": "42"}` |
 | `{"text": "${any.output}"}` | `'plain text'` | `{"text": "plain text"}` |
 
 **Escape Hatch** (force raw string):
@@ -1251,13 +1254,15 @@ Workflow `## Inputs` / `## Outputs` use canonical JSON-Schema-style names. Pytho
 
 | Workflow `type:` | Python annotation | Notes |
 |---|---|---|
-| `string` | `str` | |
-| `integer` | `int` | Rejects floats |
-| `number` | `int \| float` or `float` | |
-| `boolean` | `bool` | |
-| `array` | `list` | |
-| `object` | `dict` | Dict only, not wildcard |
-| `any` | `Any` | `Any` is auto-injected in code blocks |
+| `string` | `str` | The text as given, never parsed (`02134` stays `02134`) |
+| `integer` | `int` | Digits with an optional `-` (`007` → 7); rejects `3.0`, `1e3`, `true` |
+| `number` | `int \| float` or `float` | A JSON number: `3`, `2.5`, `1e3`; rejects `007`, `nan`, `1_000` |
+| `boolean` | `bool` | `true`/`false`/`yes`/`no`/`1`/`0`, any case |
+| `array` | `list` | JSON array text |
+| `object` | `dict` | JSON object text; dict only, not wildcard |
+| `any` | `Any` | Not checked. A command-line value is typed only when it reads back unchanged (`42`, `true`, `[1]`; `02134`, `1.10`, `[1, 2]` stay text); MCP values arrive as sent. `Any` is auto-injected in code blocks |
+
+A workflow input's value is typed once, where it enters (command line, stdin, environment, settings, `default:`, MCP, a parent workflow, a resumed run), and a value that does not fit fails with `Invalid input value`, naming where the value came from — before any step runs (a sub-workflow input: at the step that calls it, routable like any step error). Surrounding whitespace is ignored for every type but `string`. A typed MCP value must fit too: a `string` takes any scalar (`3` → `"3"`), `integer` rejects `3.0` and `true`. An input without `type:` is `any`.
 
 Code blocks follow modern Python syntax — use lowercase generics (`list[T]`, `dict[K, V]`) and pipe unions (`int | str`), not `List[T]` / `Union[A, B]`. See `pflow guide code` for the full type annotation syntax table.
 
@@ -1691,7 +1696,7 @@ Current item: `${item}` (or custom `as`). Index: `${__index__}` (0-based). Resul
 **Options**:
 | Field | Default | Notes |
 |-------|---------|-------|
-| `items` | required | Template reference OR inline array (must resolve to JSON array, not newline-separated string) |
+| `items` | required | A declared `array` input, an upstream list or JSON-array text, OR an inline array (not a newline-separated string; a `- type: string` input is a validation error) |
 | `as` | `"item"` | Custom name: `"file"` → `${file}` |
 | `parallel` | `false` | Concurrent execution |
 | `max_concurrent` | `10` | 1-100; use 20-40 for LLM APIs (rate limits) |

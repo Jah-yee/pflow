@@ -27,6 +27,7 @@ from pflow.core.workflow.manager import WorkflowManager
 from pflow.execution.result import RunnerConfig
 from pflow.execution.runner import WorkflowRunner
 from pflow.mcp_server.services.execution_service import ExecutionService
+from tests.conftest import set_isolated_home
 
 # A string input into a shell `env:` — the bytes the command sees are the bytes typed (#687).
 ECHO_WF = """# Echo
@@ -480,6 +481,48 @@ class TestEnvironmentAndDefaults:
         assert error["suggestions"] == ["export port=3, or pass port=3 (an argument wins over the environment)"]
         assert argument.exit_code == 0, argument.stderr
         assert argument.stdout.rstrip("\n") == "1"
+
+
+class TestASettingsValueIsLabelledSettings:
+    """`pflow run` copies settings.env into the process environment at startup (`inject_settings_env_vars`), so
+    the boundary must still name settings — not "the environment variable" — for a value that lives there.
+    Real subprocesses: the copy is skipped under `PYTEST_CURRENT_TEST`, which the child must not inherit."""
+
+    @pytest.fixture
+    def cli_env(self, tmp_path: Path, prepared_subprocess_env: dict[str, str]) -> dict[str, str]:
+        home = tmp_path / "home"
+        (home / ".pflow").mkdir(parents=True)
+        registry = Path(prepared_subprocess_env["HOME"]) / ".pflow" / "registry.json"
+        (home / ".pflow" / "registry.json").write_text(registry.read_text(encoding="utf-8"), encoding="utf-8")
+        env = {k: v for k, v in prepared_subprocess_env.items() if k not in ("PYTEST_CURRENT_TEST", "port")}
+        set_isolated_home(env, home)
+        return env
+
+    @staticmethod
+    def _pflow(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603
+            [sys.executable, "-m", "pflow.cli", *args], capture_output=True, text=True, encoding="utf-8", env=env
+        )
+
+    def test_a_bad_settings_value_names_settings_and_the_settings_fix(
+        self, tmp_path: Path, cli_env: dict[str, str]
+    ) -> None:
+        workflow = str(_write(tmp_path, "port", PORT_WF))
+        assert self._pflow(cli_env, "settings", "set-env", "port", "abc").returncode == 0
+        result = self._pflow(cli_env, workflow)
+        assert result.returncode == 1
+        assert "Input 'port' is declared `- type: integer` but received 'abc' from settings.env." in result.stderr
+        assert "→ pflow settings set-env port 3, or pass port=3" in result.stderr
+
+    def test_an_exported_variable_is_still_the_environment_even_with_a_setting(
+        self, tmp_path: Path, cli_env: dict[str, str]
+    ) -> None:
+        workflow = str(_write(tmp_path, "port", PORT_WF))
+        assert self._pflow(cli_env, "settings", "set-env", "port", "abc").returncode == 0
+        result = self._pflow({**cli_env, "port": "xyz"}, workflow)
+        assert result.returncode == 1
+        assert "received 'xyz' from the environment variable port." in result.stderr
+        assert "from settings.env" not in result.stderr
 
 
 class TestValidateOnlyChecksTheSuppliedValues:
