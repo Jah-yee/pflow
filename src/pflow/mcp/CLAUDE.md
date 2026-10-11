@@ -55,6 +55,15 @@ the session and reconnecting; the new session does not preserve server state.
 `pool.py:_is_transport_error` explicitly excludes TimeoutError even where it is an
 OSError subclass: slow responses must not trigger destructive reconnects.
 
+## SDK import cost
+
+Import the `mcp` SDK only inside the functions that open a server connection
+(`discovery.py`, `pool.py` session builders, `nodes/mcp/node.py`). `pflow.mcp` loads
+on every CLI invocation and every workflow run (Runner always builds the pool), so a
+module-level SDK import costs every command ~0.1 s (#752). Pinned by
+`tests/test_cli/test_lazy_imports.py`; tests patch `mcp.ClientSession` and
+`mcp.client.stdio.stdio_client`, not `pflow.mcp.pool.*`.
+
 ## Configuration/auth traps
 
 - Runtime transport selection reads `type` (absent means stdio); the TypedDicts in
