@@ -43,13 +43,6 @@ def test_failed_reference_shell_block_shows_the_stderr_tail() -> None:
     stderr = "noise line\n" * 100 + "fatal: CAUSE-AT-TAIL"
     shared: dict[str, Any] = {
         "build": {"stdout": "", "stderr": stderr, "exit_code": 2, "command": "make"},
-        "__execution__": {
-            "completed_nodes": [],
-            "node_actions": {},
-            "node_hashes": {},
-            "failed_node": None,
-            "node_visit_counts": {},
-        },
     }
     mark_node_failed(shared, "build", category=FAILURE_CATEGORY_SHELL, error="Command failed with exit code 2")
     template = "${build.stdout}"

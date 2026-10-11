@@ -88,17 +88,17 @@ class TestShellStderrDisplay:
         error = output["errors"][0]
         assert "stderr content here" in error["context"]["shell_stderr"]
 
-    def test_long_stderr_preview_keeps_the_tail_where_the_cause_is(self, tmp_path):
-        """A long stderr shows its head AND its tail in both text previews (#755).
+    def test_long_output_previews_keep_the_tail_where_the_cause_is(self, tmp_path):
+        """Long stderr and stdout show their head AND tail in every text preview (#755).
 
-        Tools write the cause last, after progress noise. The cause marker sits only at
-        the very end of ~1,100 chars of stderr and is printed via ``%s`` so it never
-        appears in the command text — the text channels must show it, and JSON keeps
-        the whole stderr.
+        Tools write the cause last, after progress noise. Each cause marker sits only at
+        the very end of ~1,100 chars and is printed via ``%s`` so it never appears in the
+        command text — the text channels must show it, and JSON keeps the whole stderr.
         """
         command = (
-            "i=0; while [ $i -lt 60 ]; do printf 'progress-noise-%02d ' $i >&2; i=$((i+1)); done; "
-            "printf 'CAUSE-%s-TAIL' AT >&2; exit 3"
+            "i=0; while [ $i -lt 60 ]; do printf 'progress-noise-%02d ' $i >&2; "
+            "printf 'stdout-noise-%02d ' $i; i=$((i+1)); done; "
+            "printf 'STDOUT-%s-TAIL' AT; printf 'CAUSE-%s-TAIL' AT >&2; exit 3"
         )
         workflow = {
             "ir_version": "0.1.0",
@@ -118,6 +118,11 @@ class TestShellStderrDisplay:
             assert "progress-noise-30" not in preview  # the middle is cut
             assert "chars omitted]" in preview
             assert preview.endswith("CAUSE-AT-TAIL")  # the tail stays
+        stdout = next(line for line in lines if line.startswith("    Stdout: "))
+        assert "stdout-noise-00" in stdout
+        assert "stdout-noise-30" not in stdout
+        assert "chars omitted]" in stdout
+        assert stdout.endswith("STDOUT-AT-TAIL")
 
         as_json = runner.invoke(main, ["--output-format", "json", str(workflow_path)])
         error = json.loads(as_json.stdout)["errors"][0]
