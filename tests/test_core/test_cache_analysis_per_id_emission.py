@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from pflow.core.exceptions import WorkflowValidationError
 from pflow.core.file_resolver import resolve_file_references
 from pflow.core.markdown_parser import parse_markdown
 from pflow.core.prompt_cache_analysis.analyze import analyze
@@ -1371,13 +1372,12 @@ def test_sub_workflow_projection_node_ref_does_not_resolve_from_root_parameter(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Node-output refs must not fall back to root parameters with the same name.
+    """Node-output refs resolve from the node's evidence, never from a root parameter.
 
     The parent passes ``${creative.direction}`` to a child input, where
-    ``creative`` is a parent node id. Root analysis parameters may also contain
-    a ``creative`` key, but that parameter is not declared as a parent workflow
-    input, so cross-workflow projection must ignore it and use the parent node's
-    memo/trace output.
+    ``creative`` is a parent node id. A root parameter named ``creative`` (not a
+    declared input) is refused by ``analyze``'s input boundary before analysis, so
+    cross-workflow projection uses the parent node's memo/trace output.
     """
     from pflow.runtime.cache import MemoizationCache
 
@@ -1429,10 +1429,19 @@ def test_sub_workflow_projection_node_ref_does_not_resolve_from_root_parameter(
     result = analyze(
         parent_ir,
         workflow_path="parent.pflow.md",
-        parameters={"creative": {"direction": "root parameter value"}},
+        parameters={"topic": "root parameter value"},
         auto_load_trace=False,
         memo_cache=cache,
     )
+    with pytest.raises(WorkflowValidationError, match="Workflow input validation failed") as refused:
+        analyze(
+            parent_ir,
+            workflow_path="parent.pflow.md",
+            parameters={"creative": {"direction": "root parameter value"}},
+            auto_load_trace=False,
+            memo_cache=cache,
+        )
+    assert [d.context["path"] for d in refused.value.validation_errors if d.context] == ["inputs.creative"]
 
     diag = next(d for d in result.warnings if d.id == "cache.sub-workflow-cache-undeclared")
     assert diag.context is not None
@@ -5428,6 +5437,74 @@ def test_discrepancy_key_mismatch_via_real_planner_consumption(
     assert diag.context["actual_cache_key"] == actual_engine_key
 
 
+@pytest.mark.parametrize("flag", ["true", "02134"])
+def test_prediction_types_a_call_value_as_the_run_did(
+    tmp_path: Path,
+    isolate_pflow_config: dict[str, Any],
+    mock_llm_client: Any,
+    flag: str,
+) -> None:
+    """An `any` input entered through MCP keeps the text it was sent (`"true"` stays text), and
+    the analyzer's prediction re-compiles the same values with the same labels — so it computes
+    the run's cache key, not the key of a re-inferred `True` (a false `key_mismatch`)."""
+    import sqlite3
+
+    from pflow.core.prompt_cache_analysis.analyze import analyze as _analyze
+    from pflow.execution.result import RunnerConfig
+    from pflow.execution.runner import WorkflowRunner
+    from pflow.runtime.cache import MemoizationCache
+
+    workflow_path = tmp_path / "wf.pflow.md"
+    workflow_path.write_text(
+        "# Any flag\n\nAn LLM step reading an untyped input.\n\n"
+        "## Inputs\n\n### flag\n\nAnything.\n\n- type: any\n\n"
+        "## Steps\n\n### gen\n\nSay the flag.\n\n- type: llm\n- model: anthropic/claude-sonnet-4-5\n\n"
+        "```prompt\nSay ${flag}.\n```\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig(trace_enabled=False, cache_enabled=True)
+    run = WorkflowRunner().run(str(workflow_path), {"flag": flag}, config, input_sources={"flag": "call"})
+    assert run.success, run.diagnostics
+    cache_db = isolate_pflow_config["pflow_dir"] / "cache" / "cache.db"
+    with sqlite3.connect(cache_db) as conn:
+        (engine_key,) = conn.execute("SELECT cache_key FROM cache_entries WHERE node_id = 'gen'").fetchone()
+
+    trace_path = tmp_path / "trace.json"
+    llm_call = {
+        "model": "anthropic/claude-sonnet-4-5",
+        "cache_key": engine_key,
+        "cache_creation_input_tokens": 100,
+        "cache_read_input_tokens": 0,
+        "cache_age_sec": 5,
+        "cache_chunks_skipped": [],
+    }
+    write_trace_jsonl(
+        trace_path,
+        {
+            "format_version": "2.1.0",
+            "workflow_path": str(workflow_path.resolve()),
+            "nodes": [{"node_id": "gen", "llm_call": llm_call}],
+        },
+    )
+
+    def predicted(sources: dict[str, Any]) -> Any:
+        analysis = _analyze(
+            parse_markdown(workflow_path.read_text(encoding="utf-8")).ir,
+            parameters={"flag": flag},
+            input_sources=sources,
+            workflow_path=str(workflow_path.resolve()),
+            trace_path=trace_path,
+            auto_load_trace=False,
+            memo_cache=MemoizationCache(db_path=cache_db, read_enabled=True),
+        )
+        return [d.context.get("root_cause") for d in analysis.warnings if d.id == "cache.discrepancy" and d.context]
+
+    assert "key_mismatch" not in predicted({"flag": "call"})
+    # Presence: the same text typed as a command-line argument is `True` for "true" — a different
+    # key; "02134" reads back as itself and stays text either way.
+    assert ("key_mismatch" in predicted({})) is (flag == "true")
+
+
 # ---------------------------------------------------------------------------
 # Bug 5 fix — decoupled prediction covers sub-workflow nodes
 # ---------------------------------------------------------------------------
@@ -7045,6 +7122,7 @@ def test_partial_prompt_cache_matches_var_but_suggests_name_for_diverged_ir() ->
         prompt_cache=["declared"],
         second_prompt_cache=["declared"],
     )
+    workflow_ir["inputs"]["source"] = {"type": "object"}
     diag, _result = _partial_diag(workflow_ir, parameters={"source": {"value": "x " * 20}, "a": "a " * 20})
     assert diag is not None
     assert diag.context is not None
@@ -7230,7 +7308,7 @@ def test_partial_prompt_cache_suppressed_when_consolidate_to_root_covers_same_ch
 
 def test_partial_prompt_cache_renderer_handles_many_affected_nodes() -> None:
     workflow_ir = {
-        "inputs": {"a": {"type": "string"}, "b": {"type": "string"}},
+        "inputs": {"a": {"type": "string"}, "b": {"type": "string"}, "concept": {"type": "object"}},
         "cache": {
             "items": [
                 {"name": "a", "var": "a", "prose_before": "A:\n"},

@@ -52,6 +52,7 @@ describe("RunForm", () => {
     // integer → number control; boolean → checkbox (checked from "true"); object → textarea.
     expect((screen.getByLabelText(/count/i) as HTMLInputElement).type).toBe("number");
     expect((screen.getByLabelText(/verbose/i) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByLabelText(/verbose/i).classList.contains("run-field-checkbox")).toBe(true); // start-aligned
     expect((screen.getByLabelText(/config/i) as HTMLTextAreaElement).tagName).toBe("TEXTAREA");
   });
 

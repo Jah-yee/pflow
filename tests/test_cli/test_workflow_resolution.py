@@ -396,9 +396,19 @@ class TestWorkflowResolutionCLI:
         finally:
             Path(workflow_path).unlink()
 
-    def test_type_inference_for_parameters(self):
-        """Test that parameter types are correctly inferred."""
+    def test_parameters_reach_execution_as_the_text_typed(self):
+        """Parameters reach execution as the exact text typed — the declared type decides at the input
+        boundary, the CLI guesses nothing (#687)."""
         runner = click.testing.CliRunner()
+        tokens = {
+            "count": "42",
+            "zip": "02134",
+            "ratio": "1.10",
+            "enabled": "TRUE",
+            "list": "[1, 2,3]",
+            "obj": '{"key":"value"}',
+            "text": "hello world",
+        }
 
         with patch("pflow.execution.workflow_resolver.WorkflowManager") as MockWM:
             mock_wm = MockWM.return_value
@@ -406,45 +416,11 @@ class TestWorkflowResolutionCLI:
             mock_wm.load_ir.return_value = {"nodes": [], "edges": [], "ir_version": "1.0"}
 
             with patch("pflow.cli.commands.run.execute_json_workflow") as mock_execute:
-                result = runner.invoke(
-                    main,
-                    [
-                        "test",
-                        "count=42",
-                        "ratio=3.14",
-                        "enabled=true",
-                        "disabled=false",
-                        "list=[1,2,3]",
-                        'obj={"key":"value"}',
-                        "text=hello world",
-                    ],
-                )
+                result = runner.invoke(main, ["test", *(f"{name}={value}" for name, value in tokens.items())])
 
                 assert result.exit_code == 0
-                call_args = mock_execute.call_args
-                if call_args and len(call_args[0]) > 4:
-                    params = call_args[0][4]
-
-                    assert params["count"] == 42
-                    assert isinstance(params["count"], int)
-
-                    assert params["ratio"] == 3.14
-                    assert isinstance(params["ratio"], float)
-
-                    assert params["enabled"] is True
-                    assert isinstance(params["enabled"], bool)
-
-                    assert params["disabled"] is False
-                    assert isinstance(params["disabled"], bool)
-
-                    assert params["list"] == [1, 2, 3]
-                    assert isinstance(params["list"], list)
-
-                    assert params["obj"] == {"key": "value"}
-                    assert isinstance(params["obj"], dict)
-
-                    assert params["text"] == "hello world"
-                    assert isinstance(params["text"], str)
+                mock_execute.assert_called_once()
+                assert mock_execute.call_args[0][4] == tokens
 
     def test_json_output_format_with_named_workflow(self):
         """Test that --output-format json works with named workflows - simplified."""

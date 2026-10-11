@@ -7,9 +7,9 @@
 //
 // Value encoding is channel A: every control emits a TOKEN STRING (checkbox →
 // "true"/"false", number → its digits, text → as-is, JSON textarea → raw JSON
-// text). RunPanel sends them verbatim as the CLI's `name=value` argv, where
-// infer_type + declared-type coercion re-type them — so the form is faithful to a
-// hand-typed run.
+// text). RunPanel sends them verbatim as the CLI's `name=value` argv, where each
+// token is typed by its input's declared type (an `any` input: only when the text
+// reads back unchanged) — so the form is faithful to a hand-typed run.
 //
 // (The "load inputs from" picker is Phase 5 — it adds a prefill SOURCE on top of
 // this same controlled surface, not new form mechanics.)
@@ -110,6 +110,7 @@ function RunField({
       {control === "checkbox" ? (
         <input
           id={id}
+          className="run-field-checkbox"
           type="checkbox"
           checked={value === "true"}
           onChange={(e) => onChange(field.name, e.target.checked ? "true" : "false")}

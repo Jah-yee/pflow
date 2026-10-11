@@ -207,6 +207,11 @@ def clear_model_cache() -> None:
     _settings_injected_env_vars.clear()
 
 
+def is_settings_injected(name: str) -> bool:
+    """Whether ``os.environ[name]`` holds a value ``inject_settings_env_vars`` copied out of pflow settings."""
+    return name in _settings_injected_env_vars
+
+
 def inject_settings_env_vars() -> None:
     """Inject env vars from pflow settings into os.environ.
 

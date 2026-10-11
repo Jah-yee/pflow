@@ -101,7 +101,7 @@ def test_meta_inputs_present_for_inline_content_run(tmp_path, monkeypatch):
 
 @pytest.mark.trace_files
 def test_meta_inputs_records_required_input_value_not_placeholder(tmp_path, monkeypatch):
-    """A required input (no default) is filled with a validation PLACEHOLDER by `_fill_declared_defaults`,
+    """A required input (no default) is filled with a validation PLACEHOLDER by `_fill_placeholders`,
     then stripped by `_strip_placeholders` BEFORE the shared store is seeded — so its USER value (not the
     `__pflow_declared_*` placeholder) reaches `meta.inputs`. Guards the strip-before-seed ordering: a
     refactor that seeded the store before stripping would silently record a fake placeholder value."""

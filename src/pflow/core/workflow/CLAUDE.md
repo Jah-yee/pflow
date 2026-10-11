@@ -8,10 +8,10 @@
 | Validate and save content, bundle dependencies | `save_service.py::save_workflow_with_options` |
 | Change pre-execution validation | `validator.py::WorkflowValidator.validate` |
 | Change dependencies or cache declaration rules | `data_flow.py::validate_data_flow`, `_validate_cache_block` |
+| Change a rule a declared input's no-re-parse rule makes certain (a path that must miss, input named like a batch alias) | `declared_inputs.py` (run by `validate_data_flow`); "is this root the declared input (or a name bound to one) here" is `declared_root` |
 | Add a template-bearing IR location (every template check sees it) | `template_surfaces.py::iter_template_surfaces` |
 | Make a param a plain-code body (never a Template) | `template_surfaces.py::_BODIES` (definitions: `param_mode`); the body rule is `data_flow.py` "Code bodies" |
 | Make an MCP tool param embedded code (only `${x|json}` is pflow's) | `template_surfaces.py::EMBEDDED_CODE` (definitions: `param_mode`); bare names in it are `data_flow.py::embedded_references` |
-| Decide that a param's values bind as text (never JSON-parsed — `shell.env`) | `template_surfaces.py::binds_as_text`; the resolver consults it through `parses_leaves` |
 | Shared loop/gate validation rules | `loop_validation.py::check_loop_polarity`, `gate_validation.py::check_approval_allowed` (also used by the compiler) |
 | Resolve child workflows and external files | `sub_workflow_resolver.py`, `dependency_discovery.py` |
 | Change static graph construction or rendering | `graph/CLAUDE.md`; compatibility entry point in `mermaid/CLAUDE.md` |

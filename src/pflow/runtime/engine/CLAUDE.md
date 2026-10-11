@@ -79,8 +79,16 @@ into context before other params; static inputs also enter context. Shared
 storage is the runtime source of values. Batch nodes skip top-level template
 resolution so `${item}` resolves only in each item's context. Preserve source-line
 metadata through `split_params`; only cache hashing filters those keys.
-A dict/list param's string leaves are JSON-parsed unless `parses_leaves` says no
-(`shell.env` binds as text), keyed on `TemplateConfig.node_type`. A code body
+A structured param's JSON text is parsed unless `parses_leaves` says no — the
+consumer table `_CONSUMER_TYPES_LEAVES` (`shell.env`, `http.headers`, a workflow
+step's `inputs:`) keyed on `TemplateConfig.node_type`, plus a code `inputs:` key
+annotated text (`TemplateConfig.text_input_keys`). The source-side rule — a
+declared input is never re-parsed — is the resolver's own, read from the store key
+`DECLARED_INPUT_TYPES_KEY`. A name bound to a declared input keeps its protection
+(`templates.bound_declaration`, from the AUTHORED template — a loop's carry template
+from round 2): `_bind_locally` sets each step `inputs:` key's entry at the two context
+merge points, `batch_executor.bind_batch_item` the alias's in every per-item store (the
+planner calls it too); a binding that inherits nothing leaves the map. A code body
 (`param_mode` → `"body"`) is static whatever it holds: `split_params` decides it
 before `has_templates`, so callers must pass `node_type`. Embedded code (`"embedded"`)
 is static unless it holds a JSON insert, and resolves with `embedded=True`: only inserts

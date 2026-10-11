@@ -12,12 +12,11 @@ Keep those responsibilities in the Runner so CLI and MCP share them.
 | Command registration and default routing | `main.py:cli`, `PflowCLI.resolve_command` |
 | Run flags, context, stdin preparation | `commands/run.py:_initialize_context`, `_setup_workflow_execution` |
 | Workflow-name versus invalid-command heuristic | `workflow_resolution.py:is_likely_workflow_name` |
-| Typed CLI parameters | `param_parsing.py` |
+| `name=value` parameters (raw text; the declared type types them) | `param_parsing.py` |
 | File/saved-name resolution shared with MCP | `execution/workflow_resolver.py:resolve_workflow` |
 | Successful text output and headers | `workflow_output.py:_handle_text_output`, `_show_output_header` |
 | Ordinary failure rendering | `error_output.py:output_error` |
 | Status dispatch and exit codes | `commands/run.py:_display_execution_result` |
-| Rerun commands and secret masking | `rerun_display.py` |
 | Subcommand-specific seams | `commands/CLAUDE.md` |
 
 Add top-level commands through `main.py:cli.add_command`. Keep cycle-sensitive

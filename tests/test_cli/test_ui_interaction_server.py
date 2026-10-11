@@ -967,6 +967,28 @@ class TestRunEndpoint:
         assert errors and any("text" in json.dumps(err) for err in errors)
         popen.assert_not_called()
 
+    def test_a_token_that_fails_its_declared_type_is_400_and_a_fitting_one_spawns(self, tmp_path: Path) -> None:
+        """The pre-flight types each form token by its input's declaration exactly as the spawned run will:
+        `3.0` for an `integer` is refused with the input diagnostic; `3` spawns with the same raw token."""
+        workflow = tmp_path / "count.pflow.md"
+        workflow.write_text(
+            "# Count\n\nEchoes a count.\n\n## Inputs\n\n### count\n\nHow many.\n\n- type: integer\n\n"
+            '## Steps\n\n### echo\n\nEchoes it.\n\n- type: shell\n- env: { N: ${count} }\n- command: echo "$N"\n',
+            encoding="utf-8",
+        )
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            refused = _client().post("/api/run", json={"workflow": str(workflow), "inputs": {"count": "3.0"}})
+            popen.assert_not_called()
+            accepted = _client().post("/api/run", json={"workflow": str(workflow), "inputs": {"count": "3"}})
+
+        assert refused.status_code == 400
+        (error,) = refused.json()["errors"]
+        assert error["title"] == "Invalid input value"
+        assert (error["context"]["input"], error["context"]["source"]) == ("count", "argument")
+        assert error["suggestions"] == ["Pass a whole number (e.g. 3): count=3"]
+        assert accepted.status_code == 200, accepted.text
+        assert popen.call_args.args[0][-1] == "count=3"
+
 
 def _write_paused_trace(
     debug: Path,
@@ -1341,6 +1363,43 @@ exit 7
 ```
 """
 
+# A completed step reading an integer input, then a failing one — its recorded `count` replays on resume.
+_COUNTED_THEN_FAILING_WF = """# Counted Then Fail
+
+A completed step that reads a count, then one that fails.
+
+## Inputs
+
+### count
+
+How many.
+
+- type: integer
+
+## Steps
+
+### prep
+
+Prepare.
+
+- type: shell
+- env: { N: ${count} }
+
+```shell command
+echo "prep $N"
+```
+
+### boom
+
+Always fails.
+
+- type: shell
+
+```shell command
+exit 7
+```
+"""
+
 _TOKEN_RE = re.compile(r"Resume token: (\S+) \(exit 4\)")
 
 # Task 179: an approval-gated loop step — pauses at iteration 1 with `gate_request.iteration` set.
@@ -1551,6 +1610,30 @@ class TestResumeEndpoint:
         assert isinstance(body["newer_execution_id"], str) and body["newer_execution_id"]
         assert body["errors"]
         popen.assert_not_called()
+
+    def test_a_lenient_era_recorded_input_is_400_naming_the_run_to_resume(self, tmp_path: Path, monkeypatch) -> None:
+        """The resume pre-flight replays the recorded inputs through the input boundary labelled as
+        `pflow resume` labels them: a value the declaration refuses names the run in its fix line."""
+        self._home(tmp_path, monkeypatch)
+        wf = tmp_path / "counted.pflow.md"
+        wf.write_text(_COUNTED_THEN_FAILING_WF, encoding="utf-8")
+        failed = CliRunner(mix_stderr=False).invoke(cli, [str(wf), "count=3"])
+        assert failed.exit_code == 1, failed.stderr
+        run_id = re.search(r"pflow resume (\S+)", failed.stderr).group(1)  # type: ignore[union-attr]
+        (trace,) = (tmp_path / ".pflow" / "debug").glob("workflow-trace-*.json")
+        meta, *rest = trace.read_text(encoding="utf-8").splitlines()
+
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            replayed = _client().post("/api/resume", json={"run": run_id, "force": True})
+            trace.write_text("\n".join([meta.replace('"count": 3', '"count": "abc"'), *rest]) + "\n", encoding="utf-8")
+            refused = _client().post("/api/resume", json={"run": run_id, "force": True})
+
+        assert replayed.status_code == 200, replayed.text  # the recorded 3 replays typed
+        assert refused.status_code == 400
+        (error,) = refused.json()["errors"]
+        assert (error["context"]["input"], error["context"]["source"]) == ("count", "recorded")
+        assert error["suggestions"] == [f"Override it: pflow resume {run_id} count=3"]
+        popen.assert_called_once()
 
     def test_side_effecting_failed_entry_is_409_with_node_facts(self, tmp_path: Path, monkeypatch) -> None:
         """Bare resume of a failed run whose entry K is side-effecting (shell) → the non-TTY refusal,

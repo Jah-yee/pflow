@@ -165,7 +165,7 @@ class TestWorkflowExecutorIntegration:
 
         Used by ``test_file_workflow_execution`` which passes ``test_input``
         through the ``inputs:`` dict. Declaring the input is required now that
-        ``_validate_child_params`` rejects extras even when declarations are
+        ``type_child_inputs`` rejects extras even when declarations are
         empty.
         """
         declared_ir = {**simple_workflow_ir, "inputs": {"test_input": {"type": "string"}}}

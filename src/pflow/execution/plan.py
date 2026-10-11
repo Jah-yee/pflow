@@ -38,13 +38,13 @@ from time import time
 from typing import Any, Literal
 
 from pflow.core.diagnostic import Diagnostic, Severity
-from pflow.core.exceptions import LoopCarryError, LoopConditionError
-from pflow.core.templates import resolve
+from pflow.core.exceptions import LoopCarryError, LoopConditionError, WorkflowValidationError
+from pflow.core.templates import DECLARED_INPUT_TYPES_KEY, resolve
 from pflow.core.workflow.sub_workflow_resolver import resolve_sub_workflow
 from pflow.execution.result import Plan, PlanEntry, PlanSummary, ResumePlanInfo
 from pflow.registry import Registry
 from pflow.runtime.cache import MemoizationCache
-from pflow.runtime.engine.batch_executor import build_batch_output, resolve_batch_items
+from pflow.runtime.engine.batch_executor import bind_batch_item, build_batch_output, resolve_batch_items
 from pflow.runtime.engine.engine import (
     RouteKind,
     assert_carried_inputs_resolved,
@@ -66,7 +66,7 @@ from pflow.runtime.engine.loop_control import loop_runtime_scope, resolve_loop_c
 from pflow.runtime.engine.plan_node import NodePlan, plan_node
 from pflow.runtime.engine.template_resolution import resolve_templates
 from pflow.runtime.engine.types import BatchConfig, CompiledWorkflow, NodeConfig
-from pflow.runtime.workflow_executor import WorkflowExecutor
+from pflow.runtime.workflow_executor import WorkflowExecutor, type_child_inputs
 from pflow.runtime.workflow_trace import load_snapshot_or_raise
 
 logger = logging.getLogger(__name__)
@@ -597,6 +597,8 @@ def create_planner_shared(
     initialize_execution_state(shared)
     if parent_workflow_file:
         shared["_pflow_workflow_file"] = parent_workflow_file
+    # As WorkflowEngine.run: declarations first — the prompt-cache builder resolves the model.
+    shared[DECLARED_INPUT_TYPES_KEY] = MappingProxyType(compiled.input_types)
     shared["__pflow_prompt_cache__"] = MappingProxyType(build_prompt_cache_dict(compiled, shared))
     # issue #445: mirror the engine's _PROPAGATED_KEYS["__loop_active__"]
     # (WorkflowExecutor._create_child_storage). When this child plan is a looped
@@ -1330,6 +1332,7 @@ def _plan_batch_sub_workflow(
             visited_paths=visited_paths,
             node_id=node_id,
             node_type=node_type,
+            per_item=True,
         )
         if isinstance(target_or_entry, PlanEntry):
             return target_or_entry
@@ -1399,8 +1402,16 @@ def _prepare_sub_workflow(
     node_id: str,
     node_type: str,
     downstream: bool = False,
+    per_item: bool = False,
 ) -> _PreparedSubWorkflow | PlanEntry:
-    """Resolve, cycle-check, and compile a child workflow target."""
+    """Resolve, cycle-check, and compile a child workflow target.
+
+    The child's inputs are typed at its boundary as the run types them (``type_child_inputs``) —
+    except for a batch (``per_item``), whose items are typed one by one
+    (``_resolve_per_item_sub_workflow_inputs``) and whose compile therefore takes type-shaped
+    placeholders, so one bad item never fails the whole node's plan (nor leaks its values into
+    another item's).
+    """
     try:
         resolved = resolve_sub_workflow(merged, base_path=_resolve_sub_workflow_base_path(shared))
     except _SUB_WORKFLOW_RESOLVE_EXCEPTIONS as exc:
@@ -1416,15 +1427,23 @@ def _prepare_sub_workflow(
             f"Circular sub-workflow reference: {resolved_path_str}",
         )
 
-    effective_inputs = _effective_child_inputs(resolved.ir, child_inputs, downstream=downstream)
+    if downstream or per_item:
+        compile_inputs = _placeholder_child_inputs(resolved.ir)
+    else:
+        try:
+            compile_inputs = type_child_inputs(
+                resolved.ir, child_inputs, step=node_id, sub_workflow_path=_child_ref(merged, resolved_path_str)
+            )
+        except WorkflowValidationError as exc:
+            return _compile_error_entry(exc, node_id, node_type)
     try:
-        compiled_child = _compile_child(resolved.ir, resolved_path_str, effective_inputs, registry, node_id, node_type)
+        compiled_child = _compile_child(resolved.ir, resolved_path_str, compile_inputs, registry, node_id, node_type)
     except _ChildCompileFailed as failure:
         return failure.entry
 
     return _PreparedSubWorkflow(
         merged=merged,
-        child_inputs=effective_inputs,
+        child_inputs=child_inputs if per_item else compile_inputs,
         resolved=resolved,
         resolved_path_str=resolved_path_str,
         compiled_child=compiled_child,
@@ -1527,10 +1546,10 @@ def _prepare_batch_sub_workflow_params(
         # about it like any other item.
         template_config = replace(template_config, resolution_mode="permissive")
     try:
-        shared[batch_config.item_alias] = items[0]
-        shared["__index__"] = 0
+        item_shared = dict(shared)
+        bind_batch_item(item_shared, shared, batch_config, items[0], 0)
         if template_config:
-            resolved_params, _, _ = resolve_templates(template_config, shared, config.node_id)
+            resolved_params, _, _ = resolve_templates(template_config, item_shared, config.node_id)
             merged = dict(getattr(curr, "params", {}) or {})
             merged.update(template_config.static_params or {})
             merged.update(resolved_params)
@@ -1541,9 +1560,6 @@ def _prepare_batch_sub_workflow_params(
             return _template_error_entry(config, exc)
         logger.warning("Batch sub-workflow template resolution failed: %s", exc)
         return _sub_workflow_error_entry(config.node_id, config.node_type_name, f"Template resolution failed: {exc}")
-    finally:
-        shared.pop(batch_config.item_alias, None)
-        shared.pop("__index__", None)
 
     raw_inputs = merged.get("inputs")
     if raw_inputs is not None and not isinstance(raw_inputs, dict):
@@ -1573,34 +1589,56 @@ def _resolve_per_item_sub_workflow_inputs(
     raw_inputs_template: Any,
     default_inputs: dict[str, Any],
     node_id: str,
-) -> tuple[dict[str, Any], Diagnostic | None]:
-    """Resolve child inputs for one batch item, falling back to item[0] shape.
+    child_ir: dict[str, Any],
+    sub_workflow_path: str,
+) -> tuple[dict[str, Any], list[Diagnostic]]:
+    """Resolve and type one batch item's child inputs, as the host's ``prep`` does for that item.
 
-    Returns (inputs, diagnostic). Diagnostic is non-None when resolution
-    produced a non-dict or left a template unresolved — runtime would reject the
-    item in that case, so we surface a WARNING to make the plan honest about a
-    likely runtime failure.
+    Returns (inputs, diagnostics). A diagnostic means runtime would reject the item —
+    ``inputs:`` resolved to a non-dict or left a template unresolved (the item[0] shape is
+    planned instead), or a value fails the child's declared type (planned on type-shaped
+    placeholders) — so the plan surfaces a WARNING per problem.
     """
-    if raw_inputs_template is None:
-        return default_inputs, None
-    per_item_context = {**shared, batch_config.item_alias: item, "__index__": idx}
-    resolution = resolve(raw_inputs_template, per_item_context, auto_parse=True)
-    resolved_inputs = resolution.value
-    if not isinstance(resolved_inputs, dict):
-        problem = f"resolved to {type(resolved_inputs).__name__}, expected dict"
-    elif not resolution.ok:
-        left = sorted(f"${{{expr}}}" for expr in resolution.unresolved) + sorted(resolution.issues)
-        problem = f"left {', '.join(left)} unresolved (strict mode)"
-    else:
-        return resolved_inputs, None
-    diag = Diagnostic(
-        severity=Severity.WARNING,
-        source="planner",
-        node_id=node_id,
-        message=f"Batch item {idx}: 'inputs:' {problem}. Runtime will reject this item.",
-        context={"category": "validation", "batch_item_index": idx},
-    )
-    return default_inputs, diag
+    resolved_inputs = default_inputs
+    if raw_inputs_template is not None:
+        per_item_context = dict(shared)
+        bind_batch_item(per_item_context, shared, batch_config, item, idx)
+        # As the engine resolves a workflow step's `inputs:` — never JSON-parsed (the child's own
+        # `## Inputs` types each value), and a whole-map template must already be a dict.
+        resolution = resolve(raw_inputs_template, per_item_context)
+        problem = None
+        if not isinstance(resolution.value, dict):
+            problem = f"resolved to {type(resolution.value).__name__}, expected dict"
+        elif not resolution.ok:
+            left = sorted(f"${{{expr}}}" for expr in resolution.unresolved) + sorted(resolution.issues)
+            problem = f"left {', '.join(left)} unresolved (strict mode)"
+        if problem is not None:
+            return default_inputs, [
+                Diagnostic(
+                    severity=Severity.WARNING,
+                    source="planner",
+                    node_id=node_id,
+                    message=f"Batch item {idx}: 'inputs:' {problem}. Runtime will reject this item.",
+                    context={"category": "validation", "batch_item_index": idx},
+                )
+            ]
+        resolved_inputs = resolution.value
+    try:
+        return type_child_inputs(child_ir, resolved_inputs, step=node_id, sub_workflow_path=sub_workflow_path), []
+    except WorkflowValidationError as exc:
+        # The run never enters this child: plan it on values that fit, so no hypothetical failure
+        # inside it (a batch over the rejected value) reaches the plan's diagnostics.
+        return _placeholder_child_inputs(child_ir), [
+            replace(
+                diagnostic,
+                severity=Severity.WARNING,
+                source="planner",
+                node_id=node_id,
+                message=f"Batch item {idx}: {diagnostic.message} Runtime will reject this item.",
+                context={**(diagnostic.context or {}), "batch_item_index": idx},
+            )
+            for diagnostic in exc.validation_errors
+        ]
 
 
 def _extract_child_outputs(
@@ -1638,7 +1676,7 @@ def _plan_batch_sub_workflow_items(
     per_item_diagnostics: list[Diagnostic] = []
 
     for idx, item in enumerate(items):
-        per_item_inputs, input_diag = _resolve_per_item_sub_workflow_inputs(
+        per_item_inputs, input_diags = _resolve_per_item_sub_workflow_inputs(
             shared=shared,
             batch_config=batch_config,
             item=item,
@@ -1646,9 +1684,10 @@ def _plan_batch_sub_workflow_items(
             raw_inputs_template=raw_inputs_template,
             default_inputs=prepared.child_inputs,
             node_id=node_id,
+            child_ir=prepared.resolved.ir,
+            sub_workflow_path=_child_ref(prepared.merged, prepared.resolved_path_str),
         )
-        if input_diag is not None:
-            per_item_diagnostics.append(input_diag)
+        per_item_diagnostics.extend(input_diags)
         child_plan, child_shared = _build_plan_with_shared(
             prepared.compiled_child,
             per_item_inputs,
@@ -1700,10 +1739,10 @@ def _plan_heterogeneous_batch_items(
 
     for idx, item in enumerate(items):
         try:
-            shared[batch_config.item_alias] = item
-            shared["__index__"] = idx
+            item_shared = dict(shared)
+            bind_batch_item(item_shared, shared, batch_config, item, idx)
             if config.template_config:
-                resolved_params, _, _ = resolve_templates(config.template_config, shared, node_id)
+                resolved_params, _, _ = resolve_templates(config.template_config, item_shared, node_id)
                 merged: dict[str, Any] = dict(getattr(curr, "params", {}) or {})
                 merged.update(config.template_config.static_params or {})
                 merged.update(resolved_params)
@@ -1722,10 +1761,8 @@ def _plan_heterogeneous_batch_items(
                 )
             else:
                 logger.warning("Batch item %d template resolution failed: %s", idx, exc)
+            item_outputs.append({})  # the run rejects this item; its slot keeps the per-item output zip aligned
             continue
-        finally:
-            shared.pop(batch_config.item_alias, None)
-            shared.pop("__index__", None)
 
         child_inputs = dict(merged.get("inputs", {})) if isinstance(merged.get("inputs"), dict) else {}
         resolved_path_key = str(merged.get("workflow", ""))
@@ -1739,14 +1776,25 @@ def _plan_heterogeneous_batch_items(
                 visited_paths=visited_paths,
                 node_id=node_id,
                 node_type=node_type,
+                per_item=True,
             )
             if isinstance(prepared_or_entry, PlanEntry):
+                if (problem := prepared_or_entry.diagnostic) is not None:
+                    per_item_diagnostics.append(
+                        replace(
+                            problem,
+                            severity=Severity.WARNING,
+                            message=f"Batch item {idx}: {problem.message} Runtime will reject this item.",
+                            context={**(problem.context or {}), "batch_item_index": idx},
+                        )
+                    )
+                item_outputs.append({})
                 continue
             compile_cache[resolved_path_key] = prepared_or_entry
 
         prepared = compile_cache[resolved_path_key]
 
-        per_item_inputs, input_diag = _resolve_per_item_sub_workflow_inputs(
+        per_item_inputs, input_diags = _resolve_per_item_sub_workflow_inputs(
             shared=shared,
             batch_config=batch_config,
             item=item,
@@ -1754,9 +1802,10 @@ def _plan_heterogeneous_batch_items(
             raw_inputs_template=raw_inputs_template,
             default_inputs=child_inputs,
             node_id=node_id,
+            child_ir=prepared.resolved.ir,
+            sub_workflow_path=_child_ref(prepared.merged, prepared.resolved_path_str),
         )
-        if input_diag is not None:
-            per_item_diagnostics.append(input_diag)
+        per_item_diagnostics.extend(input_diags)
 
         child_visited = [*visited_paths, prepared.resolved_path_str] if prepared.resolved_path_str else visited_paths
         child_plan, child_shared = _build_plan_with_shared(
@@ -1896,11 +1945,13 @@ def _aggregate_batch_child_plans(
     batch_parallel: bool,
     extra_diagnostics: list[Diagnostic] | None = None,
 ) -> Plan:
-    """Collapse N per-item child plans into one display/rollup plan."""
+    """Collapse N per-item child plans into one display/rollup plan — with every per-item
+    diagnostic, also when no item produced a child plan (each was rejected)."""
     if not child_plans:
         return Plan(
             workflow="<sub-workflow>",
             entries=[],
+            diagnostics=list(extra_diagnostics or []),
             summary=PlanSummary(
                 total=0,
                 cached_count=0,
@@ -2151,12 +2202,13 @@ _TYPE_PLACEHOLDERS: dict[str, Any] = {
 def _placeholder_child_inputs(child_ir: dict[str, Any]) -> dict[str, Any]:
     """Synthesize placeholder values for every declared child input.
 
-    Used only in downstream mode: the parent is in BFS-post-miss, so the
-    real upstream-resolved inputs aren't available. The child's BFS walk
-    never reads inputs (no template resolution, no node execution — just
-    topology + historical-stats lookup), so the placeholder values are
-    never observed. We just need compile_workflow's required-input check
-    to pass.
+    Used to compile a child whose real inputs are not the compile's business:
+    in downstream mode the parent is in BFS-post-miss, so the real
+    upstream-resolved inputs aren't available and the child's BFS walk never
+    reads them (no template resolution, no node execution — just topology +
+    historical-stats lookup); for a batch, each item's inputs are typed and
+    planned on their own. We just need compile_workflow's input boundary to
+    pass, so each placeholder fits its declared type.
     """
     declared = child_ir.get("inputs") or {}
     if not isinstance(declared, dict):
@@ -2164,27 +2216,14 @@ def _placeholder_child_inputs(child_ir: dict[str, Any]) -> dict[str, Any]:
     placeholders: dict[str, Any] = {}
     for name, spec in declared.items():
         type_name = spec.get("type") if isinstance(spec, dict) else None
-        placeholders[name] = _TYPE_PLACEHOLDERS.get(str(type_name))
+        placeholders[name] = _TYPE_PLACEHOLDERS.get(str(type_name), _PLACEHOLDER_STRING)  # `any`/untyped: text
     return placeholders
 
 
-def _effective_child_inputs(
-    child_ir: dict[str, Any],
-    child_inputs: dict[str, Any],
-    *,
-    downstream: bool,
-) -> dict[str, Any]:
-    """Return the inputs dict to pass to the child compiler.
-
-    In downstream mode, substitute placeholder values so compile-time
-    required-input checks pass (parent's upstream is dirty, real values
-    aren't available, BFS-from-start never reads them). In normal mode,
-    pass the caller-provided inputs through untouched — missing required
-    inputs SHOULD fail loudly there.
-    """
-    if downstream:
-        return _placeholder_child_inputs(child_ir)
-    return child_inputs
+def _child_ref(merged: dict[str, Any], resolved_path_str: str | None) -> str:
+    """The child as the parent names it (``./child.pflow.md``) — how the run's input errors name it."""
+    ref = merged.get("workflow")
+    return ref if isinstance(ref, str) and ref else str(resolved_path_str or "<sub-workflow>")
 
 
 def _raw_workflow_ref(curr: Any, config: NodeConfig) -> Any:
@@ -2281,7 +2320,12 @@ def _compile_child(
     if resolved_path_str is not None:
         child_initial_params["_pflow_workflow_file"] = resolved_path_str
     try:
-        return compile_workflow(child_ir, registry=registry, initial_params=child_initial_params)
+        return compile_workflow(
+            child_ir,
+            registry=registry,
+            initial_params=child_initial_params,
+            input_sources=dict.fromkeys(child_inputs, "parent"),
+        )
     except _CHILD_COMPILE_EXCEPTIONS as exc:
         raise _ChildCompileFailed(_compile_error_entry(exc, node_id, node_type)) from exc
 

@@ -148,7 +148,7 @@ def format_execution_hint(name: str, workflow_ir: dict[str, Any]) -> str:
 
     for param_name, param_spec in inputs.items():
         is_required = param_spec.get("required", True)
-        param_type = param_spec.get("type", "string")
+        param_type = param_spec.get("type", "any")
 
         # Create hint based on type - use consistent <type> format
         type_hint = _get_type_hint(param_type)
@@ -223,7 +223,7 @@ def _has_complex_types(workflow_ir: dict[str, Any]) -> bool:
     inputs = workflow_ir.get("inputs", {})
 
     for param_spec in inputs.values():
-        param_type = param_spec.get("type", "string").lower()
+        param_type = param_spec.get("type", "any").lower()
 
         # Check if it's a complex type
         if param_type in ("array", "object", "any", ""):

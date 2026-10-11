@@ -618,8 +618,8 @@ def test_validator_called_exactly_once():
 def test_declared_defaults_applied_without_user_params():
     """Workflow with declared input defaults should use them when user provides nothing.
 
-    Tests the full novel pipeline: _fill_declared_defaults (placeholders for validation)
-    → _strip_placeholders (clean before compilation) → prepare_inputs (applies real defaults).
+    Tests the full pipeline: _fill_placeholders (placeholders for validation)
+    → _strip_placeholders (clean before compilation) → prepare_inputs (resolves the default).
     If any step is wrong, the default value won't appear in the output.
     """
     workflow_ir = {
@@ -646,8 +646,8 @@ def test_declared_defaults_applied_without_user_params():
 def test_user_params_override_declared_defaults():
     """User-provided values must not be clobbered by declared defaults.
 
-    _fill_declared_defaults has an `if name not in params` guard. This test
-    ensures a user's explicit value survives through the full pipeline.
+    _fill_placeholders fills only absent names. This test ensures a user's
+    explicit value survives through the full pipeline.
     """
     workflow_ir = {
         "inputs": {

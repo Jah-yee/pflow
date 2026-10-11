@@ -121,8 +121,8 @@ class TestDeleteFileNode:
 class TestConfirmDeleteRequiresBooleanTrue:
     """Only the boolean ``True`` authorizes deletion (#617).
 
-    A string-typed workflow input coerces CLI ``confirm_delete=false`` to the
-    non-empty string ``"False"``; generic truthiness must never read that — or any
+    A string-typed workflow input hands on CLI ``confirm_delete=false`` as the
+    non-empty text ``"false"``; generic truthiness must never read that — or any
     other non-bool — as permission to delete.
     """
 
@@ -153,7 +153,7 @@ class TestConfirmDeleteThroughCli:
     @pytest.mark.parametrize(
         ("input_type", "cli_value", "refusal_hint"),
         [
-            ("string", "false", "- type: boolean"),  # the reported bug: coerced to "False", was truthy
+            ("string", "false", "- type: boolean"),  # the reported bug: the text "false" was truthy
             ("string", "true", "- type: boolean"),  # a string is never authorization, even "True"
             ("boolean", "false", "confirm_delete=true"),
             ("boolean", "true", None),  # the one authorizing case

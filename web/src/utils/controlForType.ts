@@ -6,8 +6,8 @@
 // `io.data_type` is the AUTHORED string, so it may be a Python alias or null; the
 // canonical set is string,number,integer,boolean,array,object,any (core/types.py).
 // Anything unrecognized falls back to a plain text box — the value still rides to
-// the CLI as a `name=value` token where infer_type + declared-type coercion re-type
-// it (channel A), so a text fallback is never lossy.
+// the CLI as a `name=value` token typed by the input's declared type (channel A), so
+// a text fallback is never lossy.
 
 export type Control = "text" | "number" | "checkbox" | "textarea";
 

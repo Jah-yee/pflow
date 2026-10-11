@@ -123,7 +123,7 @@ Project docs are loaded as CLAUDE.md context — read them first instead of rest
 2. Read `src/pflow/runtime/template_validation/validator.py` → pre-run validation
 3. Read `src/pflow/runtime/engine/template_resolution.py` → engine integration point
 4. `grep "resolve\|template" tests/test_runtime/` → test coverage
-5. Check `src/pflow/core/json_utils.py` and `core/param_coercion.py` → type handling
+5. Check `src/pflow/core/json_utils.py`, `core/param_coercion.py` (`coerce_declared_input` → `core/exceptions.py::InputTypeError`) and `core/types.py` (`TypeSpec.parse_text`) → type handling
 
 **Understand the MCP integration (two separate systems):**
 1. `glob "src/pflow/mcp/*.py"` → client-side (using MCP tools IN workflows)
@@ -152,11 +152,12 @@ These are search surprises — where a thing lives can differ from where you'd e
 | How a shell `env:` value reaches the command | `nodes/shell/env_binding.py` (`bind_env`, `env_problems`) — not `shell.py` |
 | Why `${…}` in a shell command / code block is not resolved | `core/workflow/template_surfaces.py::param_mode`; the leftover/`$${` check is `core/workflow/data_flow.py` section "Code bodies" |
 | Why `${…}` in an MCP tool's JavaScript (`evaluate_script`'s `function`) is sent as written | `core/workflow/template_surfaces.py::EMBEDDED_CODE` + `param_mode` → `"embedded"`; every reader uses the view `core/templates.py::embedded_code` (only `${x|json}` inserts are pflow's) |
+| Where a workflow input's value gets its type, and why its JSON text is not parsed | Boundary: `core/param_coercion.py::coerce_declared_input`, called by `runtime/compilation/ir_preparation.py::prepare_inputs` / `check_supplied_inputs` and, per sub-workflow call, `runtime/workflow_executor.py::type_child_inputs`. No re-parse: `core/templates.py::DECLARED_INPUT_TYPES_KEY` (source side) + `runtime/engine/template_resolution.py::parses_leaves` / `_CONSUMER_TYPES_LEAVES` / `TemplateConfig.text_input_keys` (consumer side). Validator rules: `core/workflow/declared_inputs.py`. A code input's annotation is read by `nodes/python/python_code.py::extract_code_annotation_type` |
 | Registry "user node" CLI command | Removed in Task 151 — `Registry.scan_user_nodes()` is Python-only now |
 | `pflow probe` implementation | `cli/commands/probe.py` + `cli/commands/_probe_impl.py` (formerly `registry_run`) |
 | When MCP tools get discovered | Only `pflow mcp add` (the servers it saved) and `pflow mcp sync`, both in `cli/commands/mcp.py` — workflow runs never sync |
 | Two-tier exception hierarchy | `core/exceptions.py` (internal `PflowError` tree) + `core/user_errors.py` (`UserFriendlyError` branch) |
-| Output routing files | `core/output_controller.py`, `cli/workflow_output.py` (largest), `cli/error_output.py`, `runtime/output_resolver.py`, `cli/rerun_display.py` |
+| Output routing files | `core/output_controller.py`, `cli/workflow_output.py` (largest), `cli/error_output.py`, `runtime/output_resolver.py` |
 | LLM seam | `core/llm_client.py` (LiteLLM adapter, `complete()`) + `core/llm_config.py` (model resolution). Replaced Simon Willison's `llm` library in Task 158. |
 | Skill management split | `core/workflow/skill_service.py` (logic) + `cli/commands/skills.py` (CLI) |
 | Workflow save (shared CLI+MCP) | `core/workflow/save_service.py` |

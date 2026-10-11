@@ -194,6 +194,7 @@ class TestWorkflowExecutor:
         )
 
         node = WorkflowExecutor()
+        node.node_id = "call"
         node.set_params({"workflow": str(child_workflow)})
         shared: dict[str, object] = {"__parser_diagnostics__": []}
 
@@ -201,7 +202,7 @@ class TestWorkflowExecutor:
         # Parser warnings must still propagate to shared even on the error path.
         prep_res = node.prep(shared)
         assert "_prep_error" in prep_res
-        assert "missing required inputs" in prep_res["_prep_error"]
+        assert f"{child_workflow} requires input 'required_value'" in prep_res["_prep_error"]
 
         parser_diagnostics = shared["__parser_diagnostics__"]
         assert isinstance(parser_diagnostics, list)

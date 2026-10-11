@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import json
+import shlex
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pflow.core.cache_ttl import build_unsupported_cache_ttl_diagnostic, unsupported_cache_ttl_message
 from pflow.core.diagnostic import LLM_FAILURE_CATEGORY, LLM_VALIDATION_CATEGORY, Diagnostic, Severity
 from pflow.core.gate import GATE_KIND_APPROVAL, GateRequest
 from pflow.core.llm_providers import detect_provider, extract_provider_prefix
+from pflow.core.security_utils import redact_for_display
+from pflow.core.templates import Field, Resolution, declared_text_misses, parse_path
+from pflow.core.types import TypeSpec
+
+if TYPE_CHECKING:
+    from pflow.core.param_coercion import InputSource
 
 # Typed discriminators for LLMCallError subclasses. Carried as Literal so
 # typos at construction sites (e.g. ``kind="rate_limt"``) fail mypy at the
@@ -169,6 +177,291 @@ class WorkflowValidationError(PflowError):
                 title="Validation Error",
                 source="validation",
                 context={"category": "validation"},
+            )
+        ]
+
+
+# The "received …" clause per source (diagnostics-checkpoint §1.2); `default` and `parent` use their own sentence.
+_SOURCE_CLAUSES: dict[str, str] = {
+    "argument": "from the command line",
+    "stdin": "from stdin",
+    "env": "from the environment variable {name}",
+    "settings": "from settings.env",
+    "recorded": "recorded by the run being resumed",
+    "call": "in the call's parameters",
+    "parent": "from the calling workflow",
+}
+_RECEIVED_LIMIT = 80
+# The declared type a value already has — named in the `default` fix ("or the type to `- type: …`").
+_VALUE_TYPES: tuple[tuple[type, str], ...] = (
+    (bool, "boolean"),
+    (int, "integer"),
+    (float, "number"),
+    (dict, "object"),
+    (list, "array"),
+)
+
+
+class InputTypeError(PflowError):
+    """A workflow input's value does not fit its declared type.
+
+    Raised by ``param_coercion.coerce_declared_input``; every boundary catches it and
+    carries its Diagnostic (``prepare_inputs`` → a ``WorkflowValidationError`` of N
+    diagnostics), so it never crosses a node boundary. The text per source is
+    ``task_120/implementation/diagnostics-checkpoint.md`` §1. ``received`` is shown
+    masked for a sensitive input name and cut at 80 characters; the fix line never
+    echoes a sensitive value.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        declared_type: str,
+        received: Any,
+        source: InputSource,
+        step: str | None = None,
+        sub_workflow_path: str | None = None,
+        resumed_run: str | None = None,
+    ) -> None:
+        self.input_name = name
+        self.type_spec = TypeSpec(declared_type)
+        self.received = received
+        self.source = source
+        self.step = step
+        self.sub_workflow_path = sub_workflow_path
+        self.resumed_run = resumed_run
+        super().__init__(self._message())
+
+    def located(
+        self,
+        *,
+        resumed_run: str | None = None,
+        step: str | None = None,
+        sub_workflow_path: str | None = None,
+    ) -> InputTypeError:
+        """This error with what only the boundary knows, not the coercer: the run whose recorded
+        inputs are replayed (named in the ``recorded`` fix line), or the parent step and the child
+        at a sub-workflow boundary (the ``parent`` sentence and path)."""
+        return InputTypeError(
+            name=self.input_name,
+            declared_type=self.type_spec.name,
+            received=self.received,
+            source=self.source,
+            step=step or self.step,
+            sub_workflow_path=sub_workflow_path or self.sub_workflow_path,
+            resumed_run=resumed_run or self.resumed_run,
+        )
+
+    @property
+    def path(self) -> str:
+        if self.source == "default":
+            return f"inputs.{self.input_name}.default"
+        if self.source == "parent" and self.step:
+            return f"nodes[id={self.step}].params.inputs.{self.input_name}"
+        return f"inputs.{self.input_name}"
+
+    def _shown(self) -> str:
+        """``received`` as display text: redacted (``redact_for_display``), JSON for a non-text
+        value, cut at 80 characters."""
+        shown = redact_for_display([self.input_name], self.received)
+        text = shown if isinstance(shown, str) else _json_text(shown)
+        if text == "<REDACTED>":
+            return text
+        return text if len(text) <= _RECEIVED_LIMIT else text[:_RECEIVED_LIMIT] + "…"
+
+    def _quoted(self) -> str:
+        """``received`` in a sentence: text quoted (escapes visible), a JSON value or the mask as is."""
+        shown = self._shown()
+        return repr(shown) if isinstance(self.received, str) and shown != "<REDACTED>" else shown
+
+    def _passed(self, argument: str, example: str) -> str:
+        """How to pass the fixed value instead: a command-line argument at the root; at a
+        sub-workflow boundary, a key under the calling step's ``inputs:``."""
+        if self.step:
+            return f"pass `{self.input_name}: {example}` under step '{self.step}' `inputs:`"
+        return f"pass {argument}"
+
+    def _message(self) -> str:
+        name, declared = self.input_name, f"`- type: {self.type_spec.name}`"
+        if self.source == "default":
+            return f"The default of input '{name}' is {self._quoted()} but its type is {declared}."
+        if self.source == "parent" and self.step:
+            child = self.sub_workflow_path or "the sub-workflow"
+            return f"Step '{self.step}' passes {self._quoted()} to input '{name}' of {child}, declared {declared}."
+        clause = _SOURCE_CLAUSES[self.source].format(name=name)
+        return f"Input '{name}' is declared {declared} but received {self._quoted()} {clause}."
+
+    def _suggestion(self) -> str:
+        spec, name = self.type_spec, self.input_name
+        hidden = redact_for_display([name], self.received) != self.received  # a fix line never echoes it
+        example = _fix_example(spec, None if hidden else self.received)
+        argument = f"{name}={shlex.quote(example)}"
+        match self.source:
+            case "stdin":
+                return f"Pipe {spec.accepted_text}, or pass {argument} on the command line"
+            case "env":
+                winner = "a passed value" if self.step else "an argument"
+                return f"export {argument}, or {self._passed(argument, example)} ({winner} wins over the environment)"
+            case "settings":
+                return f"pflow settings set-env {name} {shlex.quote(example)}, or {self._passed(argument, example)}"
+            case "recorded":
+                return f"Override it: pflow resume {self.resumed_run or '<run-id>'} {argument}"
+            case "call":
+                literal = json.dumps(example) if spec.name == "string" else example
+                return f'Pass {spec.accepted_noun}: "{name}": {literal}'
+            case "default":
+                fitting = _value_type(self.received)
+                return (
+                    f"Change the default to {spec.accepted_noun} (e.g. `- default: {spec.example_text}`), "
+                    f"or the type to `- type: {fitting}`."
+                )
+            case "parent":
+                return f"Pass {spec.accepted_noun} from the parent."
+            case _:  # argument
+                return f"Pass {spec.accepted_text}: {argument}"
+
+    def to_diagnostics(self) -> list[Diagnostic]:
+        context: dict[str, Any] = {
+            "category": "validation",
+            "path": self.path,
+            "input": self.input_name,
+            "declared_type": self.type_spec.name,
+            "received": self._shown(),
+            "source": self.source,
+            # Text is read by the grammar (`yes`, `1`); a typed value must already be one (`true`).
+            "accepted": self.type_spec.accepted_text
+            if isinstance(self.received, str)
+            else self.type_spec.accepted_noun,
+        }
+        if self.step:
+            context["sub_workflow_step"] = self.step
+        if self.sub_workflow_path:
+            context["sub_workflow_path"] = self.sub_workflow_path
+        return [
+            Diagnostic(
+                severity=Severity.ERROR,
+                message=str(self),
+                title="Invalid input value",
+                suggestions=[self._suggestion()],
+                source="validation",
+                context=context,
+            )
+        ]
+
+
+def _json_text(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _value_type(value: Any) -> str:
+    return next((name for kind, name in _VALUE_TYPES if isinstance(value, kind)), "string")
+
+
+def _as_number(received: Any) -> int | float | None:
+    """``received`` as a number when it is one or its text reads as one (``007`` only as an integer)."""
+    if isinstance(received, str):
+        for kind in ("number", "integer"):
+            ok, value = TypeSpec(kind).parse_text(received.strip())
+            if ok:
+                return value  # type: ignore[no-any-return]  # parse_text of a number type yields int | float
+        return None
+    if isinstance(received, (int, float)) and not isinstance(received, bool):
+        return received
+    return None
+
+
+def _fix_example(spec: TypeSpec, received: Any) -> str:
+    """The smallest fix of ``received`` when one is obvious (``3.0`` → ``3``, ``tea`` → ``["tea"]``),
+    else the type's canonical example — also when the fix would run past 80 characters (a fix
+    line never carries more of the value than the message does). ``received`` is ``None`` when
+    it holds anything ``redact_for_display`` hides."""
+    text = received.strip() if isinstance(received, str) else None
+    fix = spec.example_text
+    if spec.name in ("integer", "number"):
+        number = _as_number(received)
+        if number is not None and (isinstance(number, int) or number.is_integer()):
+            fix = str(int(number))
+    elif spec.name == "array" and text and text[0] not in "[{":
+        fix = json.dumps([text], ensure_ascii=False)
+    elif spec.name == "string" and isinstance(received, (dict, list)):
+        fix = _json_text(received)
+    return fix if len(fix) <= _RECEIVED_LIMIT else spec.example_text
+
+
+def shown_declared_text(text_path: str, text: str) -> str:
+    """``text`` — JSON text at ``text_path`` inside a declared input — as every message shows it:
+    ``<REDACTED>`` when the input or any field on the path is sensitive-named, its own sensitive
+    keys redacted otherwise (``redact_for_display``)."""
+    path = parse_path(text_path)
+    names = [path.root, *(seg.name for seg in path.path if isinstance(seg, Field))] if path else [text_path]
+    shown = redact_for_display(names, text)
+    return shown if isinstance(shown, str) else text
+
+
+def declared_text_reason(reference: str, text_path: str, text: str) -> tuple[str, str]:
+    """``(what happened, what to do)`` when ``${reference}`` walked into ``text`` at ``text_path``
+    — JSON text inside a declared input, which is never re-parsed (diagnostics-checkpoint §1.14).
+    ``text`` is shown as given (pass it masked) and cut at 80 characters."""
+    rest = parse_path(f"x{reference[len(text_path) :]}")
+    first = rest.path[0] if rest is not None and rest.path else None
+    missing = f"field '{first.name}'" if isinstance(first, Field) else "index"
+    shown = repr(text) if len(text) <= _RECEIVED_LIMIT else repr(text[:_RECEIVED_LIMIT]) + "…"
+    return (
+        f"'{text_path}' is text ({shown}) — a declared input is never JSON-parsed, so there is no {missing} to read.",
+        declared_text_fix(text_path, text),
+    )
+
+
+def declared_text_fix(text_path: str, text: str) -> str:
+    """The two remedies for JSON ``text`` held at ``text_path`` inside a declared input: nest the
+    value in the input, or parse the text in a code step. ``text`` as given (pass it through
+    ``shown_declared_text``); the nested example — there to be pasted — is left out when it
+    would pass 80 characters or carry a redaction."""
+    holder = text_path.rsplit(".", 1)[-1] if "." in text_path and not text_path.endswith("]") else None
+    try:
+        nested = json.dumps({holder: json.loads(text)}) if holder else None
+    except ValueError:  # masked
+        nested = None
+    if nested is not None and (len(nested) > _RECEIVED_LIMIT or "<REDACTED>" in nested):
+        nested = None
+    nest = f"Nest the object in the input (`{nested}`)" if nested else "Nest the object in the input"
+    return f"{nest}, or parse the text in a code step (`json.loads({holder or 'text'})`)."
+
+
+class DeclaredInputTextError(PflowError):
+    """A reference walked into JSON text inside a declared input, which is never re-parsed
+    (ADR-0017). Raised by a consumer that would otherwise read the miss as an absent value —
+    a loop condition, batch items, a ``## Cache`` chunk — so it never passes silently."""
+
+    retriable = False
+
+    def __init__(self, *, where: str, reference: str, text_path: str, text: str, node_id: str | None = None) -> None:
+        self.reference = reference
+        self.text_path = text_path
+        self.node_id = node_id
+        what, self.fix = declared_text_reason(reference, text_path, shown_declared_text(text_path, text))
+        super().__init__(f"{where} reads ${{{reference}}}: {what}")
+
+    @classmethod
+    def raise_for(cls, resolution: Resolution, context: Any, *, where: str, node_id: str | None = None) -> None:
+        """Raise for the first declared-text miss in ``resolution``; return when there is none."""
+        for reference, text_path, text in declared_text_misses(resolution, context):
+            raise cls(where=where, reference=reference, text_path=text_path, text=text, node_id=node_id)
+
+    def to_diagnostics(self) -> list[Diagnostic]:
+        return [
+            Diagnostic(
+                severity=Severity.ERROR,
+                message=str(self),
+                title="Template Resolution Failed",
+                suggestions=[self.fix],
+                node_id=self.node_id,
+                source="runtime",
+                context={"category": "execution_failure", "text_not_parsed": self.text_path},
             )
         ]
 

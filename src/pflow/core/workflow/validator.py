@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity, deduplicate_diagnostics, format_child_provenance
-from pflow.core.exceptions import SchemaValidationError, WorkflowValidationError
+from pflow.core.exceptions import InputTypeError, SchemaValidationError, WorkflowValidationError
+from pflow.core.param_coercion import coerce_declared_input
 from pflow.core.templates import TemplateResolver, parse, resolve
 from pflow.registry import Registry
 
@@ -303,6 +304,7 @@ class WorkflowValidator:
         # become unreachable in templates after Optional A (${true} resolves to
         # the boolean literal). Reject loudly rather than fail silently.
         diagnostics.extend(WorkflowValidator._reject_reserved_literal_names(workflow_ir))
+        diagnostics.extend(WorkflowValidator._check_input_defaults(workflow_ir))
 
         # 2. Stdin input validation (ALWAYS run - only one stdin: true allowed)
         diagnostics.extend(WorkflowValidator._validate_stdin_inputs(workflow_ir))
@@ -424,6 +426,21 @@ class WorkflowValidator:
             if node_id in WorkflowValidator._RESERVED_LITERAL_NAMES:
                 diagnostics.append(_diag(node_id, "Node", f"nodes[id={node_id}]"))
 
+        return diagnostics
+
+    @staticmethod
+    def _check_input_defaults(workflow_ir: dict[str, Any]) -> list[Diagnostic]:
+        """Every declared ``default:`` typed by its input's declaration, as the input boundary
+        will type it when the default is used (``prepare_inputs``) — checked whether or not a
+        run supplies the input. ``default: null`` is no value (D2)."""
+        diagnostics: list[Diagnostic] = []
+        for name, spec in (workflow_ir.get("inputs") or {}).items():
+            if not isinstance(spec, dict) or spec.get("default") is None:
+                continue
+            try:
+                coerce_declared_input(name, spec.get("type"), spec["default"], source="default")
+            except InputTypeError as e:
+                diagnostics.extend(e.to_diagnostics())
         return diagnostics
 
     @staticmethod
@@ -1800,8 +1817,33 @@ class WorkflowValidator:
             # item is a scalar, ``${alias}`` resolves naturally; ``${alias.key}``
             # stays unresolved → ``_load_child_workflow`` defers.
             context = {alias: item}
-            effective_params = TemplateResolver.resolve_nested(params, context)
+            # Not JSON-parsed, as the engine hands a workflow step's `inputs:` on: literal child
+            # values reach `_check_required_inputs` as written.
+            effective_params = resolve(params, context).value
+            # An `inputs:` value is resolved here only when it reads nothing but the item; any other
+            # stays its template and is typed per item at run time. Here `${count ?? "x"}` would
+            # resolve to its fallback — a guess, not the value the run passes.
+            if isinstance(raw_inputs, str) and not WorkflowValidator._known_here(raw_inputs, alias, item):
+                effective_params["inputs"] = raw_inputs
+            elif isinstance(raw_inputs, dict) and isinstance(effective_params.get("inputs"), dict):
+                effective_params["inputs"] = {
+                    key: value if WorkflowValidator._known_here(raw_inputs[key], alias, item) else raw_inputs[key]
+                    for key, value in effective_params["inputs"].items()
+                }
             yield effective_params, idx, inputs_from_item
+
+    @staticmethod
+    def _known_here(value: Any, alias: str, item: Any) -> bool:
+        """Whether ``value`` (a string; containers are judged by shape) resolves here to what the
+        run passes: it reads only the batch alias, and a ``??`` in it never falls back past a
+        template the item holds (the run resolves an item's ``"${payload}"`` first; here a walk
+        into it misses). Without ``??`` a miss stays a template, which no static check reads."""
+        if not isinstance(value, str):
+            return True
+        template = parse(value)
+        if any(ref.root != alias for ref in template.references):
+            return False
+        return all(len(e.operands) == 1 for e in template.expressions) or not TemplateResolver.has_templates(item)
 
     @staticmethod
     def _params_reference_alias(value: Any, alias: str) -> bool:
@@ -1899,13 +1941,16 @@ class WorkflowValidator:
             )
             return diagnostics
 
-        parent_keys: set[str] = set(inputs_value.keys()) if isinstance(inputs_value, dict) else set()
+        passed: dict[str, Any] = inputs_value if isinstance(inputs_value, dict) else {}
+        parent_keys = set(passed)
+        # A null is no value — the child's boundary reads it as not provided (`prepare_inputs`).
+        supplied_keys = {key for key, value in passed.items() if value is not None}
 
         # Missing-required direction.
         for input_name, input_spec in child_inputs.items():
             is_required = input_spec.get("required", True)
-            has_default = "default" in input_spec
-            if is_required and not has_default and input_name not in parent_keys:
+            has_default = input_spec.get("default") is not None  # `default: null` is no value (prepare_inputs)
+            if is_required and not has_default and input_name not in supplied_keys:
                 sorted_inputs = sorted(child_inputs.keys())
                 diagnostics.append(
                     Diagnostic(
@@ -1969,6 +2014,37 @@ class WorkflowValidator:
                     )
                 )
 
+        diagnostics.extend(
+            WorkflowValidator._check_literal_input_types(
+                node_id, ref_label, inputs_value, child_inputs, inputs_path_root, item_context
+            )
+        )
+        return diagnostics
+
+    @staticmethod
+    def _check_literal_input_types(
+        node_id: str,
+        ref_label: str,
+        inputs_value: dict[str, Any] | None,
+        child_inputs: dict[str, Any],
+        inputs_path_root: str,
+        item_context: dict[str, Any],
+    ) -> list[Diagnostic]:
+        """Every AUTHORED value a parent passes — a literal, or one an inline batch item supplied —
+        typed by the child's declaration as the child's boundary will type it
+        (``workflow_executor.type_child_inputs``). A value from a template is typed there, per
+        item, as a routable error."""
+        diagnostics: list[Diagnostic] = []
+        for name, value in (inputs_value or {}).items():
+            spec = child_inputs.get(name)
+            if not isinstance(spec, dict) or (isinstance(value, str) and TemplateResolver.has_templates(value)):
+                continue
+            try:
+                coerce_declared_input(name, spec.get("type"), value, source="parent")
+            except InputTypeError as e:
+                diagnostic = e.located(step=node_id, sub_workflow_path=ref_label).to_diagnostics()[0]
+                context = {**(diagnostic.context or {}), "path": f"{inputs_path_root}.{name}", **item_context}
+                diagnostics.append(replace(diagnostic, node_id=node_id, context=context))
         return diagnostics
 
     @staticmethod

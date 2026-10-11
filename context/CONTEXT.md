@@ -44,6 +44,13 @@ substitution.
 plain Python, never a Template — a `${…}` in it belongs to that language. Values reach it only
 through a Binding. _Avoid_: script, snippet, inline code, template body.
 
+**Declared type** — the type a value is given where it enters, fixed by the declaration of what receives it: a
+workflow input's `## Inputs` `type:` (omitted means `any`), a code step's `inputs:` annotation, or a text consumer
+(`shell.env`, `http.headers`, a sub-workflow's inputs, typed by the child). Text is read by a strict grammar; a value
+that does not fit is an `Invalid input value` error naming its source. A Reference rooted in a declared non-`any`
+input, or in a name bound to one by a single whole reference, is never JSON-parsed downstream. _Avoid_: inferred
+type, coerced type.
+
 **Binding** — a named value pflow hands to a Code body as a variable of its language: an `env:`
 entry on a shell step (an environment variable, always text), an `inputs:` entry on a code step
 (a Python variable, typed). The entry's value is a Template; the body reads the name. _Avoid_:
@@ -97,6 +104,11 @@ with a degrading warning. _Avoid_: note, hint, info.
 **Run** — one execution of a Workflow from start to finish, producing a trace and ending in one
 terminal status (Success, Degraded, or Failed). One Workflow definition yields many Runs; Runs of
 the same Workflow may execute concurrently. _Avoid_: invocation, execution, session.
+
+**Run outcome** — the one document describing how a Run ended — Success, Failed, Paused, Denied — built once
+from the execution result and rendered per channel (CLI text, CLI JSON, MCP). Identity, trace path, lineage, metrics
+and warnings are present for every ending; `result`, `errors` and `gate` appear by status. _Avoid_: result
+(the `result` field), report (`pflow report`), summary, response.
 
 **Snapshot** — the frozen prior-run state that `--only <step>` runs a single step against:
 every *prior* step's output reused from the most recent full run, so only the target

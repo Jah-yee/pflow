@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import typing
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -43,7 +43,7 @@ TRUSTED_TRAVERSABLE_TYPES = frozenset({"dict", "object", "any"})  # ...without a
 # Template-flow type compatibility: may a value of the declared SOURCE type flow
 # through a template into a param of the TARGET type? It encodes auto-parse
 # (str → dict) and stringification (int → str), so it is NOT a value-vs-declared-type
-# check — a literal or coerced value is checked with `TypeSpec.accepts` (`core/types.py`).
+# check — a workflow input's value is typed by `param_coercion.coerce_declared_input`.
 # source_type -> list of compatible target types
 #
 # BIDIRECTIONAL JSON compatibility for dict/list ↔ str:
@@ -499,6 +499,69 @@ def near_miss_insert(source: str, issue: Issue) -> tuple[str, str] | None:
 
 _MISS: tuple[bool, Any] = (False, None)
 
+# The running workflow's declared ``## Inputs`` types (``{name: canonical type}``), carried in
+# the shared store beside ``__pflow_prompt_cache__`` and installed by the same owners (the
+# engine per workflow, the dry-run planner, the runner's root store). A reference whose root
+# is a declared non-``any`` input — or a name bound to one (``bound_declaration``) — is never
+# JSON-parsed, at the leaf or mid-path (ADR-0017).
+DECLARED_INPUT_TYPES_KEY = "__pflow_input_types__"
+
+# A map VALUE: a name bound to a value INSIDE a declared input (``doc: ${d.payload}``, the item
+# of a batch over ``${rows}``) — never re-parsed, its type unknown. Not a canonical type, so the
+# validator applies no type rule to it.
+PROTECTION_ONLY = "protection-only"
+
+
+def _declared_typed(context: Mapping[str, Any], root: str) -> bool:
+    """Whether ``root`` is a declared non-``any`` input of the workflow ``context`` belongs to,
+    or a name bound to one."""
+    types: Mapping[str, str] = context.get(DECLARED_INPUT_TYPES_KEY) or {}
+    return types.get(root, "any") != "any"
+
+
+def bound_reference(authored: Any) -> Reference | None:
+    """The one Reference an authored binding value IS — a single Expression that is the whole
+    value, with one operand (no ``??``) and no ``|json`` — else ``None``."""
+    if not isinstance(authored, str) or not (template := parse(authored)).is_simple:
+        return None
+    operands = template.expressions[0].operands
+    return operands[0] if len(operands) == 1 and isinstance(operands[0], Reference) else None
+
+
+def bound_declaration(authored: Any, declared: Mapping[str, str]) -> str | None:
+    """What a name bound to ``authored`` (a step ``inputs:`` key, a batch item) inherits from
+    ``declared``, the declared-input map where the value resolves: a single reference to a
+    declared non-``any`` input (``bound_reference``) passes on the root's entry for the whole
+    root (``${v}``) and ``PROTECTION_ONLY`` for a path into it (``${d.payload}``); anything else
+    — a node output, a ``??``, text around it — inherits nothing (``None``: a local name). Read
+    from the authored template, never from the value, so a node output never inherits it."""
+    ref = bound_reference(authored)
+    kind = "any" if ref is None else declared.get(ref.root, "any")
+    if ref is None or kind == "any":
+        return None
+    return PROTECTION_ONLY if ref.path else kind
+
+
+def batch_item_declaration(items_template: Any, index: int, declared: Mapping[str, str]) -> str | None:
+    """What a batch alias inherits for item ``index`` (``bound_declaration``): an inline list's
+    element by its own authored text; any item of a whole ``batch.items`` reference to a
+    declared input is ``PROTECTION_ONLY`` (its element type is unknown)."""
+    if isinstance(items_template, list):
+        return bound_declaration(items_template[index], declared) if 0 <= index < len(items_template) else None
+    if isinstance(items_template, str) and bound_declaration(items_template.strip(), declared) is not None:
+        return PROTECTION_ONLY
+    return None
+
+
+def bind_declared(store: MutableMapping[str, Any], entries: Mapping[str, str | None]) -> None:
+    """Rebind names in ``store``'s declared-input map: each takes its entry, ``None`` removing it
+    (a local name no declared input owns). ``store`` is a step's or an item's own copy."""
+    declared: Mapping[str, str] = store.get(DECLARED_INPUT_TYPES_KEY) or {}
+    updated = {name: kind for name, kind in declared.items() if name not in entries}
+    updated.update({name: kind for name, kind in entries.items() if kind is not None})
+    if updated != dict(declared):
+        store[DECLARED_INPUT_TYPES_KEY] = updated
+
 
 def _json_container(value: Any) -> Any:
     """A JSON-object/array string parsed for traversal; anything else unchanged.
@@ -515,18 +578,6 @@ def _json_container(value: Any) -> Any:
     return value
 
 
-def _get_key(value: Any, key: str) -> tuple[bool, Any]:
-    """``(found, value[key])`` for any ``Mapping`` (``NamespacedSharedStore`` and
-    ``MappingProxyType`` included), auto-parsing a JSON-object string first."""
-    if isinstance(value, Mapping) and key in value:
-        return True, value[key]
-    if isinstance(value, str):
-        parsed = _json_container(value)
-        if isinstance(parsed, Mapping) and key in parsed:
-            return True, parsed[key]
-    return _MISS
-
-
 def lookup(ref: Reference, context: Mapping[str, Any]) -> tuple[bool, Any]:
     """Walk ``ref`` through ``context``: ``(found, value)``; see ``_walk``."""
     return _walk(ref.root, ref.path, context)
@@ -536,30 +587,88 @@ def _walk(root: str, path: Iterable[Segment], context: Mapping[str, Any]) -> tup
     """The one path walk.
 
     Found means the walk reached a value — possibly ``None`` (a found ``None`` is
-    not "missing"). A name reads a Mapping, auto-parsing a JSON-container string
-    first; an index needs a list (a JSON-array string is parsed first) and
-    ``0 <= N < len``. A dynamic index must resolve to an ``int`` (``bool``
-    excluded). Anything else — including walking on through ``None`` — is a miss.
+    not "missing"). A name reads a Mapping (``NamespacedSharedStore`` and
+    ``MappingProxyType`` included); an index needs a list and ``0 <= N < len``; a
+    JSON-container string is parsed before either — unless the root is a declared
+    input (``_declared_typed``). A dynamic index must resolve to an ``int``
+    (``bool`` excluded). Anything else — including walking on through ``None`` —
+    is a miss.
     """
-    found, current = _get_key(context, root)
-    if not found:
+    if root not in context:
         return _MISS
+    current = context[root]
+    parse_text = not _declared_typed(context, root)
     for segment in path:
+        found, current = _step(current, segment, context, parse_text=parse_text)
+        if not found:
+            return _MISS
+    return True, current
+
+
+def _step(current: Any, segment: Segment, context: Mapping[str, Any], *, parse_text: bool) -> tuple[bool, Any]:
+    """One segment of the walk from ``current``."""
+    if parse_text:
+        current = _json_container(current)
+    match segment:
+        case Field(name):
+            return (True, current[name]) if isinstance(current, Mapping) and name in current else _MISS
+        case Index(value):
+            index: int | None = value
+        case DynamicIndex(inner):
+            index = _dynamic_index(inner, context)
+    if index is None or not isinstance(current, list) or not 0 <= index < len(current):
+        return _MISS
+    return True, current[index]
+
+
+def unparsed_declared_text(ref: Reference, context: Mapping[str, Any]) -> tuple[str, str] | None:
+    """Why a reference rooted in a declared input missed, when the reason is its rule.
+
+    ``(path, text)`` of the JSON-container TEXT the walk stopped at (``("data.payload",
+    '{"a":1}')`` for ``${data.payload.a}``) — text a declared input never re-parses.
+    ``None`` when the root is not a declared input or the miss has another cause.
+    """
+    if ref.root not in context or not _declared_typed(context, ref.root):
+        return None
+    current, shown = context[ref.root], ref.root
+    for segment in ref.path:
+        found, following = _step(current, segment, context, parse_text=False)
+        if not found:
+            return (shown, current) if isinstance(current, str) and _json_container(current) is not current else None
+        current = following
         match segment:
             case Field(name):
-                found, current = _get_key(current, name)
-                if not found:
-                    return _MISS
-                continue
+                shown += f".{name}"
             case Index(value):
-                index: int | None = value
+                shown += f"[{value}]"
             case DynamicIndex(inner):
-                index = _dynamic_index(inner, context)
-        current = _json_container(current)
-        if index is None or not isinstance(current, list) or not 0 <= index < len(current):
-            return _MISS
-        current = current[index]
-    return True, current
+                shown += f"[${{{inner.raw}}}]"
+    return None
+
+
+def declared_text_stop(ref: Reference, context: Mapping[str, Any]) -> tuple[str, str, str] | None:
+    """``(reference, text path, text)`` when the walk of ``ref`` — or of a dynamic index's
+    reference inside it, at any depth (``${items[${cfg.payload.i}]}``) — stopped at a declared
+    input's JSON text (``unparsed_declared_text``); ``None`` otherwise. Such a miss is never an
+    absent value, always an author error: ``??`` does not fall past it (``_evaluate``)."""
+    for inner in ref.index_sources:
+        if inner_hit := declared_text_stop(inner, context):
+            return inner_hit
+    if text := unparsed_declared_text(ref, context):
+        return (ref.raw, *text)
+    return None
+
+
+def declared_text_misses(resolution: Resolution, context: Mapping[str, Any]) -> list[tuple[str, str, str]]:
+    """``declared_text_stop`` of every operand of ``resolution``'s unresolved expressions.
+    A consumer that treats "unresolved" as "absent" reads this first."""
+    misses: list[tuple[str, str, str]] = []
+    for raw in sorted(resolution.unresolved):
+        for expression in parse("${" + raw + "}").expressions:
+            for operand in expression.operands:
+                if isinstance(operand, Reference) and (hit := declared_text_stop(operand, context)):
+                    misses.append(hit)
+    return misses
 
 
 def _dynamic_index(inner: Reference, context: Mapping[str, Any]) -> int | None:
@@ -576,21 +685,26 @@ def _dynamic_index(inner: Reference, context: Mapping[str, Any]) -> int | None:
     return int(value)
 
 
-def _evaluate(expression: Expression, context: Mapping[str, Any]) -> tuple[bool, Any]:
-    """The first operand that resolves: a Literal always does; a Reference iff found.
+def _evaluate(expression: Expression, context: Mapping[str, Any]) -> tuple[bool, Any, Operand | None]:
+    """The first operand that resolves: ``(found, value, that operand)``. A Literal
+    always resolves; a Reference iff found.
 
     ``??`` falls through whenever the left side "isn't there" — the node did not
     run OR the field is missing (like ``??`` in JS/C#). A found ``None`` ends
-    the chain. (Declared outputs use a stricter all-absent rule in
+    the chain, and so does a walk into a declared input's JSON text
+    (``declared_text_stop``): the expression stays unresolved, never the fallback.
+    (Declared outputs use a stricter all-absent rule in
     ``output_resolver._is_all_absent_coalesce``.)
     """
     for operand in expression.operands:
         if isinstance(operand, Literal):
-            return True, operand.value
+            return True, operand.value, operand
         found, value = lookup(operand, context)
         if found:
-            return True, value
-    return _MISS
+            return True, value, operand
+        if declared_text_stop(operand, context):
+            break
+    return False, None, None
 
 
 # Raw-path lexer for USER-TYPED paths (`-o result.@type`, `read-fields result.dc:title`):
@@ -679,12 +793,14 @@ def resolve(value: Any, context: Mapping[str, Any], *, auto_parse: bool = False,
 
 def _resolve_simple(template: Template, context: Mapping[str, Any], auto_parse: bool) -> Resolution:
     expression = template.expressions[0]
-    found, value = _evaluate(expression, context)
+    found, value, operand = _evaluate(expression, context)
     if not found:
         logger.debug(f"Template '{template.source}' could not be resolved", extra={"var_name": expression.raw})
         return Resolution(template.source, unresolved=frozenset({expression.raw}))
-    # resolve_nested's leaf rule; numeric strings stay strings (Discord snowflake IDs).
-    if auto_parse and isinstance(value, str):
+    # resolve_nested's leaf rule; numeric strings stay strings (Discord snowflake IDs), and a
+    # declared input's text is never re-parsed — judged by the operand that supplied the value.
+    declared = isinstance(operand, Reference) and _declared_typed(context, operand.root)
+    if auto_parse and isinstance(value, str) and not declared:
         success, parsed = try_parse_json(value)
         if success and isinstance(parsed, (dict, list)):
             return Resolution(parsed)
@@ -710,7 +826,7 @@ def _resolve_string(template: Template, context: Mapping[str, Any], auto_parse: 
                     issues.add(written)
                     parts.append(written)
                     continue
-                found, value = _evaluate(segment, context)
+                found, value, _ = _evaluate(segment, context)
                 if found:
                     parts.append(to_json(value) if segment.as_json else to_string(value))
                 else:
@@ -900,7 +1016,7 @@ class TemplateResolver:
         also when ``expr`` is not in the expression grammar."""
         expression = _expression_at("${" + expr + "}", 0)
         if expression is not None and expression.raw == expr:
-            found, value = _evaluate(expression, context)
+            found, value, _ = _evaluate(expression, context)
             if found:
                 return value, "resolved"
         return None, "unresolved"
@@ -920,6 +1036,12 @@ class TemplateResolver:
 
     # Kept: the direct-test surface of `test_template_resolver.py`.
     _convert_to_string = staticmethod(to_string)
+
+    @staticmethod
+    def reads_declared_input(var_name: str, context: Mapping[str, Any]) -> bool:
+        """Whether a RAW path's root is a declared non-``any`` input of ``context``'s workflow —
+        a value read there is never re-parsed, by the walk or by whoever displays it."""
+        return _declared_typed(context, _split_raw_path(var_name)[0])
 
     @staticmethod
     def variable_exists(var_name: str, context: Mapping[str, Any]) -> bool:

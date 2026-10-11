@@ -255,7 +255,7 @@ class TestInvalidJsonGracefulFallback:
         assert "{not valid json}" in error_msg
 
     def test_wrong_json_type_raises_error(self, interface_metadata):
-        """Wrong JSON type (array when expecting object) -> raises error."""
+        """Wrong JSON type (array when expecting object) -> raises a shape error, not "malformed"."""
         with pytest.raises(ValueError) as exc_info:
             _resolve(
                 {"dict_param": "${wrong_type}"},
@@ -264,8 +264,9 @@ class TestInvalidJsonGracefulFallback:
             )
 
         error_msg = str(exc_info.value)
-        assert "malformed JSON" in error_msg
-        assert '["array"' in error_msg
+        assert "Parameter 'dict_param' expects dict but ${wrong_type} resolved to list." in error_msg
+        assert 'Value preview: ["array", "not", "object"]' in error_msg
+        assert "malformed" not in error_msg
 
     def test_json_primitive_string_not_parsed(self, interface_metadata):
         """JSON primitive (string) -> not parsed (wrong type)."""

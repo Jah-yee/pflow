@@ -55,15 +55,22 @@ Normal file/library resolution already resolves file references, but
 `compile_workflow` retains idempotent resolution for direct callers, using
 `initial_params['_pflow_workflow_file']` for the base directory.
 
-`prepare_inputs` does not mutate supplied params. Its returned `defaults` contains
-missing-input values **and coerced overrides of supplied values**. Resolution order
-is supplied values → process environment → settings.env → declared default →
-missing-required error; workflow-input coercion is lenient and warns on failure.
+`prepare_inputs` is the workflow input boundary and does not mutate supplied params
+(`_prepare_compilation` does, with its result). Its returned `defaults` contains
+missing-input values **and typed overrides of supplied values**. Per input the first
+value wins: supplied (`None` is no value) → process environment → settings.env →
+declared default (a fresh copy); with none, a required input is an error. At a
+sub-workflow boundary (`step=`) a required input with no default takes no fallback —
+only the parent passes it, as `_check_required_inputs` rules statically. Every value is typed by
+`core/param_coercion.coerce_declared_input` with its source (`input_sources`), and
+every problem is its own Diagnostic — `_prepare_compilation` raises them together as
+one `WorkflowValidationError`. `check_supplied_inputs` is the same boundary over the
+supplied values only (missing inputs stand in as placeholders, no fallback): the
+check behind `--validate-only` with values and cache analysis.
 `_prepare_compilation` merges that mapping into `initial_params` and exposes it as
-`resolved_defaults`; the runner applies it to shared storage. Child compile-cache
-reuse must not overwrite current item inputs with a previous item's coerced values:
-see `runtime/workflow_executor.py::WorkflowExecutor.exec` for its guarded seeding
-and current limitation that per-item coercion is not rerun.
+`resolved_defaults`; the runner applies it to shared storage. A sub-workflow's
+inputs are typed per call by `runtime/workflow_executor.py::type_child_inputs`
+(this same boundary, with the parent `step`), never by the cached child compile.
 `only_node` belongs to the engine, not the compiler.
 
 ## Loading boundaries

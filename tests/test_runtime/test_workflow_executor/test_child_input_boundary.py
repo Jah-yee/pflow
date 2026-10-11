@@ -1,0 +1,865 @@
+"""A sub-workflow's inputs are typed by the CHILD's ``## Inputs``, per item, in the host's ``prep`` (Task 120 PD).
+
+The parent hands its ``inputs:`` values on unparsed; ``type_child_inputs`` types each one by the child's
+declaration (labelled ``parent``) and resolves every absent input environment → settings → default — per
+call, so a batch item never inherits another item's values (#188). A value that does not fit is a
+routable failure: ``error_action`` and batch ``continue`` route it, and its Diagnostic rides the
+child-failure bundle into the error record. These drive real parent → child runs.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+from click.testing import CliRunner
+
+from pflow.cli.main import cli
+from pflow.core.diagnostic import Diagnostic, Severity
+from pflow.core.workflow.status import WorkflowStatus
+from pflow.execution.executor_service import build_subworkflow_diagnostics
+from pflow.execution.result import RunnerConfig
+from pflow.execution.runner import WorkflowRunner
+
+# A child that shows the types it received; `n` is required unless a test gives it a default.
+CHILD = """# Child
+
+A child with typed inputs.
+
+## Inputs
+
+### n
+
+A whole number.
+
+- type: integer
+{n_spec}
+
+### limit
+
+A whole number with a default.
+
+- type: integer
+- default: 3
+
+## Steps
+
+### show
+
+Show the types.
+
+- type: code
+- inputs:
+    n: ${{n}}
+    limit: ${{limit}}
+
+```python code
+n: int
+limit: int
+
+result: str = f"{{n!r}} {{limit!r}}"
+```
+
+## Outputs
+
+### out
+
+Shown.
+
+- source: ${{show.result}}
+"""
+
+
+def _child(tmp_path: Path, *, n_spec: str = "- required: true") -> Path:
+    path = tmp_path / "child.pflow.md"
+    path.write_text(CHILD.format(n_spec=n_spec), encoding="utf-8")
+    return path
+
+
+def _parent(tmp_path: Path, *, items: str, inputs: str, batch: str = "") -> Path:
+    """A parent whose `emit` step prints ``items`` (JSON) at run time, then calls the child per item."""
+    path = tmp_path / "parent.pflow.md"
+    path.write_text(
+        f"""# Parent
+
+Produce items at run time, then call the child per item.
+
+## Steps
+
+### emit
+
+Emit the items.
+
+- type: shell
+
+```shell command
+printf '%s' '{items}'
+```
+
+### call
+
+Call the child per item.
+
+- type: workflow
+- workflow: ./child.pflow.md
+- inputs: {inputs}
+- batch:
+    items: ${{emit.stdout}}
+{batch}
+""",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _run(parent: Path) -> Any:
+    return WorkflowRunner().run(str(parent), {}, RunnerConfig(trace_enabled=False, cache_enabled=False))
+
+
+def _outputs(result: Any) -> dict[int, str]:
+    return {r["original_index"]: r["out"] for r in result.shared_after["call"]["results"]}
+
+
+@pytest.mark.parametrize("parallel", [False, True], ids=["sequential", "parallel"])
+class TestABatchOfChildrenTypesEachItem:
+    """The spec's named test: a runtime-produced list into a child `integer`, under `continue`."""
+
+    def test_good_items_arrive_typed_and_the_bad_one_is_its_own_routed_error(
+        self, tmp_path: Path, parallel: bool
+    ) -> None:
+        _child(tmp_path)
+        parent = _parent(
+            tmp_path,
+            items='["7","x","9"]',
+            inputs="{n: ${item}}",
+            batch=f"    error_handling: continue\n    parallel: {str(parallel).lower()}",
+        )
+
+        result = _run(parent)
+
+        assert result.status == WorkflowStatus.DEGRADED, result.errors
+        assert _outputs(result) == {0: "7 3", 2: "9 3"}  # each item its own int; `limit` its default
+        (record,) = result.shared_after["call"]["errors"]
+        assert record["index"] == 1
+        message = "Step 'call' passes 'x' to input 'n' of ./child.pflow.md, declared `- type: integer`."
+        assert record["error"].splitlines()[0] == message
+        (diagnostic,) = record["child_failure"]["diagnostics"]
+        assert diagnostic["context"]["input"] == "n"
+        assert diagnostic["context"]["source"] == "parent"
+        assert diagnostic["context"]["sub_workflow_step"] == "call"
+        assert diagnostic["context"]["path"] == "nodes[id=call].params.inputs.n"
+
+    def test_absent_inputs_take_their_fallbacks_per_item(
+        self, tmp_path: Path, parallel: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Item 1 omits `n` after item 0 supplied it: item 1 gets the child's default, never item 0's
+        value and never nothing; settings.env beats the default and the environment beats both (#188, C1)."""
+        from pflow.core.settings import SettingsManager
+
+        _child(tmp_path, n_spec="- default: 3")
+        batch = f"    error_handling: continue\n    parallel: {str(parallel).lower()}"
+        parent = _parent(tmp_path, items='[{"n": "7"}, {}]', inputs="${item}", batch=batch)
+
+        defaulted = _run(parent)
+        SettingsManager().set_env("n", "6")  # the test's isolated settings file
+        from_settings = _run(parent)
+        monkeypatch.setenv("n", "5")
+        from_env = _run(parent)
+
+        assert _outputs(defaulted) == {0: "7 3", 1: "3 3"}
+        assert _outputs(from_settings) == {0: "7 3", 1: "6 3"}
+        assert _outputs(from_env) == {0: "7 3", 1: "5 3"}
+
+
+def test_fail_fast_stops_at_the_bad_item_with_the_same_message(tmp_path: Path) -> None:
+    """Without `continue`, the first bad item ends the batch: item 0's child ran (its marker exists),
+    item 2's never did."""
+    markers = tmp_path / "ran"
+    markers.mkdir()
+    (tmp_path / "child.pflow.md").write_text(
+        f"""# Child
+
+Leave a marker per n.
+
+## Inputs
+
+### n
+
+A whole number.
+
+- type: integer
+
+## Steps
+
+### mark
+
+Touch a file named n.
+
+- type: code
+- inputs:
+    n: ${{n}}
+
+```python code
+from pathlib import Path
+
+n: int
+
+Path({str(markers)!r}, str(n)).touch()
+result: str = "ok"
+```
+""",
+        encoding="utf-8",
+    )
+    parent = _parent(tmp_path, items='["7","x","9"]', inputs="{n: ${item}}")
+
+    result = _run(parent)
+
+    assert result.status == WorkflowStatus.FAILED
+    message = "Step 'call' passes 'x' to input 'n' of ./child.pflow.md, declared `- type: integer`."
+    assert any(message in d.message for d in result.errors), [d.message for d in result.errors]
+    assert sorted(path.name for path in markers.iterdir()) == ["7"]
+
+
+class TestOneChildCall:
+    """Non-batch: the same boundary, routed by `error_action`; its Diagnostic reaches the run's errors."""
+
+    @staticmethod
+    def _parent(tmp_path: Path, value: str, extra: str = "") -> Path:
+        _child(tmp_path)
+        path = tmp_path / "parent.pflow.md"
+        path.write_text(
+            f"""# Parent
+
+Produce a value, then call the child with it.
+
+## Steps
+
+### up
+
+Emit the value.
+
+- type: shell
+
+```shell command
+printf '%s' '{value}'
+```
+
+### call
+
+Call the child.
+
+- type: workflow
+- workflow: ./child.pflow.md
+- inputs:
+    n: ${{up.stdout}}
+{extra}
+""",
+            encoding="utf-8",
+        )
+        return path
+
+    def test_text_that_fits_the_childs_declaration_arrives_typed(self, tmp_path: Path) -> None:
+        result = _run(self._parent(tmp_path, "42"))
+        assert result.success, result.errors
+        assert result.shared_after["call"]["out"] == "42 3"
+
+    def test_error_action_routes_the_failure(self, tmp_path: Path) -> None:
+        result = _run(self._parent(tmp_path, "x", extra="- error_action: continue\n- next: end"))
+        assert result.success, result.errors  # routed on, not a failed run
+        assert "Step 'call' passes 'x' to input 'n'" in result.shared_after["call"]["error"]
+
+    @pytest.mark.trace_files
+    def test_default_routing_fails_the_run_with_the_placed_diagnostic(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Text and JSON carry the Diagnostic placed at the step; a step ran, so resuming with an
+        override is a real remedy and the hint stays."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        (tmp_path / "home" / ".pflow" / "debug").mkdir(parents=True)
+        parent = str(self._parent(tmp_path, "x"))
+
+        as_json = CliRunner(mix_stderr=False).invoke(cli, ["--output-format", "json", parent])
+        as_text = CliRunner(mix_stderr=False).invoke(cli, [parent])
+
+        payload = json.loads(as_json.stdout)
+        (error,) = payload["errors"]
+        assert (
+            error["message"] == "Step 'call' passes 'x' to input 'n' of ./child.pflow.md, declared `- type: integer`."
+        )
+        assert error["context"]["path"] == "nodes[id=call].params.inputs.n"
+        assert error["context"]["sub_workflow_path"] == "./child.pflow.md"
+        assert error["suggestions"] == ["Pass a whole number from the parent."]
+        assert payload["resume_command"].startswith("pflow resume ")
+        assert as_text.exit_code == 1
+        assert "At: nodes[id=call].params.inputs.n" in as_text.stderr
+        assert "In step 'call' sub-workflow:" not in as_text.stderr  # placed at the step, not re-wrapped
+        assert "To resume from the failed step: pflow resume " in as_text.stderr
+
+
+WHOLE_MAP_PARENT = """# Parent
+
+Make the child's inputs as one value, then pass it whole.
+
+## Steps
+
+### mk
+
+Make the inputs.
+
+- type: code
+
+```python code
+result: {annotation} = {value}
+```
+
+### call
+
+Call the child with the whole map.
+
+- type: workflow
+- workflow: ./child.pflow.md
+- inputs: ${{mk.result}}
+"""
+
+
+class TestAWholeMapInputs:
+    """``inputs: ${x}`` must resolve to a map: JSON TEXT is never parsed into one (the child types VALUES, ADR-0017)."""
+
+    def test_text_is_refused_with_the_fix(self, tmp_path: Path) -> None:
+        _child(tmp_path)
+        parent = tmp_path / "parent.pflow.md"
+        parent.write_text(WHOLE_MAP_PARENT.format(annotation="str", value="'{\"n\": 7}'"), encoding="utf-8")
+        result = _run(parent)
+        assert not result.success
+        assert [d.message for d in result.errors] == [
+            "Step 'call': 'inputs:' resolved to text, expected a map of child inputs. If the text is JSON, have the "
+            "producing step emit a structured value (code `result: dict`) or list the inputs as keys under 'inputs:'."
+        ]
+
+    def test_a_map_runs(self, tmp_path: Path) -> None:
+        """Presence half: the same step whose producer emits a dict runs the child with it."""
+        _child(tmp_path)
+        parent = tmp_path / "parent.pflow.md"
+        parent.write_text(WHOLE_MAP_PARENT.format(annotation="dict", value="{'n': 7}"), encoding="utf-8")
+        result = _run(parent)
+        assert result.success, [d.message for d in result.errors]
+        assert result.shared_after["call"]["out"] == "7 3"
+
+
+def test_a_parent_string_reaches_a_child_object_parsed_and_a_child_string_as_text(tmp_path: Path) -> None:
+    """Ruling (ii) and #686's child half (break 10): the child's declaration decides."""
+    (tmp_path / "child.pflow.md").write_text(
+        """# Child
+
+Show what arrived.
+
+## Inputs
+
+### obj
+
+An object.
+
+- type: object
+
+### s
+
+Text.
+
+- type: string
+
+## Steps
+
+### show
+
+Show the types.
+
+- type: code
+- inputs:
+    obj: ${obj}
+    s: ${s}
+
+```python code
+from typing import Any
+
+obj: Any
+s: Any
+
+result: str = f"{type(obj).__name__} {type(s).__name__}:{s}"
+```
+
+## Outputs
+
+### out
+
+Shown.
+
+- source: ${show.result}
+""",
+        encoding="utf-8",
+    )
+    parent = tmp_path / "parent.pflow.md"
+    parent.write_text(
+        """# Parent
+
+Pass one declared string twice.
+
+## Inputs
+
+### text
+
+JSON text.
+
+- type: string
+
+## Steps
+
+### call
+
+Call the child.
+
+- type: workflow
+- workflow: ./child.pflow.md
+- inputs:
+    obj: ${text}
+    s: ${text}
+""",
+        encoding="utf-8",
+    )
+
+    result = WorkflowRunner().run(str(parent), {"text": '{"a":1}'}, RunnerConfig(trace_enabled=False))
+
+    assert result.success, result.errors
+    assert result.shared_after["call"]["out"] == 'dict str:{"a":1}'
+
+
+def test_a_none_from_the_parent_is_absence(tmp_path: Path) -> None:
+    """A parent value that resolves to None means "not provided": an optional child input takes its
+    fallback; a required one is the routable "requires input" problem."""
+    _child(tmp_path, n_spec="- default: 3")
+    optional = _parent(tmp_path, items="[null]", inputs="{n: ${item}, limit: ${item}}")
+    assert _outputs(_run(optional)) == {0: "3 3"}
+
+    _child(tmp_path)
+    required = _parent(tmp_path, items='[null, "4"]', inputs="{n: ${item}}", batch="    error_handling: continue")
+    result = _run(required)
+    assert _outputs(result) == {1: "4 3"}
+    (record,) = result.shared_after["call"]["errors"]
+    (diagnostic,) = record["child_failure"]["diagnostics"]
+    assert diagnostic["message"] == "./child.pflow.md requires input 'n': A whole number."
+    assert diagnostic["context"]["path"] == "nodes[id=call].params.inputs.n"
+
+
+class TestTheLegacyBundleKey:
+    """`build_subworkflow_diagnostics` still reads the bundle a trace recorded before the input
+    boundary existed carries (`template_diagnostic`), as a resume restores it."""
+
+    @staticmethod
+    def _template_diagnostic() -> Diagnostic:
+        return Diagnostic(
+            severity=Severity.ERROR,
+            message="Unresolved variables in parameter 'env': ${producer.stdout}",
+            title="Template Resolution Failed",
+            node_id="consumer",
+            source="runtime",
+            context={"category": "template_error", "unresolved_references": [{"template": "${producer.stdout}"}]},
+        )
+
+    def test_a_legacy_bundle_keeps_its_rich_template_fields(self) -> None:
+        """Only a hand-written bundle has the legacy shape (the writer emits `diagnostics`, pinned
+        end-to-end by `test_failed_node_invariant`): a resumed pre-120 trace restores it."""
+        bundle: dict[str, Any] = {
+            "workflow_path": "/w/child.pflow.md",
+            "failed_node": "consumer",
+            "failures": {},
+            "template_diagnostic": self._template_diagnostic().to_dict(),
+        }
+
+        (diagnostic,) = build_subworkflow_diagnostics(bundle, "sub")
+
+        assert (
+            diagnostic.message
+            == "In step 'sub' sub-workflow: Unresolved variables in parameter 'env': ${producer.stdout}"
+        )
+        assert diagnostic.context is not None
+        assert diagnostic.context["unresolved_references"] == [{"template": "${producer.stdout}"}]
+        assert diagnostic.context["sub_workflow_step"] == "sub"
+
+
+def test_a_batch_record_states_the_input_sentence_once_and_other_child_failures_keep_their_lines(
+    tmp_path: Path,
+) -> None:
+    """Checkpoint §1.5: the item headline IS the placed sentence, so its detail lines (`At:`, the fix)
+    follow without repeating it. A failure INSIDE the child keeps its own provenance-wrapped lines."""
+    (tmp_path / "child.pflow.md").write_text(
+        """# Child
+
+Fail inside for 8.
+
+## Inputs
+
+### n
+
+A whole number.
+
+- type: integer
+
+## Steps
+
+### check
+
+Refuse 8.
+
+- type: shell
+- env:
+    N: ${n}
+
+```shell command
+test "$N" != 8
+```
+""",
+        encoding="utf-8",
+    )
+    parent = _parent(tmp_path, items='["7","x","8"]', inputs="{n: ${item}}", batch="    error_handling: continue")
+
+    result = CliRunner(mix_stderr=False).invoke(cli, [str(parent)])
+
+    sentence = "Step 'call' passes 'x' to input 'n' of ./child.pflow.md, declared `- type: integer`."
+    assert result.exit_code == 0, result.stderr
+    assert result.stderr.count(sentence) == 1
+    assert f"  [1] {sentence}\n      item: 'x'\n      At: nodes[id=call].params.inputs.n\n" in result.stderr
+    assert "      → Pass a whole number from the parent." in result.stderr
+    assert "      In step 'call' sub-workflow: Command failed with exit code 1" in result.stderr  # item 2, inside
+
+
+@pytest.mark.parametrize(("name", "item_line"), [("api_token", "item: <REDACTED>"), ("count", "item: 'sk-SECRET'")])
+def test_the_item_line_never_reprints_a_value_the_message_masked(tmp_path: Path, name: str, item_line: str) -> None:
+    """The child boundary masks a value passed to a sensitive-named input; the record's `item:` line (and its
+    JSON `item_summary`) must not print the same item beside it. A plain name keeps the item line (presence)."""
+    (tmp_path / "child.pflow.md").write_text(
+        f"# Child\n\nTakes one number.\n\n## Inputs\n\n### {name}\n\nA number.\n\n- type: integer\n\n"
+        f"## Steps\n\n### show\n\nShow it.\n\n- type: shell\n- env:\n    V: ${{{name}}}\n\n"
+        "```shell command\nprintf '%s' \"$V\"\n```\n",
+        encoding="utf-8",
+    )
+    parent = _parent(
+        tmp_path, items='["7","sk-SECRET"]', inputs=f"{{{name}: ${{item}}}}", batch="    error_handling: continue"
+    )
+    text = CliRunner(mix_stderr=False).invoke(cli, [str(parent)])
+    as_json = CliRunner(mix_stderr=False).invoke(cli, ["--output-format", "json", str(parent)])
+    summaries = [summary["summary"] for summary in _values_under(json.loads(as_json.stdout), "item_summary")]
+    assert item_line in text.stderr
+    assert ("sk-SECRET" in text.stderr) is (name == "count")
+    assert summaries and all(("sk-SECRET" in summary) is (name == "count") for summary in summaries)
+
+
+def _values_under(value: Any, key: str) -> list[Any]:
+    """Every value stored under ``key`` anywhere in a JSON document."""
+    if isinstance(value, dict):
+        return [v for k, v in value.items() if k == key] + [x for v in value.values() for x in _values_under(v, key)]
+    if isinstance(value, list):
+        return [x for v in value for x in _values_under(v, key)]
+    return []
+
+
+def test_a_childs_fallback_inputs_are_inputs_not_outputs(tmp_path: Path) -> None:
+    """Without declared `## Outputs` the child's store is mirrored back minus its inputs — and an
+    input resolved from its default is an input like a supplied one (both run and plan read the
+    typed, complete per-call inputs). Presence half: the child's own step output IS exposed."""
+    (tmp_path / "child.pflow.md").write_text(
+        CHILD.format(n_spec="- required: true").split("## Outputs")[0], encoding="utf-8"
+    )
+    parent = _parent(tmp_path, items='["7"]', inputs="{n: ${item}}")
+
+    (exposed,) = _run(parent).shared_after["call"]["results"]
+
+    assert exposed["show"]["result"] == "7 3"
+    assert "limit" not in exposed and "n" not in exposed
+
+
+def test_a_whole_map_cannot_smuggle_a_framework_key_into_the_child(tmp_path: Path) -> None:
+    """A parent passes a child only its ``inputs:`` map, so every undeclared key is refused — a
+    ``__loop_active__`` would otherwise steer the child (memo reads off). The root boundary still exempts
+    framework keys (they ride a root run's params)."""
+    _child(tmp_path)
+    parent = tmp_path / "parent.pflow.md"
+    parent.write_text(
+        WHOLE_MAP_PARENT.format(annotation="dict", value="{'n': 7, '__loop_active__': 1}"), encoding="utf-8"
+    )
+    result = _run(parent)
+    assert not result.success
+    assert [d.message for d in result.errors] == ["Unknown input '__loop_active__' — not declared by ./child.pflow.md."]
+
+
+def test_the_long_workflow_type_hands_its_inputs_on_as_text(tmp_path: Path) -> None:
+    """``type: pflow.runtime.workflow_executor`` is the same step as ``type: workflow``: the parent never parses
+    its ``inputs:`` values (a child ``string`` receives the JSON text, not a dict it would refuse)."""
+    child = tmp_path / "child.pflow.md"
+    child.write_text(
+        "# Child\n\nShow a string.\n\n## Inputs\n\n### s\n\nA string.\n\n- type: string\n\n## Steps\n\n"
+        "### show\n\nShow it.\n\n- type: code\n- inputs:\n    s: ${s}\n\n```python code\ns: str\nresult: str = s\n```\n\n"
+        "## Outputs\n\n### out\n\nShown.\n\n- source: ${show.result}\n",
+        encoding="utf-8",
+    )
+    for node_type in ("workflow", "pflow.runtime.workflow_executor"):
+        parent = tmp_path / "parent.pflow.md"
+        parent.write_text(
+            "# Parent\n\nEmit JSON text, then pass it on.\n\n## Steps\n\n### up\n\nEmit.\n\n- type: shell\n\n"
+            "```shell command\nprintf '%s' '{\"a\":1}'\n```\n\n"
+            f"### call\n\nCall the child.\n\n- type: {node_type}\n- workflow: ./child.pflow.md\n- inputs:\n"
+            "    s: ${up.stdout}\n",
+            encoding="utf-8",
+        )
+        result = _run(parent)
+        assert result.success, (node_type, [d.message for d in result.errors])
+        assert result.shared_after["call"]["out"] == '{"a":1}', node_type
+
+
+def test_a_failure_two_levels_down_keeps_the_outer_provenance_when_step_ids_repeat(tmp_path: Path) -> None:
+    """``parent.call → child.call → grandchild``: the grandchild's input failure is placed at the CHILD's
+    ``call`` and is not re-wrapped there; the parent's boundary still wraps it once — a reused step id must
+    not read as "placed here"."""
+    _child(tmp_path)  # the grandchild: `n` integer
+    middle = tmp_path / "middle.pflow.md"
+    middle.write_text(
+        "# Middle\n\nPass bad text on.\n\n## Steps\n\n### up\n\nEmit.\n\n- type: shell\n\n"
+        "```shell command\nprintf '%s' 'x'\n```\n\n"
+        "### call\n\nCall the grandchild.\n\n- type: workflow\n- workflow: ./child.pflow.md\n- inputs:\n"
+        "    n: ${up.stdout}\n",
+        encoding="utf-8",
+    )
+    parent = tmp_path / "parent.pflow.md"
+    parent.write_text(
+        "# Parent\n\nCall the middle.\n\n## Steps\n\n### call\n\nCall it.\n\n- type: workflow\n"
+        "- workflow: ./middle.pflow.md\n",
+        encoding="utf-8",
+    )
+    result = _run(parent)
+    assert not result.success
+    assert [d.message for d in result.errors] == [
+        "In step 'call' sub-workflow: Step 'call' passes 'x' to input 'n' of ./child.pflow.md, declared "
+        "`- type: integer`."
+    ]
+
+
+# ── D16: a required child input with no default comes from the parent ─────────────────────────────
+
+RUN_TIME_PARENT = """# Parent
+
+Choose the child at run time; item 1 passes nothing.
+
+## Inputs
+
+### wf
+
+The child.
+
+- type: string
+
+## Steps
+
+### call
+
+Call the child per item.
+
+- type: workflow
+- workflow: ${wf}
+- inputs: ${item}
+- batch:
+    items: [{"n": "7"}, {}]
+    error_handling: continue
+    parallel: @PARALLEL@
+"""
+
+STATIC_PARENT = """# Parent
+
+Name the child; pass only its optional input.
+
+## Steps
+
+### call
+
+Call the child.
+
+- type: workflow
+- workflow: ./child.pflow.md
+- inputs:
+    limit: 4
+"""
+
+
+def _run_time_parent(tmp_path: Path, parallel: bool = False) -> Path:
+    path = tmp_path / "parent.pflow.md"
+    path.write_text(RUN_TIME_PARENT.replace("@PARALLEL@", str(parallel).lower()), encoding="utf-8")
+    return path
+
+
+def _run_with(parent: Path, params: dict[str, Any]) -> Any:
+    return WorkflowRunner().run(str(parent), params, RunnerConfig(trace_enabled=False, cache_enabled=False))
+
+
+@pytest.mark.parametrize("parallel", [False, True], ids=["sequential", "parallel"])
+def test_a_required_child_input_is_never_read_from_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parallel: bool
+) -> None:
+    """`n` is exported but a run-time-chosen child's required `n` (no default) must come from the parent: the
+    item that omits it is refused at the child boundary — routed, so `continue` fails only that item."""
+    child = _child(tmp_path)
+    monkeypatch.setenv("n", "5")
+
+    result = _run_with(_run_time_parent(tmp_path, parallel), {"wf": str(child)})
+
+    assert result.status == WorkflowStatus.DEGRADED, result.errors
+    assert _outputs(result) == {0: "7 3"}
+    (record,) = result.shared_after["call"]["errors"]
+    assert record["index"] == 1
+    assert record["error"].splitlines()[0] == f"{child} requires input 'n': A whole number."
+    (diagnostic,) = record["child_failure"]["diagnostics"]
+    assert diagnostic["context"]["path"] == "nodes[id=call].params.inputs.n"
+    assert diagnostic["suggestions"] == [
+        "Pass it under step 'call' `inputs:` (a required sub-workflow input is never read from the environment or "
+        "settings)"
+    ]
+
+
+def test_a_named_child_refuses_the_same_omission_statically(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The static twin: validation never reads the environment, so it refuses what the boundary refuses."""
+    _child(tmp_path)
+    monkeypatch.setenv("n", "5")
+    parent = tmp_path / "parent.pflow.md"
+    parent.write_text(STATIC_PARENT, encoding="utf-8")
+
+    errors = WorkflowRunner().validate(str(parent), {}).errors
+
+    assert [e.message for e in errors] == [
+        "Step 'call': sub-workflow './child.pflow.md' requires input 'n' but it is not provided."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("n_spec", "expected"),
+    [("- required: false", "5 3"), ("- default: 3", "5 3")],
+    ids=["optional", "defaulted"],
+)
+def test_an_optional_or_defaulted_child_input_still_takes_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, n_spec: str, expected: str
+) -> None:
+    """The presence half: only a required input with no default is the parent's alone (env → settings → default
+    otherwise, f₂)."""
+    child = _child(tmp_path, n_spec=n_spec)
+    monkeypatch.setenv("n", "5")
+
+    result = _run_with(_run_time_parent(tmp_path), {"wf": str(child)})
+
+    assert result.status == WorkflowStatus.SUCCESS, result.errors
+    assert _outputs(result) == {0: "7 3", 1: expected}
+
+
+def test_a_null_default_is_no_default_for_the_validator_and_the_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`- default: null` is no value (the boundary's rule), so a required input with it is the parent's to pass —
+    refused statically for a named child and at run time for a chosen one, whatever the environment holds."""
+    child = _child(tmp_path, n_spec="- default: null")
+    monkeypatch.setenv("n", "5")
+    static = tmp_path / "static.pflow.md"
+    static.write_text(STATIC_PARENT, encoding="utf-8")
+
+    static_errors = WorkflowRunner().validate(str(static), {}).errors
+    run_time = _run_with(_run_time_parent(tmp_path), {"wf": str(child)})
+
+    assert [e.message for e in static_errors] == [
+        "Step 'call': sub-workflow './child.pflow.md' requires input 'n' but it is not provided."
+    ]
+    (record,) = run_time.shared_after["call"]["errors"]
+    assert record["error"].splitlines()[0] == f"{child} requires input 'n': A whole number."
+
+
+# ── D17: a container default is fresh on every resolution ───────────────────────────────────────
+
+MUTATING_CHILD = """# Child
+
+Mutates its object input.
+
+## Inputs
+
+### o
+
+An object.
+
+- type: object
+- required: false
+- default: {"k": 1}
+
+## Steps
+
+### show
+
+Count a visit into the object, then show it.
+
+- type: code
+- inputs:
+    o: ${o}
+
+```python code
+o: dict
+
+o["seen"] = o.get("seen", 0) + 1
+result: str = str(o["seen"])
+```
+
+## Outputs
+
+### out
+
+Shown.
+
+- source: ${show.result}
+"""
+
+CALLS_IT = """# Parent
+
+Call the mutating child three times, then once more.
+
+## Steps
+
+### call
+
+Per item.
+
+- type: workflow
+- workflow: ./child.pflow.md
+- batch:
+    items: [1, 2, 3]
+    parallel: @PARALLEL@
+
+### again
+
+Once more.
+
+- type: workflow
+- workflow: ./child.pflow.md
+
+## Outputs
+
+### last
+
+The last call.
+
+- source: ${again.out}
+"""
+
+
+@pytest.mark.parametrize("parallel", [False, True], ids=["sequential", "parallel"])
+def test_every_call_gets_its_own_copy_of_a_container_default(tmp_path: Path, parallel: bool) -> None:
+    """#790: a child that mutates its `object` default never leaks into the next call (it saw 1, 2, 3)."""
+    (tmp_path / "child.pflow.md").write_text(MUTATING_CHILD, encoding="utf-8")
+    parent = tmp_path / "parent.pflow.md"
+    parent.write_text(CALLS_IT.replace("@PARALLEL@", str(parallel).lower()), encoding="utf-8")
+
+    result = _run_with(parent, {})
+
+    assert result.success, result.errors
+    assert sorted(_outputs(result).values()) == ["1", "1", "1"]
+    assert result.shared_after["again"]["out"] == "1"

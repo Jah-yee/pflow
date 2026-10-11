@@ -4,7 +4,9 @@ This module provides shared constants and functions for identifying and masking
 sensitive parameters across CLI and MCP server contexts.
 """
 
+import json
 import re
+from collections.abc import Iterable
 from typing import Any
 
 # Sensitive parameter names to mask/redact
@@ -91,6 +93,24 @@ def redact_sensitive(obj: Any) -> Any:
     if isinstance(obj, list):
         return [redact_sensitive(item) for item in obj]
     return obj
+
+
+def redact_for_display(names: Iterable[str], value: Any) -> Any:
+    """``value`` as a message may show it: ``<REDACTED>`` when any name on its path (``names`` —
+    the input, then each field down to the value) is sensitive; otherwise ``redact_sensitive``,
+    applied inside JSON object/array TEXT too (a value quoted in a message is often an object's
+    text). Text with nothing to redact keeps its bytes."""
+    if any(is_sensitive_parameter(name) for name in names):
+        return "<REDACTED>"
+    if not isinstance(value, str):
+        return redact_sensitive(value)
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return value
+    if not isinstance(parsed, (dict, list)) or (redacted := redact_sensitive(parsed)) == parsed:
+        return value
+    return json.dumps(redacted, ensure_ascii=False)
 
 
 def mask_sensitive_value(key: str, value: str, mask_text: str = "<REDACTED>") -> str:

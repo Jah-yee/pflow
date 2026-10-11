@@ -87,8 +87,8 @@ class DeleteFileNode(Node):
         """
         file_path, confirm_delete = prep_res
 
-        # Only the boolean True authorizes: a string-typed input turns CLI `false`
-        # into the truthy string "False" (#617).
+        # Only the boolean True authorizes: a string-typed input hands on CLI `false`
+        # as the truthy text "false" (#617).
         if confirm_delete is not True:
             logger.error(
                 "Delete not confirmed",

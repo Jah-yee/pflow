@@ -180,18 +180,43 @@ def analyze_cache(
             )
         return
 
-    # Run the analyzer. Internal exceptions propagate so the CLI exits non-zero
-    # rather than emitting empty-but-valid JSON (per the silent-failures rule
-    # in F3.1: NEVER silently emit empty JSON for an internal failure).
-    try:
-        analysis = analyze(
+    analysis = _analyze_or_emit(
+        ctx,
+        json_mode,
+        lambda: analyze(
             resolved.ir,
             parameters=parsed_params,
             workflow_path=workflow_path_str,
             base_path=base_path,
             trace_path=trace_path,
             auto_load_trace=not no_trace_autoload,
-        )
+        ),
+    )
+    if analysis is None:
+        return
+
+    # Successful analysis — render to chosen format.
+    if json_mode:
+        import json
+
+        click.echo(json.dumps(render_json(analysis), indent=2))
+    else:
+        click.echo(render_text(analysis, all_rows=all_rows))
+
+
+def _analyze_or_emit(ctx: click.Context, json_mode: bool, run_analysis: Any) -> Any:
+    """Run the analyzer; on a user-facing failure emit its error and exit, returning None.
+
+    Internal exceptions propagate so the CLI exits non-zero rather than emitting
+    empty-but-valid JSON (per the silent-failures rule in F3.1: NEVER silently
+    emit empty JSON for an internal failure).
+    """
+    from pflow.core.diagnostic import exception_to_diagnostics
+    from pflow.core.diagnostic_render import format_diagnostic
+    from pflow.core.exceptions import PflowError
+
+    try:
+        return run_analysis()
     except FileNotFoundError as e:
         _emit_error(
             ctx,
@@ -204,7 +229,6 @@ def analyze_cache(
                 "for explicit override pass an existing trace JSON."
             ),
         )
-        return
     except ValueError as e:
         _emit_error(
             ctx,
@@ -213,15 +237,19 @@ def analyze_cache(
             message=str(e) or "Invalid analyzer input.",
             exit_code=1,
         )
-        return
-
-    # Successful analysis — render to chosen format.
-    if json_mode:
-        import json
-
-        click.echo(json.dumps(render_json(analysis), indent=2))
-    else:
-        click.echo(render_text(analysis, all_rows=all_rows))
+    except PflowError as e:  # a supplied value fails its declared type, or names no declared input
+        # Each diagnostic's message and fix ride the envelope, so an agent reads them without stderr.
+        diagnostics = list(exception_to_diagnostics(e))
+        _emit_error(
+            ctx,
+            json_mode=json_mode,
+            error_id="analyze-cache.invalid-parameters",
+            message="\n".join(d.message for d in diagnostics),
+            exit_code=1,
+            suggestion="\n".join(fix for d in diagnostics for fix in (d.suggestions or [])[:1]) or None,
+            stderr_text="\n".join(format_diagnostic(d) for d in diagnostics),
+        )
+    return None
 
 
 def _try_or_emit_diagnostic(
@@ -297,13 +325,14 @@ def _emit_error(
         if suggestion:
             envelope["error"]["suggestion"] = suggestion
         click.echo(json.dumps(envelope, indent=2))
-        # Mirror to stderr so humans tailing the same terminal still see context.
+        # Mirror to stderr so humans tailing the same terminal still see context
+        # (a rendered ``stderr_text`` already carries its own fix lines).
         click.echo(stderr_text or f"Error: {message}", err=True)
-        if suggestion:
+        if suggestion and stderr_text is None:
             click.echo(f"Suggestion: {suggestion}", err=True)
     else:
         click.echo(stderr_text or f"Error: {message}", err=True)
-        if suggestion:
+        if suggestion and stderr_text is None:
             click.echo(f"Suggestion: {suggestion}", err=True)
     ctx.exit(exit_code)
 

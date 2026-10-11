@@ -153,7 +153,7 @@ class TestPrepFailureRoutesThroughErrorAction:
         # post() write goes through NamespacedSharedStore). error_action
         # renames the routing label; it does not suppress the failure signal.
         sub_error = shared.get("sub", {}).get("error", "")
-        assert "missing required inputs" in sub_error
+        assert "requires input 'required_field'" in sub_error
         # Invariant: error_action != "error" means the node is routable,
         # not hard-failed. Step 17.5 archives only when action starts with
         # "error". If anyone adds mark_node_failed to the non-error path,
@@ -216,7 +216,7 @@ class TestPrepFailureRoutesThroughErrorAction:
             result = engine.run(workflow, shared)
 
         assert result == "skip"
-        assert "undeclared input(s)" in shared.get("sub", {}).get("error", "")
+        assert "Unknown input 'extra_key'" in shared.get("sub", {}).get("error", "")
         assert get_node_failure(shared, "sub") is None
 
     def test_circular_reference_dispatches_error_action(self, mock_registry, tmp_path):
@@ -273,7 +273,14 @@ class TestPrepFailureRoutesThroughErrorAction:
         assert result == "error"
         failure = get_node_failure(shared, "sub")
         assert failure is not None
-        assert "missing required inputs" in str(failure.get("error", ""))
+        assert "requires input 'required_field'" in str(failure.get("error", ""))
+        # The structured problems ride the child-failure bundle into the failure record,
+        # each placed at the step's `inputs:`.
+        bundle = failure["data"]["_pflow_child_failure"]
+        assert [d["context"]["path"] for d in bundle["diagnostics"]] == [
+            "nodes[id=sub].params.inputs.required_field",
+            "nodes[id=sub].params.inputs.WRONG",
+        ]
 
     def test_batch_continue_past_prep_error(self, tmp_path):
         """The original GH #284 scenario: batch with one bad item + one good item,
@@ -349,7 +356,11 @@ class TestPrepFailureRoutesThroughErrorAction:
         assert len(errors) == 1
         assert errors[0]["index"] == 0  # bad item was index 0
         assert errors[0]["item"] == {"workflow": str(bad_child), "inputs": {"WRONG_KEY": "oops"}}
-        assert "missing required inputs" in errors[0].get("error", "")
+        assert "requires input 'lyrics'" in errors[0].get("error", "")
+        assert [d["context"]["path"] for d in errors[0]["child_failure"]["diagnostics"]] == [
+            "nodes[id=reviews].params.inputs.lyrics",
+            "nodes[id=reviews].params.inputs.WRONG_KEY",
+        ]
 
     def test_parallel_batch_continue_past_prep_error(self, tmp_path):
         """Regression guard for the pre-warm compile cache x prep-error interaction.

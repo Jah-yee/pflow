@@ -1,14 +1,19 @@
-"""Parameter type coercion utilities.
+"""Parameter type coercion, one function per pipeline stage.
 
-Two functions for two pipeline stages:
-- coerce_param_for_node: Serializes dict/list → JSON string for nodes expecting "str"
-- coerce_workflow_input: Full bidirectional coercion for CLI/env values entering a workflow
+- ``coerce_declared_input``: a workflow input's value typed by its declared type, once,
+  where it enters — or ``InputTypeError``.
+- ``coerce_param_for_node``: a resolved dict/list serialized to JSON for a node param
+  declared ``str``.
 """
 
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
+from pflow.core.exceptions import InputTypeError
+from pflow.core.json_utils import try_parse_json
+from pflow.core.templates import to_string
+from pflow.core.types import CANONICAL_TYPES, TypeSpec
 from pflow.core.validation_utils import VALIDATION_PLACEHOLDER
 
 logger = logging.getLogger(__name__)
@@ -32,7 +37,7 @@ def coerce_param_for_node(
     Note on vocabulary: ``expected_type`` here is the S3 node-Interface type
     (Python-aliased — ``"str"``, ``"dict"``), NOT the S1 workflow-IR vocabulary.
     This is why ``"str"``/``"string"`` are both accepted below, even though
-    ``coerce_workflow_input`` (the S1 entry point) rejects Python aliases. See
+    the S1 vocabulary (``## Inputs``) rejects Python aliases. See
     ``src/pflow/core/types.py`` module docstring for the surface split.
 
     Args:
@@ -79,219 +84,53 @@ def coerce_param_for_node(
     return value
 
 
-# =============================================================================
-# Input coercion helpers (extracted to reduce complexity of main function)
-# =============================================================================
+InputSource = Literal["argument", "stdin", "call", "recorded", "env", "settings", "default", "parent"]
+"""Where a workflow input's value entered. Only a CLI ``argument`` (the web form spawns the CLI)
+is inferred for an ``any`` input; every other source arrives as typed or as raw text."""
+
+_ASCII_WHITESPACE = " \t\n\r\f\v"
 
 
-def _coerce_to_string(value: Any, log_context: dict[str, Any]) -> Any:
-    """Coerce non-string values to string.
+def coerce_declared_input(name: str, declared_type: str | None, value: Any, *, source: InputSource) -> Any:
+    """Type ``value`` by the input's declared type, once, where it enters — or raise ``InputTypeError``.
 
-    For dict/list, uses json.dumps() to produce valid JSON strings.
-    This is consistent with coerce_param_for_node() and ensures
-    nodes expecting JSON strings receive proper JSON, not Python repr.
+    Text reads through ``TypeSpec.parse_text`` (surrounding ASCII whitespace stripped for every
+    type but ``string``, whose text is kept exactly). A non-text value must satisfy
+    ``TypeSpec.accepts`` — except that a ``string`` takes any scalar as the text ``${x}`` would
+    produce (``to_string``: ``True`` → ``"True"``); a container into a ``string`` is an error.
+    ``any`` and an untyped input: text from a CLI ``argument`` is inferred losslessly
+    (``_infer_lossless``), every other value is kept as given. ``None`` (no value) and
+    ``VALIDATION_PLACEHOLDER`` pass through: presence is the caller's rule. A value that already
+    fits is returned as the same object, so a second call changes nothing.
     """
-    if isinstance(value, str):
+    if value is None or value == VALIDATION_PLACEHOLDER:
         return value
-    # Use JSON serialization for containers to produce valid JSON strings
-    # (e.g., {"a": 1} instead of {'a': 1})
-    coerced = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
-    logger.debug(
-        f"Coerced {type(value).__name__} to string for input",
-        extra={"original_type": type(value).__name__, **log_context},
-    )
-    return coerced
-
-
-def _coerce_to_integer(value: Any, log_context: dict[str, Any]) -> Any:
-    """Coerce string values to integer."""
+    spec = TypeSpec(declared_type if declared_type in CANONICAL_TYPES else "any")
+    if spec.name == "any":
+        return _infer_lossless(value) if source == "argument" and isinstance(value, str) else value
     if isinstance(value, str):
-        try:
-            coerced = int(value)
-            logger.debug(
-                "Coerced string to integer for input",
-                extra={"original_value": value, **log_context},
-            )
-            return coerced
-        except ValueError:
-            logger.warning(
-                f"Cannot coerce '{value}' to integer",
-                extra={"original_value": value, **log_context},
-            )
-    return value
+        fits, typed = spec.parse_text(value if spec.name == "string" else value.strip(_ASCII_WHITESPACE))
+    elif spec.name == "string":
+        fits, typed = not isinstance(value, (dict, list)), to_string(value)
+    else:
+        fits, typed = spec.accepts(value), value
+    if not fits:
+        raise InputTypeError(name=name, declared_type=spec.name, received=value, source=source)
+    return typed
 
 
-def _coerce_to_number(value: Any, log_context: dict[str, Any]) -> Any:
-    """Coerce string values to float."""
-    if isinstance(value, str):
-        try:
-            coerced = float(value)
-            logger.debug(
-                "Coerced string to float for input",
-                extra={"original_value": value, **log_context},
-            )
-            return coerced
-        except ValueError:
-            logger.warning(
-                f"Cannot coerce '{value}' to number",
-                extra={"original_value": value, **log_context},
-            )
-    return value
+def _infer_lossless(text: str) -> Any:
+    """``text`` typed only when the value reads back as the same text (decision (d)).
 
-
-def _coerce_to_boolean(value: Any, log_context: dict[str, Any]) -> Any:
-    """Coerce string values to boolean."""
-    if isinstance(value, str):
-        lower_val = value.lower()
-        if lower_val in ("true", "1", "yes"):
-            logger.debug(
-                "Coerced string to True for input",
-                extra={"original_value": value, **log_context},
-            )
-            return True
-        elif lower_val in ("false", "0", "no"):
-            logger.debug(
-                "Coerced string to False for input",
-                extra={"original_value": value, **log_context},
-            )
-            return False
-        else:
-            logger.warning(
-                f"Cannot coerce '{value}' to boolean",
-                extra={"original_value": value, **log_context},
-            )
-    return value
-
-
-def _coerce_to_object(value: Any, log_context: dict[str, Any]) -> Any:
-    """Coerce JSON string to dict."""
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, dict):
-                logger.debug(
-                    "Coerced JSON string to dict for input",
-                    extra={"original_value": value[:50], **log_context},
-                )
-                return parsed
-            logger.warning(
-                f"JSON parsed to {type(parsed).__name__}, expected dict",
-                extra={"original_value": value[:50], **log_context},
-            )
-        except json.JSONDecodeError:
-            logger.warning(
-                "Cannot parse string as JSON object",
-                extra={"original_value": value[:50], **log_context},
-            )
-    return value
-
-
-def _coerce_to_array(value: Any, log_context: dict[str, Any]) -> Any:
-    """Coerce JSON string to list."""
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, list):
-                logger.debug(
-                    "Coerced JSON string to list for input",
-                    extra={"original_value": value[:50], **log_context},
-                )
-                return parsed
-            logger.warning(
-                f"JSON parsed to {type(parsed).__name__}, expected list",
-                extra={"original_value": value[:50], **log_context},
-            )
-        except json.JSONDecodeError:
-            logger.warning(
-                "Cannot parse string as JSON array",
-                extra={"original_value": value[:50], **log_context},
-            )
-    return value
-
-
-def _coerce_to_any(value: Any, log_context: dict[str, Any]) -> Any:
-    """Passthrough coercion for `type: any`."""
-    return value
-
-
-# Dispatch table for type coercion
-_COERCION_DISPATCH = {
-    "string": _coerce_to_string,
-    "integer": _coerce_to_integer,
-    "number": _coerce_to_number,
-    "boolean": _coerce_to_boolean,
-    "object": _coerce_to_object,
-    "array": _coerce_to_array,
-    "any": _coerce_to_any,
-}
-
-
-def coerce_workflow_input(
-    value: Any,
-    declared_type: str | None,
-    input_name: str | None = None,
-) -> Any:
-    """Coerce a CLI/env-provided value to match the workflow input's declared type.
-
-    This function handles the case where CLI parameter parsing (via infer_type)
-    converts numeric strings to int/float before the workflow's declared type
-    is consulted. It ensures the final value matches the declared type.
-
-    Args:
-        value: The value to potentially coerce (may already be coerced by CLI)
-        declared_type: Declared type from workflow input (string, integer, number, etc.)
-        input_name: Optional input name for logging context
-
-    Returns:
-        Coerced value if conversion needed and successful, otherwise original value.
-
-    Note:
-        This function uses **lenient coercion** - if conversion fails (e.g., "maybe"
-        cannot be converted to boolean), the original value is returned unchanged
-        with a warning logged. This allows downstream validation (e.g., code node
-        type checking) to catch the error with full context, rather than failing
-        early with a generic coercion error. This design choice trades immediate
-        error detection for better error messages at the point of use.
-
-    Coercion rules:
-        - string: Convert int/float/bool to str
-        - integer: Convert str to int (if valid)
-        - number: Convert str to float (if valid)
-        - boolean: Convert str to bool ("true"/"false"/"1"/"0"/"yes"/"no")
-        - object: Parse str as JSON dict (if valid)
-        - array: Parse str as JSON list (if valid)
-        - No declared type: Return value unchanged
-
-    Examples:
-        >>> coerce_workflow_input(1458059302022549698, "string")
-        '1458059302022549698'
-        >>> coerce_workflow_input("42", "integer")
-        42
-        >>> coerce_workflow_input("3.14", "number")
-        3.14
-        >>> coerce_workflow_input("true", "boolean")
-        True
-        >>> coerce_workflow_input('{"a": 1}', "object")
-        {'a': 1}
+    ``true``, ``42``, ``2.5``, ``[1]``, ``{"a":1}`` type; ``02134``, ``1.10``, ``1e3``, ``TRUE``,
+    ``yes``, `` 42``, ``[1, 2]``, ``null`` and a quoted JSON string stay text — the
+    comparison is against compact JSON, the canonical rendering.
     """
-    if declared_type is None:
-        return value
-
-    # Pass through the validation sentinel without trying to coerce it.
-    # generate_dummy_parameters() injects this string in place of unresolved
-    # declared inputs during structural validation, cache-key prediction, and
-    # cross-workflow walker compile passes; treating it as a real value
-    # produces stderr warnings like
-    # ``Cannot coerce '__validation_placeholder__' to integer``.
-    if value == VALIDATION_PLACEHOLDER:
-        return value
-
-    log_context: dict[str, Any] = {"input": input_name} if input_name else {}
-
-    # Use dispatch table for coercion
-    coercer = _COERCION_DISPATCH.get(declared_type)
-    if coercer:
-        return coercer(value, log_context)
-
-    # Unknown type - return unchanged
-    return value
+    ok, parsed = try_parse_json(text)
+    if not ok or parsed is None or isinstance(parsed, str):
+        return text
+    try:
+        canonical = json.dumps(parsed, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    except ValueError:  # -Infinity
+        return text
+    return parsed if canonical == text else text

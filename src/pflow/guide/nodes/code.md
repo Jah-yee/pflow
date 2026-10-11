@@ -61,7 +61,7 @@ result: dict = {
 - The `python code` block is plain Python — pflow never fills in `${…}` there. Values arrive only through `- inputs:`, each key bound as a Python variable. A `${…}` in a string that names a pflow value this step could read (`"${name}".upper()`) fails validation; `f"${total}"` is a dollar sign followed by Python's own interpolation
 - All inputs and `result` MUST have type annotations: `data: list`, `result: dict = ...`
 - Bare vs valued annotations: a top-level **bare** `name: type` (no value) is read as an input declaration and needs a matching `inputs:` entry. An annotated assignment `name: type = value` is a local — so type your intermediates freely (`total: int = sum(...)`). `result`/`next` are the declared output/routing.
-- Upstream JSON is auto-parsed before your code runs — if source is JSON, declare `dict`/`list` not `str`
+- Upstream JSON object/array text is parsed before your code runs — declare `dict`/`list` to get the structure; a `str` annotation (or `str | None`) receives the text as is. A workflow input declared with a type other than `any` arrives as that type, never parsed
 - Use `Any` as the type when you don't want type validation (see syntax table below — auto-injected, no import needed)
 - Single output via `result` variable — use dict for structured output
 - `${node.stdout}`/`${node.stderr}` hold what the code itself prints (per batch item); prints from threads the code starts (`threading.Thread`, `ThreadPoolExecutor`, `run_in_executor`) are not captured and go to pflow's stderr — return thread output through `result`. Never use `contextlib.redirect_stdout` (process-wide; misroutes parallel batch output)
@@ -108,6 +108,10 @@ interface for standard nodes and from the code-block `result:` annotation for
 upstream code nodes (including batch code nodes — enrichment flows through
 `results[0].result` access paths). Use `Any` when you want to accept any
 upstream type deliberately.
+
+A workflow input declared `- type: string` bound to a `dict`/`list` annotation is
+the same error: a declared input is never JSON-parsed. Declare it `- type: object`
+(or `array`), or annotate `str` to receive the text.
 
 ### Type annotation syntax
 

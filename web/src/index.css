@@ -2205,6 +2205,11 @@ button.active {
   font-size: 11px;
   color: var(--text-faint);
 }
+/* A column flex item stretches by default, which draws the checkbox glyph centred in a row-wide box. */
+.run-field-checkbox {
+  align-self: flex-start;
+  margin-inline: 0;
+}
 .run-field-input {
   width: 100%;
   padding: 6px 8px;

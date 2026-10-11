@@ -6,7 +6,7 @@ import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from pflow.core.exceptions import CompilationError, MarkdownParseError, SchemaValidationError, WorkflowValidationError
 from pflow.core.templates import TemplateResolver
@@ -16,6 +16,9 @@ from pflow.core.validation_utils import generate_dummy_parameters
 from ...context import _PREDICTION_SKIPPED, AnalysisContext
 from ...sub_workflow_walker import DynamicBatchInfo
 from ...trace_loading import _is_llm_node
+
+if TYPE_CHECKING:
+    from pflow.core.param_coercion import InputSource
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +247,10 @@ def _predict_one_workflow(
     # nodes.
     padded_params, dummied_keys = _pad_inputs_for_prediction(params, declared_inputs)
     dummied_chunks = _dummied_cache_chunks(ir, dummied_keys)
-    scaffold = _build_predict_scaffold(ir, padded_params, ctx.memo_cache, workflow_path)
+    # Re-typed as the run types them: the root's values with the labels they entered with, a
+    # child's as its parent hands them on — so an `any` value is never inferred a second time.
+    sources = ctx.input_sources if workflow_path == ctx.workflow_path else dict.fromkeys(params, "parent")
+    scaffold = _build_predict_scaffold(ir, padded_params, ctx.memo_cache, workflow_path, input_sources=sources)
     if scaffold is None:
         _mark_prediction_skipped(predicted_keys, workflow_path, llm_nodes)
         return
@@ -448,6 +454,8 @@ def _build_predict_scaffold(
     params: Mapping[str, Any],
     memo_cache: Any,
     workflow_path: str | None,
+    *,
+    input_sources: Mapping[str, InputSource] | None = None,
 ) -> _PredictScaffold | None:
     """Compile + planner-shared once per workflow.
 
@@ -476,7 +484,7 @@ def _build_predict_scaffold(
     if workflow_path is not None:
         compile_params.setdefault("_pflow_workflow_file", str(workflow_path))
     try:
-        compiled = compile_workflow(dict(workflow_ir), Registry(), dict(compile_params))
+        compiled = compile_workflow(dict(workflow_ir), Registry(), dict(compile_params), input_sources=input_sources)
         shared = create_planner_shared(compiled, dict(compile_params), memo_cache, workflow_path)
     except _PREDICTION_RECOVERABLE_EXCEPTIONS as exc:
         logger.debug(

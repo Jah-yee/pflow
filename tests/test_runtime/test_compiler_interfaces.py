@@ -9,9 +9,18 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from pflow.core.exceptions import SchemaValidationError
+from pflow.core.diagnostic import Diagnostic
+from pflow.core.exceptions import SchemaValidationError, WorkflowValidationError
 from pflow.core.node import BaseNode
 from pflow.runtime import compile_workflow
+
+
+def _only_error(exc: WorkflowValidationError) -> Diagnostic:
+    """The single input-boundary Diagnostic a compile raised."""
+    assert len(exc.validation_errors) == 1, exc.validation_errors
+    error = exc.validation_errors[0]
+    assert error.context is not None
+    return error
 
 
 class MockNode(BaseNode):
@@ -126,20 +135,18 @@ class TestCompilerInterfaces:
         }
 
         # No initial_params provided
-        with pytest.raises(SchemaValidationError) as exc_info:
+        with pytest.raises(WorkflowValidationError) as exc_info:
             compile_workflow(ir, registry_with_nodes, {})
 
-        error = exc_info.value
+        error = _only_error(exc_info.value)
         assert "file_path" in error.message
         assert "Path to the input file" in error.message
-        assert error.path == "inputs.file_path"
+        assert error.context["path"] == "inputs.file_path"
         # Suggestions removed for agent-friendly errors (Task 71)
         # Agent knows how to pass parameters, no need for suggestion
 
-    def test_optional_input_with_default_value(self, registry_with_nodes, mock_node_import, caplog):
+    def test_optional_input_with_default_value(self, registry_with_nodes, mock_node_import):
         """Test that optional inputs with default values are applied."""
-        import logging
-
         ir = {
             "ir_version": "0.1.0",
             "inputs": {
@@ -157,21 +164,9 @@ class TestCompilerInterfaces:
         # Don't provide the optional parameter
         initial_params = {}
 
-        # Should compile successfully and apply default
-        with caplog.at_level(logging.DEBUG):
-            workflow = compile_workflow(ir, registry_with_nodes, initial_params)
+        workflow = compile_workflow(ir, registry_with_nodes, initial_params)
 
-        assert workflow is not None
-
-        # Check logging to verify default was applied
-        assert any(
-            "Applying default value for optional input 'output_format'" in record.message for record in caplog.records
-        )
-
-        # Verify the default value was logged
-        for record in caplog.records:
-            if "Applying default value" in record.message and "output_format" in record.message:
-                assert record.default == "json"
+        assert workflow.resolved_defaults == {"output_format": "json"}
 
     def test_multiple_missing_required_inputs(self, registry_with_nodes, mock_node_import):
         """Test error message when multiple required inputs are missing."""
@@ -188,10 +183,10 @@ class TestCompilerInterfaces:
         }
 
         # Only provide one of the required inputs
-        with pytest.raises(SchemaValidationError) as exc_info:
+        with pytest.raises(WorkflowValidationError) as exc_info:
             compile_workflow(ir, registry_with_nodes, {"source_file": "source.txt"})
 
-        error = exc_info.value
+        error = _only_error(exc_info.value)
         assert "target_file" in error.message
         assert "Target file path" in error.message
 
@@ -236,10 +231,10 @@ class TestCompilerInterfaces:
             "edges": [],
         }
 
-        with pytest.raises(SchemaValidationError) as exc_info:
+        with pytest.raises(WorkflowValidationError) as exc_info:
             compile_workflow(ir, registry_with_nodes, {"my$input": "value"})
 
-        error = exc_info.value
+        error = _only_error(exc_info.value)
         assert "Invalid input name 'my$input'" in error.message
         assert "shell special characters" in error.message or "template syntax" in error.message
 
@@ -252,10 +247,10 @@ class TestCompilerInterfaces:
             "edges": [],
         }
 
-        with pytest.raises(SchemaValidationError) as exc_info:
+        with pytest.raises(WorkflowValidationError) as exc_info:
             compile_workflow(ir, registry_with_nodes, {})
 
-        error = exc_info.value
+        error = _only_error(exc_info.value)
         assert "api_key" in error.message
         assert "API key for authentication" in error.message
 
@@ -439,10 +434,8 @@ class TestCompilerInterfaces:
         workflow = compile_workflow(ir, registry_with_nodes, initial_params)
         assert workflow is not None
 
-    def test_default_values_are_accessible_in_nodes(self, registry_with_nodes, mock_node_import, caplog):
+    def test_default_values_are_accessible_in_nodes(self, registry_with_nodes, mock_node_import):
         """Test that default values are applied and accessible during compilation."""
-        import logging
-
         ir = {
             "ir_version": "0.1.0",
             "inputs": {
@@ -452,14 +445,10 @@ class TestCompilerInterfaces:
             "edges": [],
         }
 
-        # Test that defaults are applied when no initial_params are provided
-        with caplog.at_level(logging.DEBUG):
-            workflow = compile_workflow(ir, registry_with_nodes)
+        # Defaults are applied when no initial_params are provided
+        workflow = compile_workflow(ir, registry_with_nodes)
 
-        assert workflow is not None
-
-        # Verify default was applied via logging
-        assert any("Applying default value for optional input 'mode'" in record.message for record in caplog.records)
+        assert workflow.resolved_defaults == {"mode": "fast"}
 
     def test_template_resolution_works_with_validated_inputs(self, registry_with_nodes, mock_node_import):
         """Test that template resolution works correctly with validated inputs."""
@@ -503,10 +492,10 @@ class TestCompilerInterfaces:
             "edges": [],
         }
 
-        with pytest.raises(SchemaValidationError) as exc_info:
+        with pytest.raises(WorkflowValidationError) as exc_info:
             compile_workflow(ir, registry_with_nodes, {})
 
-        error = exc_info.value
+        error = _only_error(exc_info.value)
         assert "GitHub personal access token for API calls" in error.message
 
     def test_error_paths_are_specific(self, registry_with_nodes, mock_node_import):
@@ -518,11 +507,11 @@ class TestCompilerInterfaces:
             "edges": [],
         }
 
-        with pytest.raises(SchemaValidationError) as exc_info:
+        with pytest.raises(WorkflowValidationError) as exc_info:
             compile_workflow(ir, registry_with_nodes, {})
 
-        error = exc_info.value
-        assert error.path == "inputs.issue_number"
+        error = _only_error(exc_info.value)
+        assert error.context["path"] == "inputs.issue_number"
 
     def test_suggestions_are_helpful(self, registry_with_nodes, mock_node_import):
         """Test that error suggestions provide actionable guidance."""
@@ -535,10 +524,10 @@ class TestCompilerInterfaces:
             "edges": [],
         }
 
-        with pytest.raises(SchemaValidationError) as exc_info:
+        with pytest.raises(WorkflowValidationError) as exc_info:
             compile_workflow(ir, registry_with_nodes, {})
 
-        error = exc_info.value
+        error = _only_error(exc_info.value)
         # Suggestions removed for agent-friendly errors (Task 71)
         # Error message is clear enough: "Workflow requires input 'config_path': Path to configuration file"
         assert "config_path" in error.message

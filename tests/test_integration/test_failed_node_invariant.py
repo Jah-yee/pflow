@@ -1884,7 +1884,7 @@ echo "$PRODUCER_STDOUT"
     assert result.status == WorkflowStatus.FAILED
     # The strict-mode template Diagnostic was captured from the child exception.
     cf = result.shared_after["__failures__"]["sub"]["data"]["_pflow_child_failure"]
-    assert "template_diagnostic" in cf
+    assert [d["context"]["category"] for d in cf["diagnostics"]] == ["template_error"]
     # ...and reconstructed with unresolved_references + provenance at the parent.
     assert len(result.errors) == 1
     diag = result.errors[0]

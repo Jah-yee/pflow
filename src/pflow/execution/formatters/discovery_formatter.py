@@ -118,7 +118,7 @@ def _build_run_hint(workflow_name: str, ir: dict[str, Any]) -> str:
     inputs = ir.get("inputs", {})
     for key, spec in inputs.items():
         if spec.get("required", True) and not spec.get("stdin"):
-            input_type = spec.get("type", "string")
+            input_type = spec.get("type", "any")
             parts.append(f'{key}="<{input_type}>"')
     return " ".join(parts)
 

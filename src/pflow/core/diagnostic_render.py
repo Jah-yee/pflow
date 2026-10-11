@@ -12,6 +12,7 @@ from pflow.core.diagnostic import (
     Diagnostic,
     Severity,
 )
+from pflow.core.exceptions import declared_text_reason
 from pflow.core.security_utils import is_sensitive_parameter
 from pflow.core.templates import parse_path
 
@@ -575,6 +576,8 @@ def _format_failed_reference_fixes(ref: dict[str, Any], root: str, var: str) -> 
 
 
 def _format_path_error_reference(header: str, ref: dict[str, Any], root: str, var: str) -> list[str]:
+    if text_path := ref.get("text_not_parsed"):
+        return [header, *_format_unparsed_text(text_path, str(ref.get("unparsed_text", "")), var)]
     available = ref.get("available_fields") or []
     suggestion = ref.get("did_you_mean")
     path = _extract_field_path(var)
@@ -599,6 +602,12 @@ def _format_path_error_reference(header: str, ref: dict[str, Any], root: str, va
         lines.append("        To fix:")
         lines.append(f"          • Did you mean: {written_reference(suggestion, as_json=_inserted(ref))}")
     return lines
+
+
+def _format_unparsed_text(text_path: str, text: str, var: str) -> list[str]:
+    """The miss is the declared-input rule, not a typo: name the text and the two remedies."""
+    what, fix = declared_text_reason(var, text_path, text)
+    return [f"      → {what}", f"        {fix}"]
 
 
 def _render_failure_data_block(category: str, data: dict[str, Any]) -> list[str]:
