@@ -148,7 +148,9 @@ def _check_undeclared_extras(
 
     Returns one Diagnostic per undeclared key.
     """
-    user_provided = [k for k in provided_params if not _is_framework_param_key(k)]
+    # Framework keys ride a root run's params; a parent passes a child only its `inputs:` map,
+    # so there every undeclared key is the parent's (a `__loop_active__` would steer the child).
+    user_provided = [k for k in provided_params if caller.step or not _is_framework_param_key(k)]
     extras = sorted(set(user_provided) - declared_names)
     if not extras:
         return []

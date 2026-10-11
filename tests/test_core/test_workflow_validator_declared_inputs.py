@@ -17,8 +17,9 @@ from click.testing import CliRunner
 
 from pflow.cli.main import cli
 from pflow.core.diagnostic import Diagnostic
-from pflow.core.exceptions import WorkflowValidationError
+from pflow.core.exceptions import CompilationError, WorkflowValidationError
 from pflow.core.workflow.save_service import save_workflow_with_options
+from pflow.execution.result import RunnerConfig
 from pflow.execution.runner import WorkflowRunner
 from pflow.registry import Registry
 from pflow.runtime import WorkflowEngine, compile_workflow
@@ -350,3 +351,106 @@ class TestAnInputNamedLikeABatchAlias:
             name="item",
         )
         assert _errors(ir) == []
+
+
+# The compiler enforces the certain-miss and alias rules too (mid-task review #2) -------------------
+
+DYNAMIC_CHILD_WF = """# Dynamic child
+
+A child that reads a field of a string input.
+
+## Inputs
+
+### s
+
+A string.
+
+- type: string
+
+## Steps
+
+### show
+
+Show it.
+
+- type: shell
+- env:
+    X: ${s.a ?? "fallback"}
+
+```shell command
+printf '%s' "$X"
+```
+
+## Outputs
+
+### out
+
+Shown.
+
+- source: ${show.stdout}
+"""
+
+
+class TestTheCompilerEnforcesTheRules:
+    """A child chosen at run time (``workflow: ${…}``) is only compiled — never validated — so the rules
+    whose miss is SILENT at run time live in ``validate_data_flow``, which the compiler runs."""
+
+    def test_a_run_time_child_with_a_certain_miss_fails_instead_of_falling_back(self, tmp_path: Path) -> None:
+        child = tmp_path / "child.pflow.md"
+        child.write_text(DYNAMIC_CHILD_WF, encoding="utf-8")
+        parent = {
+            "ir_version": "0.1.0",
+            "inputs": {"which": {"type": "string", "required": True, "description": "The child to run."}},
+            "nodes": [
+                {
+                    "id": "call",
+                    "type": "workflow",
+                    "purpose": "Call the chosen child.",
+                    "params": {"workflow": "${which}", "inputs": {"s": '{"a":1}'}},
+                }
+            ],
+            "edges": [],
+            "outputs": {"out": {"source": "${call.out}", "description": "The child's output."}},
+        }
+        result = WorkflowRunner().run(parent, {"which": str(child)}, RunnerConfig())
+        assert not result.success
+        assert any("so `${s.a}` cannot read a field of it" in d.message for d in result.errors), [
+            d.message for d in result.errors
+        ]
+
+        # Presence half: the same child declaring `object` runs and reads the field.
+        child.write_text(DYNAMIC_CHILD_WF.replace("- type: string", "- type: object"), encoding="utf-8")
+        result = WorkflowRunner().run(parent, {"which": str(child)}, RunnerConfig())
+        assert result.success, [d.message for d in result.errors]
+        assert result.shared_after["call"]["out"] == "1"
+
+    def test_compile_refuses_an_input_named_like_a_batch_alias(self) -> None:
+        ir = _with_input({"type": "string"}, _shell("show", "${item}", batch={"items": ["a"]}), name="item")
+        with pytest.raises(CompilationError) as exc_info:
+            compile_workflow(ir, Registry(), initial_params={"item": "x"})
+        assert [d.message for d in exc_info.value.wrapped_diagnostics or []] == [
+            "Input 'item' has the same name as the batch alias of step 'show' — inside that step `${item…}` is the "
+            "batch item, never the input."
+        ]
+
+    def test_root_validation_reports_each_mistake_once(self) -> None:
+        """Data flow runs inside the validator and before compile: the run path stops at the validator."""
+        ir = _with_input({"type": "string"}, _shell("show", "${n.a}"))
+        assert [d.message for d in _errors(ir)] == [
+            "Input 'n' is declared `- type: string`, so `${n.a}` cannot read a field of it — a string input is "
+            "never JSON-parsed."
+        ]
+
+
+class TestEnumerationKeepsWhatItCannotKnow:
+    def test_a_fallback_after_an_unknown_root_is_not_typed_statically(self, tmp_path: Path) -> None:
+        """``${count ?? "bad"}`` in an inline batch: the enumeration cannot see ``count``, so its fallback is a
+        guess — the run would pass ``count``'s 7. Not an error; the item's own literal still is."""
+        ir = _parent(tmp_path, {"s": "${item}", "n": '${count ?? "bad"}'}, batch={"items": ["hello"]})
+        ir["inputs"] = {"count": {"type": "integer", "required": True, "description": "A count."}}
+        assert _validate_parent(tmp_path, ir) == []
+
+        literal = _parent(tmp_path, {"s": "hello", "n": "${item}"}, batch={"items": ["bad"]})  # presence half
+        assert [e.context["path"] for e in _validate_parent(tmp_path, literal) if e.context] == [
+            "nodes[id=call].params.inputs.n"
+        ]

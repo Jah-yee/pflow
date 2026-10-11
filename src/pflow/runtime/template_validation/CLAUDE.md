@@ -15,7 +15,6 @@ run these passes.
 | Parameter type, code-input annotation | `type_validation.py` |
 | `${item.field}` against inferred item structure | `batch_item_validation.py` |
 | Type inference (compatibility: `core/templates.py::is_type_compatible`) | `type_checker.py` |
-| A read certain to miss on a declared input (path on a scalar, field on an `array`, index on an `object`, non-`array` `batch.items`, non-`object` whole-map sub-workflow `inputs:`) | `validator.py::_validate_declared_input_reads`; the root's binding is `type_checker.py::declared_root_type` |
 | A declared `string` into a container param/annotation | `type_validation.py::_declared_text_into_container` (Passes 6, 9) |
 | Index into declared structure, dotted display, safe display | `utils.py::descend_index`, `dotted_parts`, `sanitize_for_display` |
 | Output metadata or child workflow output discovery | `validator.py::extract_node_outputs`, `_resolve_child_workflow_outputs` |
@@ -140,13 +139,11 @@ literal-value check): string → dict/list is allowed because runtime parses JSO
 containers, string → numeric/bool is not; a source union needs every member to
 fit, a target union any. Parameterized collections compare outer types only.
 
-**A declared input is never re-parsed** (ADR-0017), so its rules key on the
-reference's ROOT, never on the matrix (whose `string` row is shared with code
-`result: str` and child outputs, which ARE parsed). `declared_root_type` answers
-"is this root the declared input here": it follows the runtime's binding — a
-step's own `inputs:` values, `batch.items`, loop fields and workflow-level
-surfaces read the input; a step's other params read its own `inputs:` key or
-batch alias first (`data_flow.step_scope`). The certain-miss pass runs before
-the early return (output-only workflows, cache vars) and over `??` operands,
-where a miss is a silent fallback. A miss that depends on the VALUE (a JSON-text
-descendant of an `object`) is the runtime's report (`unparsed_declared_text`).
+**A declared input is never re-parsed** (ADR-0017). The certain misses that rule
+creates (a path on a scalar, a non-`array` `batch.items`, …) and the input-vs-batch-alias
+rule are NOT here: they live in `core/workflow/declared_inputs.py`, run by
+`validate_data_flow`, because the compiler must enforce them too (a child chosen at run
+time is only compiled, and those misses are silent at run time). This package's one rule
+is the container check (Passes 6, 9): keyed on the reference's ROOT through
+`declared_inputs.declared_root_type`, never on the matrix (whose `string` row is shared
+with code `result: str` and child outputs, which ARE parsed).

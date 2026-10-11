@@ -673,3 +673,67 @@ def test_first_item_template_miss_under_fail_fast_still_fails_the_plan(tmp_path)
     assert entry.diagnostic.severity.name == "ERROR"
     assert "${item.v}" in entry.diagnostic.message
     assert not _run_workflow_file(parent_path, items).success
+
+
+def test_plan_a_rejected_item_never_plans_failures_inside_its_child(tmp_path) -> None:
+    """The run rejects item 1 at the child boundary and never enters that child; the plan must not report a
+    failure INSIDE it (the child's own sub-workflow batch over the rejected value) as a plan error — the
+    item's WARNING only."""
+    leaf_path = tmp_path / "leaf.pflow.md"
+    child_path = tmp_path / "child.pflow.md"
+    parent_path = tmp_path / "parent.pflow.md"
+    write_workflow_file(
+        {
+            "inputs": {"row": {"type": "string", "required": True, "description": "A row."}},
+            "nodes": [
+                {"id": "show", "type": "shell", "params": {"command": 'printf "%s" "$R"', "env": {"R": "${row}"}}}
+            ],
+            "edges": [],
+        },
+        leaf_path,
+    )
+    write_workflow_file(
+        {
+            "inputs": {"rows": {"type": "array", "required": True, "description": "Rows."}},
+            "nodes": [
+                {
+                    "id": "each",
+                    "type": "workflow",
+                    "params": {"workflow": str(leaf_path), "inputs": {"row": "${item}"}},
+                    "batch": {"items": "${rows}"},
+                }
+            ],
+            "edges": [],
+        },
+        child_path,
+    )
+    write_workflow_file(
+        {
+            "nodes": [
+                {
+                    "id": "emit",
+                    "type": "shell",
+                    "cache": True,  # the plan reads the run's memo for the items
+                    "params": {"command": "printf '%s' '[[\"a\"], \"bad\"]'"},
+                },
+                {
+                    "id": "call",
+                    "type": "workflow",
+                    "params": {"workflow": str(child_path), "inputs": {"rows": "${item}"}},
+                    "batch": {"items": "${emit.stdout}", "error_handling": "continue"},
+                },
+            ],
+            "edges": [{"from": "emit", "to": "call"}],
+        },
+        parent_path,
+    )
+    run = _run_workflow_file(parent_path)
+    assert run.success, [d.message for d in run.errors]  # the run continues past item 1
+
+    plan = _plan_workflow_file(parent_path)
+    assert plan.entries[0].status == "cached"  # the items are known: the run's memo
+    assert [d.message for d in plan.diagnostics if d.severity.value == "error"] == []
+    assert [d.message for d in plan.diagnostics if "Batch item 1" in d.message] == [
+        "Batch item 1: Step 'call' passes 'bad' to input 'rows' of "
+        f"{child_path}, declared `- type: array`. Runtime will reject this item."
+    ]

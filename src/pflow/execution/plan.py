@@ -1599,8 +1599,8 @@ def _resolve_per_item_sub_workflow_inputs(
 
     Returns (inputs, diagnostics). A diagnostic means runtime would reject the item —
     ``inputs:`` resolved to a non-dict or left a template unresolved (the item[0] shape is
-    planned instead), or a value fails the child's declared type (planned with the value as
-    resolved) — so the plan surfaces a WARNING per problem.
+    planned instead), or a value fails the child's declared type (planned on type-shaped
+    placeholders) — so the plan surfaces a WARNING per problem.
     """
     resolved_inputs = default_inputs
     if raw_inputs_template is not None:
@@ -1628,7 +1628,9 @@ def _resolve_per_item_sub_workflow_inputs(
     try:
         return type_child_inputs(child_ir, resolved_inputs, step=node_id, sub_workflow_path=sub_workflow_path), []
     except WorkflowValidationError as exc:
-        return resolved_inputs, [
+        # The run never enters this child: plan it on values that fit, so no hypothetical failure
+        # inside it (a batch over the rejected value) reaches the plan's diagnostics.
+        return _placeholder_child_inputs(child_ir), [
             replace(
                 diagnostic,
                 severity=Severity.WARNING,

@@ -305,7 +305,6 @@ class WorkflowValidator:
         # the boolean literal). Reject loudly rather than fail silently.
         diagnostics.extend(WorkflowValidator._reject_reserved_literal_names(workflow_ir))
         diagnostics.extend(WorkflowValidator._check_input_defaults(workflow_ir))
-        diagnostics.extend(WorkflowValidator._reject_inputs_named_like_batch_aliases(workflow_ir))
 
         # 2. Stdin input validation (ALWAYS run - only one stdin: true allowed)
         diagnostics.extend(WorkflowValidator._validate_stdin_inputs(workflow_ir))
@@ -442,40 +441,6 @@ class WorkflowValidator:
                 coerce_declared_input(name, spec.get("type"), spec["default"], source="default")
             except InputTypeError as e:
                 diagnostics.extend(e.to_diagnostics())
-        return diagnostics
-
-    @staticmethod
-    def _reject_inputs_named_like_batch_aliases(workflow_ir: dict[str, Any]) -> list[Diagnostic]:
-        """One name, one owner: inside a batched step its alias (``batch.as``, default ``item``)
-        IS the batch item, so a same-named input is unreachable there — and its declared type
-        would be applied to the item (``templates.DECLARED_INPUT_TYPES_KEY`` is keyed by name)."""
-        inputs = workflow_ir.get("inputs") or {}
-        diagnostics: list[Diagnostic] = []
-        for node in workflow_ir.get("nodes", []):
-            batch = node.get("batch")
-            if not isinstance(batch, dict):
-                continue
-            alias = batch.get("as") if isinstance(batch.get("as"), str) and batch.get("as") else "item"
-            if alias not in inputs:
-                continue
-            rename = next(n for n in ("entry", f"{alias}_item", f"{alias}_entry") if n not in inputs)
-            step = node.get("id")
-            diagnostics.append(
-                Diagnostic(
-                    severity=Severity.ERROR,
-                    source="validator",
-                    title="Validation Error",
-                    message=(
-                        f"Input '{alias}' has the same name as the batch alias of step '{step}' — inside "
-                        f"that step `${{{alias}…}}` is the batch item, never the input."
-                    ),
-                    suggestions=[
-                        f"Rename the input, or set `as: {rename}` under the step's `batch:` "
-                        "and update its item references."
-                    ],
-                    context={"category": "validation", "path": f"inputs.{alias}", "input": alias, "step": step},
-                )
-            )
         return diagnostics
 
     @staticmethod
@@ -1855,7 +1820,19 @@ class WorkflowValidator:
             # Not JSON-parsed, as the engine hands a workflow step's `inputs:` on: literal child
             # values reach `_check_required_inputs` as written.
             effective_params = resolve(params, context).value
+            if isinstance(raw_inputs, dict) and isinstance(effective_params.get("inputs"), dict):
+                # A value that reads anything but the item stays a template: here `${count ?? "x"}`
+                # would resolve to its fallback — a guess, not the value the run passes.
+                effective_params["inputs"] = {
+                    key: value if WorkflowValidator._reads_only(raw_inputs[key], alias) else raw_inputs[key]
+                    for key, value in effective_params["inputs"].items()
+                }
             yield effective_params, idx, inputs_from_item
+
+    @staticmethod
+    def _reads_only(value: Any, alias: str) -> bool:
+        """Whether every reference in ``value`` (a string; containers are judged by shape) is the alias."""
+        return not isinstance(value, str) or all(ref.root == alias for ref in parse(value).references)
 
     @staticmethod
     def _params_reference_alias(value: Any, alias: str) -> bool:

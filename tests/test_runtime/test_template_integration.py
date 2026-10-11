@@ -207,8 +207,10 @@ class TestCompilerIntegration:
             "edges": [{"from": "producer", "to": "consumer"}],
             "inputs": {
                 "provided_param": {"type": "string", "description": "Provided param", "required": True},
+                # `any`: a path on a declared `string` is a compile-time error now (Task 120 —
+                # it can never resolve); this pins the RUNTIME report of an unresolved path.
                 "shared_store_var": {
-                    "type": "string",
+                    "type": "any",
                     "description": "Placeholder for producer output",
                     "required": True,
                 },
@@ -360,7 +362,7 @@ class TestMultiNodeWorkflow:
             "edges": [{"from": "producer", "to": "consumer"}],
             "inputs": {
                 "initial_url": {"type": "string", "description": "Initial URL", "required": True},
-                "video_data": {"type": "string", "description": "Placeholder for producer output", "required": True},
+                "video_data": {"type": "any", "description": "Placeholder for producer output", "required": True},
             },
         }
 
@@ -482,7 +484,7 @@ class TestRealWorldWorkflows:
             "edges": [{"from": "fetch", "to": "summarize"}, {"from": "summarize", "to": "save"}],
             "inputs": {
                 "url": {"type": "string", "description": "YouTube URL", "required": True},
-                "transcript_data": {"type": "string", "description": "Placeholder for fetch output", "required": True},
+                "transcript_data": {"type": "any", "description": "Placeholder for fetch output", "required": True},
                 "summary": {"type": "string", "description": "Placeholder for summarize output", "required": True},
             },
         }

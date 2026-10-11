@@ -546,3 +546,68 @@ def test_a_childs_fallback_inputs_are_inputs_not_outputs(tmp_path: Path) -> None
 
     assert exposed["show"]["result"] == "7 3"
     assert "limit" not in exposed and "n" not in exposed
+
+
+def test_a_whole_map_cannot_smuggle_a_framework_key_into_the_child(tmp_path: Path) -> None:
+    """A parent passes a child only its ``inputs:`` map, so every undeclared key is refused — a
+    ``__loop_active__`` would otherwise steer the child (memo reads off). The root boundary still exempts
+    framework keys (they ride a root run's params)."""
+    _child(tmp_path)
+    parent = tmp_path / "parent.pflow.md"
+    parent.write_text(
+        WHOLE_MAP_PARENT.format(annotation="dict", value="{'n': 7, '__loop_active__': 1}"), encoding="utf-8"
+    )
+    result = _run(parent)
+    assert not result.success
+    assert [d.message for d in result.errors] == ["Unknown input '__loop_active__' — not declared by ./child.pflow.md."]
+
+
+def test_the_long_workflow_type_hands_its_inputs_on_as_text(tmp_path: Path) -> None:
+    """``type: pflow.runtime.workflow_executor`` is the same step as ``type: workflow``: the parent never parses
+    its ``inputs:`` values (a child ``string`` receives the JSON text, not a dict it would refuse)."""
+    child = tmp_path / "child.pflow.md"
+    child.write_text(
+        "# Child\n\nShow a string.\n\n## Inputs\n\n### s\n\nA string.\n\n- type: string\n\n## Steps\n\n"
+        "### show\n\nShow it.\n\n- type: code\n- inputs:\n    s: ${s}\n\n```python code\ns: str\nresult: str = s\n```\n\n"
+        "## Outputs\n\n### out\n\nShown.\n\n- source: ${show.result}\n",
+        encoding="utf-8",
+    )
+    for node_type in ("workflow", "pflow.runtime.workflow_executor"):
+        parent = tmp_path / "parent.pflow.md"
+        parent.write_text(
+            "# Parent\n\nEmit JSON text, then pass it on.\n\n## Steps\n\n### up\n\nEmit.\n\n- type: shell\n\n"
+            "```shell command\nprintf '%s' '{\"a\":1}'\n```\n\n"
+            f"### call\n\nCall the child.\n\n- type: {node_type}\n- workflow: ./child.pflow.md\n- inputs:\n"
+            "    s: ${up.stdout}\n",
+            encoding="utf-8",
+        )
+        result = _run(parent)
+        assert result.success, (node_type, [d.message for d in result.errors])
+        assert result.shared_after["call"]["out"] == '{"a":1}', node_type
+
+
+def test_a_failure_two_levels_down_keeps_the_outer_provenance_when_step_ids_repeat(tmp_path: Path) -> None:
+    """``parent.call → child.call → grandchild``: the grandchild's input failure is placed at the CHILD's
+    ``call`` and is not re-wrapped there; the parent's boundary still wraps it once — a reused step id must
+    not read as "placed here"."""
+    _child(tmp_path)  # the grandchild: `n` integer
+    middle = tmp_path / "middle.pflow.md"
+    middle.write_text(
+        "# Middle\n\nPass bad text on.\n\n## Steps\n\n### up\n\nEmit.\n\n- type: shell\n\n"
+        "```shell command\nprintf '%s' 'x'\n```\n\n"
+        "### call\n\nCall the grandchild.\n\n- type: workflow\n- workflow: ./child.pflow.md\n- inputs:\n"
+        "    n: ${up.stdout}\n",
+        encoding="utf-8",
+    )
+    parent = tmp_path / "parent.pflow.md"
+    parent.write_text(
+        "# Parent\n\nCall the middle.\n\n## Steps\n\n### call\n\nCall it.\n\n- type: workflow\n"
+        "- workflow: ./middle.pflow.md\n",
+        encoding="utf-8",
+    )
+    result = _run(parent)
+    assert not result.success
+    assert [d.message for d in result.errors] == [
+        "In step 'call' sub-workflow: Step 'call' passes 'x' to input 'n' of ./child.pflow.md, declared "
+        "`- type: integer`."
+    ]

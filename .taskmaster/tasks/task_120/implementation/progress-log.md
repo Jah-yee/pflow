@@ -706,3 +706,72 @@ resume path for any successor.
   `origin/main` itself since #716 `3a7643c8` (COOKIE in the guide's masking list; never re-recorded). Verified: our
   `src/pflow/guide/` and `.taskmaster/tasks/task_159/` are byte-identical to `origin/main`. PZ treats that case as main's.
 - Next: commit PE; I3 gate-runs mid-task review #2 (validation-consistency on PC+PD+PE).
+
+## [2026-10-11 14:40] I3 (Opus) — mid-task review #2 (PC+PD+PE), gate-runner
+- Did: pflow fan-out (codex, cross-model), launched from the worktree root, with 2 lenses each given its own target over
+  `git diff origin/main...cafdada0`: `review-validation-consistency` (validator ⟷ runtime seam + the MANDATORY
+  placement question) and `review-feature-interactions` (PD's batch × nested × error-routing seam) →
+  `scratchpads/task-120/mid-review-2.md` (exit 0; Coverage 2/2, no failed lens; read in full). Verified every finding
+  against code; all 9 confirmed and fixed, each with a regression test that a mutant proves.
+- Changed: NEW `core/workflow/declared_inputs.py` (`declared_input_diagnostics` = the certain-miss pass + the alias rule,
+  and `declared_root_type`, moved out of `runtime/template_validation/{validator,type_checker}.py` and
+  `core/workflow/validator.py`); `core/workflow/data_flow.py::validate_data_flow` calls it; `core/workflow/
+  template_surfaces.py` `WORKFLOW_NODE_TYPES`; `runtime/template_validation/type_validation.py` (import);
+  `runtime/engine/template_resolution.py::parses_leaves`; `runtime/compilation/ir_preparation.py::
+  _check_undeclared_extras`; `core/workflow/validator.py::_enumerate_child_calls` (+ `_reads_only`); `execution/plan.py::
+  _resolve_per_item_sub_workflow_inputs`; `execution/executor_service.py::build_subworkflow_diagnostics`; CLAUDE.md
+  `core/workflow` (row) and `runtime/template_validation` (the declared-input paragraph re-pointed, Find row moved).
+  Tests: `test_workflow_validator_declared_inputs.py` (+`TestTheCompilerEnforcesTheRules` ×3,
+  `TestEnumerationKeepsWhatItCannotKnow`), `test_declared_input_rules.py` (+whole-map shadowing pair),
+  `test_child_input_boundary.py` (+framework key, long spelling, repeated-id provenance), `test_plan_batch_sub_workflow.py`
+  (+nested rejected item); parity: harness `_raised` shows a `CompilationError`'s wrapped diagnostics; 6 rows now
+  `Raises("CompilationError", <rule text>)` (the runtime leg compiles first, and the compiler now refuses them), the two
+  `*_json_text` loop/cache rows deleted (identical to their plain-text twins once compile refuses both); fixtures that
+  declared `string` placeholders but read fields: `test_template_integration.py` ×3 → `any`.
+- Dispositions:
+
+  | # | Lens · sev | Finding (verified at) | Disposition |
+  |---|---|---|---|
+  | C1 | VC · Critical | Run-time-chosen child bypasses the certain-miss pass: compile runs only data flow (`compile_validation.py:105`); `??` fallback / loop stop / cache drop silent (`templates.py:573` backstop sees JSON text only) | **Fixed = B** (posed question; lens recommends B, I agree): pass moved into `validate_data_flow` via `declared_inputs.py`; template-validator call deleted (no duplicate on the root path — pinned: one error). Test: real run, `workflow: ${which}` child with `${s.a ?? "fallback"}` → fails with the rule text; `object` twin runs → `1`. |
+  | C2 | VC · Critical | Alias prohibition also compile-unreachable (`validator.py:448`); a dynamic child's `${item.a ?? …}` silently falls back | **Fixed**: moved beside the pass in `declared_inputs.py`. Test: `compile_workflow` refuses `item` input + batch. |
+  | C3 | VC · Critical | `pflow.runtime.workflow_executor` spelling still parses child input values (`template_resolution.py:105`) | **Fixed**: `parses_leaves` keys both spellings via the new shared `WORKFLOW_NODE_TYPES` (also used by the pass). Test: both spellings hand `{"a":1}` text to a child `string`. Severity read as Warning (legacy spelling), fixed anyway. |
+  | W1 | VC · Warning | Whole-map `inputs: ${bindings}` binds run-time keys; a sibling `${s.a}` may read the local (`template_resolution.py:468`); validator rejected it | **Fixed**: `declared_root_type` returns `None` for a step's other params after a string `inputs:`; the `inputs:` expression itself still reads the input (presence pair). |
+  | W2 | FI · Warning | Child boundary exempted `_pflow_*`/`__*__` keys (`ir_preparation.py:151`) — `{"n":7,"__loop_active__":1}` reached child storage | **Fixed**: the exemption applies only at the root boundary (`caller.step` unset); a parent's every undeclared key is refused. Test: real run → `Unknown input '__loop_active__' — not declared by ./child.pflow.md.` |
+  | W3 | VC · Warning | Inline enumeration resolved `${count ?? "bad"}` to its fallback; (e) rejected a run-valid value (`validator.py:1854`) | **Fixed**: enumeration keeps any `inputs:` value that reads a non-alias root as its template (`_reads_only`). Test + presence (a real inline literal still errors). |
+  | W4 | FI · Warning | A type-rejected item's child was planned on the bad value; a nested sub-workflow batch over it put an ERROR in the plan (`plan.py:1630/1691`) | **Fixed**: a rejected item's child is planned on type-shaped placeholders (`_placeholder_child_inputs`). Test: 3-level plan, run DEGRADED-continues, plan has the item WARNING and no ERROR (first test version survived its mutant — rebuilt with the nested *workflow* batch the lens described; now killed). |
+  | W5 | FI · Warning | Once-only suppression matched any diagnostic whose `sub_workflow_step` equals the parent step — reused ids across levels dropped the outer provenance (`executor_service.py:165`) | **Fixed**: suppress only diagnostics captured directly in THIS bundle. Test: `parent.call → middle.call → grandchild` → `In step 'call' sub-workflow: Step 'call' passes 'x' …` (once wrapped). |
+  | S1 | VC · Suggestion | Placement recommendation B, with costs (no duplicate, intentional fatal compile error, unconditional under `check_inputs=False`, defaults stay put) | **Accepted** = C1's fix; defaults (D11 a) stay in `WorkflowValidator` as ruled. |
+
+  Found while fixing (not a lens finding): a misplaced `${x|json}` in `batch.items` gave two errors once the pass ran
+  outside the template validator's Issue early-return — the pass now skips a non-embedded JSON insert (the Issue
+  pass's one error; `test_embedded_code_diagnostics` pins it).
+- Verified: `make check` rc 0; `make test` **11437 passed**; Task-159 `verify.sh` 86/1/0 (the same main-owned COOKIE
+  drift only); in-tree rescan 186 files → 0 hits; `container` probe → same two errors (the stray `WARNING: Template
+  validation found 2 errors` log line is gone with the move). Mutation (same harness): R1–R9 + R1b **10/10 killed**
+  (pass not in data flow 33; alias not in data flow 3; whole-map owned 1; long spelling 1; child framework exemption 1;
+  enumeration guesses 1; rejected item on its value 1 (after the test rebuild); deeper placement unwrapped 1;
+  misplaced insert double-reported 1; §1.11 generic text 2).  |  Assumed: MCP `workflow_validate`/`workflow_plan`
+  inherit (same validator/planner; not driven).
+- Deviations/surprises: (1) B done (authorized by the orchestrator on lens agreement) plus the alias rule moved with
+  it (C2, same reason, 2/5). (2) Parity rows' runtime legs for the certain misses now read `CompilationError` — the
+  "silent at run time" rows no longer exist because the compiler refuses those workflows; the resolver's own
+  behaviour stays pinned by PC's `test_declared_input_resolution.py`. (3) 3 `test_template_integration` fixtures
+  declared `string` placeholders and read their fields — invalid under the rule; switched to `any`. (4) Follow-up for
+  the completion gate's simplicity lens: the pre-existing copies of the workflow-type set remain (`core/workflow/
+  validator.py` ×3, `graph/build.py`, `runtime/compilation/{compiler,node_loader}.py`, `resume_preflight.py`,
+  `template_validation/validator.py`) — only my two sites use `WORKFLOW_NODE_TYPES`. (5) `.claude/agents/
+  pflow-codebase-searcher.md` does not name `core/workflow/declared_inputs.py` yet — PF's.
+- Self-checks: fully-happy — the W4 test first passed on the old code (caught by its mutant, rebuilt); the
+  misplaced-insert double report found and fixed; rest clean. test-reflect: not separately directed; every new row is
+  mutation-killed with its presence half.
+- Next: hand back.
+
+## [2026-10-11 21:50] task-orchestrator — review #2 dispositions accepted; committed; PF next
+- Did: read I3's review-#2 entry (its header timestamp reads 14:40 — I3's clock labels drift; order in this file is
+  authoritative); accepted all 9 dispositions; the posed question resolved **B** (lens + I3 agree): the certain-miss pass
+  and the input-vs-alias rule now live in `core/workflow/declared_inputs.py`, run inside `validate_data_flow` (compiler
+  enforces them for run-time-chosen children).
+- For the completion gate: `WORKFLOW_NODE_TYPES` is used by two new sites only; older copies of the workflow-type set
+  remain (simplicity lens). PF adds `core/workflow/declared_inputs.py` to the searcher def.
+- Next: commit; fresh Opus · medium I4 for PF (docs/guide/instruction files/web comments + run-form screenshots) →
+  embedded USER checkpoint (screenshots + before/after) before PZ.

@@ -484,6 +484,11 @@ def validate_data_flow(
 
     diagnostics.extend(_validate_loop_node_combos(workflow_ir))
     diagnostics.extend(_validate_approval_node_combos(workflow_ir))
+    # Here, not in the template validator: the compiler runs this check, so a child chosen at
+    # run time gets it too (a miss under `??`, in `loop.while` or a cache var is otherwise silent).
+    from pflow.core.workflow.declared_inputs import declared_input_diagnostics  # imports step_scope from here
+
+    diagnostics.extend(declared_input_diagnostics(workflow_ir))
 
     # Build execution order
     try:

@@ -17,7 +17,6 @@ This module owns:
 """
 
 import logging
-from collections.abc import Iterator
 from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
@@ -25,7 +24,6 @@ from pflow.core.suggestion_utils import find_similar_items
 from pflow.core.templates import (
     DynamicIndex,
     Expression,
-    Field,
     Literal,
     Reference,
     Template,
@@ -60,7 +58,6 @@ from pflow.runtime.template_validation.operands import (
     iter_template_operands,
 )
 from pflow.runtime.template_validation.path_validation import validate_template_paths
-from pflow.runtime.template_validation.type_checker import declared_root_type
 from pflow.runtime.template_validation.type_validation import (
     validate_code_node_input_annotations,
     validate_template_types,
@@ -140,9 +137,6 @@ def validate_workflow_templates(
     unused_input_diagnostics = _validate_unused_inputs(workflow_ir, template_reads(workflow_ir) | bare_roots)
     diagnostics.extend(unused_input_diagnostics)
     diagnostics.extend(_validate_unread_step_inputs(workflow_ir))
-    # Before the early return below: an output-only workflow (`source: ${s.a ?? "x"}`) and
-    # cache vars yield no node-param operand, and are exactly where a miss is silent.
-    diagnostics.extend(_validate_declared_input_reads(workflow_ir))
 
     # Pass 5's input: each FIELD_CHECK reference (the operand classifier: a ?? operand's
     # root is checked by core/workflow/data_flow.py instead). An output source adds only
@@ -590,137 +584,6 @@ def _make_loop_carry_literal_fallback_warning(node_id: str, key: str, template: 
             "Keep the literal fallback only if silent re-seeding is genuinely intended.",
         ],
         context={"category": "validation", "path": f"nodes[id={node_id}].loop.carry.{key}"},
-    )
-
-
-# ---------------------------------------------------------------------------
-# Declared inputs: reads the runtime is certain to miss (ADR-0017)
-# ---------------------------------------------------------------------------
-
-_WORKFLOW_TYPES = frozenset({"workflow", "pflow.runtime.workflow_executor"})
-_SCALAR_NOUNS = {"string": "a string", "integer": "a number", "number": "a number", "boolean": "a boolean"}
-
-
-def _validate_declared_input_reads(workflow_ir: dict[str, Any]) -> list[Diagnostic]:
-    """An ERROR for every reference the runtime is certain to miss because its root is a
-    declared input, which is never JSON-parsed (``templates._declared_typed``): a path on a
-    scalar, a field on an ``array``, an index on an ``object``; a ``batch.items`` whose declared
-    root is not an ``array``, and a sub-workflow step's whole-map ``inputs:`` whose declared root
-    is not an ``object``.
-
-    Every operand counts, ``??`` ones included — there the miss is a silent fallback, not an
-    error. The root's binding is ``declared_root_type``'s; ``any`` and untyped roots keep
-    today's traversal parse.
-    """
-    nodes = {node.get("id"): node for node in workflow_ir.get("nodes", []) if isinstance(node, dict)}
-    diagnostics: list[Diagnostic] = []
-    for surface, path, expression, ref in _surface_reads(workflow_ir):
-        node = nodes.get(surface.node_id) if surface.node_id else None
-        declared = declared_root_type(workflow_ir, node, ref.root, surface_kind=surface.kind, param_key=surface.key)
-        if declared is None:
-            continue
-        if ref.path:
-            diagnostic = _declared_path_miss(ref, declared, surface.node_id, path, len(expression.operands) > 1)
-        elif ref not in expression.operands or not isinstance(surface.value, str):
-            diagnostic = None
-        elif surface.kind == "batch_items":
-            diagnostic = _declared_whole_root(
-                ref.root, declared, surface.node_id, path, "array", "`batch.items` needs a list"
-            )
-        elif surface.key == "inputs" and node is not None and node.get("type") in _WORKFLOW_TYPES:
-            diagnostic = _declared_whole_root(
-                ref.root, declared, surface.node_id, path, "object", "A sub-workflow step's whole `inputs:` needs a map"
-            )
-        else:
-            diagnostic = None
-        if diagnostic is not None:
-            diagnostics.append(diagnostic)
-    return diagnostics
-
-
-def _surface_reads(workflow_ir: dict[str, Any]) -> Iterator[tuple[TemplateSurface, str, Expression, Reference]]:
-    """``(surface, diagnostic path, expression, reference)`` for every reference the runtime
-    resolves: params, ``batch.items``, loop fields, a carry's index sources (its own reference
-    is the carry check's), output sources as the runtime reads them, and cache vars — which
-    ``iter_template_operands`` leaves out."""
-    for surface in iter_template_surfaces(workflow_ir):
-        if surface.kind == "cache_prose":
-            continue  # a reference there is the Issue pass's error
-        if surface.kind == "output_source":
-            templates = [(surface.key, parse(normalize_output_source(surface.value)))]
-        else:
-            templates = list(surface.templates())
-        for location, template in templates:
-            for expression in template.expressions:
-                for operand in expression.operands:
-                    if isinstance(operand, Reference):
-                        refs = operand.index_sources if surface.kind == "carry" else operand.references
-                        for ref in refs:
-                            yield surface, surface.path(location), expression, ref
-
-
-def _declared_path_miss(
-    ref: Reference, declared: str, node_id: str | None, path: str, in_coalesce: bool
-) -> Diagnostic | None:
-    """The ERROR for a path the walk cannot take on a declared input's value, else ``None``
-    (a field on an ``object`` and an index on an ``array`` may well resolve)."""
-    root, written, by_field = ref.root, f"${{{ref.raw}}}", isinstance(ref.path[0], Field)
-    if declared == "string":
-        action = "read a field of it" if by_field else "index it"
-        message = f"Input '{root}' is declared `- type: string`, so `{written}` cannot {action} — a string input is never JSON-parsed."
-        shape = "object" if by_field else "array"
-        fix = f"Declare `- type: {shape}` if '{root}' holds a JSON {shape}, or reference `${{{root}}}` whole."
-    elif declared in _SCALAR_NOUNS:
-        action = "read a field of" if by_field else "index"
-        message = (
-            f"Input '{root}' is declared `- type: {declared}`; `{written}` cannot {action} {_SCALAR_NOUNS[declared]}."
-        )
-        fix = f"Reference `${{{root}}}` whole."
-    elif declared == "array" and by_field:
-        message = (
-            f"Input '{root}' is declared `- type: array`; `{written}` names a field, "
-            f"but an array has only indexes (`${{{root}[0]}}`)."
-        )
-        fix = f"Index it first (`${{{root}[0]…}}`), or reference `${{{root}}}` whole."
-    elif declared == "object" and not by_field:
-        message = (
-            f"Input '{root}' is declared `- type: object`; `{written}` indexes it, "
-            f"but an object has only fields (`${{{root}.<field>}}`)."
-        )
-        fix = f"Read a field (`${{{root}.<field>}}`), or declare `- type: array` if '{root}' holds a list."
-    else:
-        return None
-    if in_coalesce:
-        message += " As a ?? operand the fallback would always win."
-    return _declared_input_error(node_id, path, message, fix, root, declared, written)
-
-
-def _declared_whole_root(
-    root: str, declared: str, node_id: str | None, path: str, needed: str, needs: str
-) -> Diagnostic | None:
-    """The ERROR for a whole declared root where the runtime needs a ``needed`` container and never
-    parses text into one: ``batch.items: ${v}`` (a list) and a sub-workflow step's whole-map
-    ``inputs: ${v}`` (a map — the host refuses anything else, ``_extract_child_inputs``)."""
-    if declared == needed:
-        return None
-    parsed = " and is never JSON-parsed" if declared == "string" else ""
-    message = f"{needs}; input '{root}' is declared `- type: {declared}`{parsed}."
-    return _declared_input_error(
-        node_id, path, message, f"Declare `- type: {needed}` for '{root}'.", root, declared, f"${{{root}}}"
-    )
-
-
-def _declared_input_error(
-    node_id: str | None, path: str, message: str, fix: str, root: str, declared: str, written: str
-) -> Diagnostic:
-    return Diagnostic(
-        severity=Severity.ERROR,
-        source="validator",
-        title="Validation Error",
-        node_id=node_id,
-        message=message,
-        suggestions=[fix],
-        context={"category": "validation", "path": path, "input": root, "declared_type": declared, "template": written},
     )
 
 

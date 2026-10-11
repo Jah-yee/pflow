@@ -26,7 +26,7 @@ from pflow.core.templates import (
     resolve,
 )
 from pflow.core.types import outer_base_type
-from pflow.core.workflow.template_surfaces import param_mode
+from pflow.core.workflow.template_surfaces import WORKFLOW_NODE_TYPES, param_mode
 
 from .template_errors import (
     build_declared_text_error_message,
@@ -118,7 +118,8 @@ def parses_leaves(template_config: TemplateConfig, key: str, subkey: str | None 
     text (``subkey`` in ``text_input_keys``); yes otherwise. Keyed on ``(node type, param)``,
     never on the param name alone.
     """
-    if (template_config.node_type, key) in _CONSUMER_TYPES_LEAVES:
+    node_type = "workflow" if template_config.node_type in WORKFLOW_NODE_TYPES else template_config.node_type
+    if (node_type, key) in _CONSUMER_TYPES_LEAVES:
         return False
     return subkey is None or subkey not in template_config.text_input_keys
 

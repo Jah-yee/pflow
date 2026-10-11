@@ -312,3 +312,14 @@ class TestShadowing:
         result = WorkflowRunner().run(as_any, {"data": '{"a":1}'}, RunnerConfig())
         assert result.success, [d.message for d in result.errors]
         assert result.shared_after["show"]["result"] == '{"a":1}'
+
+    def test_after_a_whole_map_inputs_a_siblings_root_may_be_local(self) -> None:
+        """``inputs: ${bindings}`` binds keys known only at run time, so a sibling's ``${s.a}`` may read a local
+        ``s`` — uncertain, not an error. The ``inputs:`` expression itself still reads the input."""
+        whole_map = _shell("show", {"X": '${s.a ?? "fallback"}'}, params={"inputs": "${bindings}"})
+        ir = _workflow({"s": "string", "bindings": "object"}, _shell("up", {"X": "${s}"}), whole_map)
+        assert _declared_errors(ir) == []
+
+        reads_input = _shell("show", {"X": "x"}, params={"inputs": "${s.a}"})  # presence half
+        errors = _declared_errors(_workflow({"s": "string"}, reads_input))
+        assert [e.context["path"] for e in errors if e.context] == ["nodes[id=show].params.inputs"]

@@ -9,13 +9,10 @@ from typing import Any
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.templates import CONTAINER_TYPES, LIST_TYPES, Reference, TemplateResolver, is_type_compatible, parse
 from pflow.core.types import outer_base_type
+from pflow.core.workflow.declared_inputs import declared_root_type
 from pflow.core.workflow.template_surfaces import param_mode, template_params
 from pflow.registry import Registry
-from pflow.runtime.template_validation.type_checker import (
-    declared_root_type,
-    get_parameter_type,
-    infer_template_type,
-)
+from pflow.runtime.template_validation.type_checker import get_parameter_type, infer_template_type
 
 # ---------------------------------------------------------------------------
 # Pass 6: Type matching

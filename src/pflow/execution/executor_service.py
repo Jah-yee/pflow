@@ -149,6 +149,7 @@ def build_subworkflow_diagnostics(bundle: dict[str, Any], parent_step_id: str) -
     captured = bundle.get("diagnostics")
     if not isinstance(captured, list) and isinstance(bundle.get("template_diagnostic"), dict):
         captured = [bundle["template_diagnostic"]]
+    direct = isinstance(captured, list) and bool(captured)
     if isinstance(captured, list) and captured:
         inner: list[Diagnostic] = [Diagnostic.from_dict(d) for d in captured if isinstance(d, dict)]
     else:
@@ -162,9 +163,10 @@ def build_subworkflow_diagnostics(bundle: dict[str, Any], parent_step_id: str) -
 
     wrapped: list[Diagnostic] = []
     for d in inner:
-        if (d.context or {}).get("sub_workflow_step") == parent_step_id:
-            # Placed at this step already (a value the step passes fails the child's
-            # declaration) — its sentence names the step; wrapping would say it twice.
+        if direct and (d.context or {}).get("sub_workflow_step") == parent_step_id:
+            # Captured at THIS boundary and placed at this step (a value the step passes fails the
+            # child's declaration) — its sentence names the step; wrapping would say it twice. A
+            # diagnostic rebuilt from deeper down is always wrapped, however its steps are named.
             wrapped.append(d)
             continue
         # Mirror the provenance contract of `_propagate_child_parser_warnings`

@@ -543,6 +543,14 @@ def _drive_prewarm(row: Row, ir: dict[str, Any], shared: dict[str, Any]) -> Runt
     return RuntimeObservation("absent") if value is None else _resolved(value)
 
 
+def _raised(exc: Exception) -> RuntimeObservation:
+    """An exception as the observation; a ``CompilationError`` also shows the diagnostics it wraps."""
+    message = str(exc)
+    if isinstance(exc, CompilationError) and exc.wrapped_diagnostics:
+        message += " | " + " | ".join(d.message for d in exc.wrapped_diagnostics)
+    return RuntimeObservation("raises", message=message, exc_name=type(exc).__name__)
+
+
 def drive_runtime(row: Row, tmp_path: Path) -> RuntimeObservation:
     """The row's DIRECT runtime driver; any exception it raises is the observation."""
     shared = None if row.surface == "cache" else seed_shared(row, tmp_path)
@@ -553,7 +561,7 @@ def drive_runtime(row: Row, tmp_path: Path) -> RuntimeObservation:
     except HarnessError:
         raise
     except Exception as exc:
-        return RuntimeObservation("raises", message=str(exc), exc_name=type(exc).__name__)
+        return _raised(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -739,7 +747,7 @@ def drive_cache(row: Row, tmp_path: Path) -> RuntimeObservation:
         ir = resolve_workflow(str(write_cache_workflow(row, tmp_path))).ir
         compiled = compile_workflow(ir, Registry(), initial_params=dict(row.params))
     except Exception as exc:
-        return RuntimeObservation("raises", message=str(exc), exc_name=type(exc).__name__)
+        return _raised(exc)
     chunk_names = {chunk.name for chunk in compiled.cache_block.items} if compiled.cache_block else set()
     require(set(row.prompt_cache) <= chunk_names, f"prompt_cache {row.prompt_cache} names a non-chunk: {chunk_names}")
     shared["__pflow_prompt_cache__"] = MappingProxyType(build_prompt_cache_dict(compiled, shared))
@@ -2010,7 +2018,9 @@ DECLARED_INPUT_ROWS: tuple[Row, ...] = (
         "param",
         "${txt.a}",
         Error("so `${txt.a}` cannot read a field of it"),
-        Unresolved(("txt.a",)),
+        # The compiler enforces the certain-miss rule too (validate_data_flow): a child chosen at run time
+        # is only compiled, and refuses this before anything resolves.
+        Raises("CompilationError", "so `${txt.a}` cannot read a field of it"),
         declared_inputs=declared("txt", "string"),
         params={"txt": JSON_TEXT},
         mutation="the walk parses a declared input's text mid-path",
@@ -2045,13 +2055,13 @@ DECLARED_INPUT_ROWS: tuple[Row, ...] = (
         declared_inputs=declared("txt", "string"),
         params={"txt": JSON_TEXT},
     ),
-    # The silent fallback the validator exists to catch: at run time `??` falls through to "x".
+    # Without the rule `??` would silently fall through to "x" — refused at compile as at validation.
     Row(
         "declared_string_coalesce_field",
         "param",
         '${txt.a ?? "x"}',
         Error("As a ?? operand the fallback would always win."),
-        Resolves("x"),
+        Raises("CompilationError", "As a ?? operand the fallback would always win."),
         declared_inputs=declared("txt", "string"),
         params={"txt": JSON_TEXT},
         mutation="?? operands on a declared root are not checked",
@@ -2071,7 +2081,7 @@ DECLARED_INPUT_ROWS: tuple[Row, ...] = (
         "batch_items",
         "${txt}",
         Error("`batch.items` needs a list"),
-        Raises("TypeError", "batch items must be an array, got str"),
+        Raises("CompilationError", "`batch.items` needs a list"),
         declared_inputs=declared("txt", "string"),
         params={"txt": '["a","b"]'},
     ),
@@ -2084,22 +2094,13 @@ DECLARED_INPUT_ROWS: tuple[Row, ...] = (
         declared_inputs=declared("arr", "array"),
         params={"arr": '["a","b"]'},
     ),
-    Row(
-        "declared_string_loop_while_json_text",
-        "loop_while",
-        "${txt.a}",
-        Error("so `${txt.a}` cannot read a field of it"),
-        Raises("DeclaredInputTextError", "a declared input is never JSON-parsed"),
-        declared_inputs=declared("txt", "string"),
-        params={"txt": JSON_TEXT},
-    ),
-    # Plain text: at run time the miss reads as "absent" and the loop silently stops — caught only here.
+    # Without the rule, plain text reads as "absent" and the loop silently stops.
     Row(
         "declared_string_loop_while_text",
         "loop_while",
         "${txt.a}",
         Error("so `${txt.a}` cannot read a field of it"),
-        Resolves(False),
+        Raises("CompilationError", "so `${txt.a}` cannot read a field of it"),
         declared_inputs=declared("txt", "string"),
         params={"txt": "hello"},
     ),
@@ -2108,7 +2109,7 @@ DECLARED_INPUT_ROWS: tuple[Row, ...] = (
         "output_source",
         "${txt.a}",
         Error("so `${txt.a}` cannot read a field of it"),
-        Raises("OutputResolutionError", "Unresolved variables in output 'o': ${txt.a}"),
+        Raises("CompilationError", "so `${txt.a}` cannot read a field of it"),
         declared_inputs=declared("txt", "string"),
         params={"txt": JSON_TEXT},
         extra_params=MappingProxyType({"sink_str": "${txt}"}),
@@ -2135,23 +2136,13 @@ DECLARED_INPUT_ROWS: tuple[Row, ...] = (
         params={"txt": JSON_TEXT},
         child_type="object",
     ),
-    Row(
-        "declared_string_cache_var_json_text",
-        "cache",
-        "Rules: ${txt.a}",
-        Error("so `${txt.a}` cannot read a field of it"),
-        Raises("DeclaredInputTextError", "a declared input is never JSON-parsed"),
-        prompt_cache=("txt.a",),
-        declared_inputs=declared("txt", "string"),
-        params={"txt": JSON_TEXT},
-    ),
-    # Plain text: the chunk (and its prose) is silently dropped at run time — caught only here.
+    # Without the rule, plain text silently drops the chunk (and its prose).
     Row(
         "declared_string_cache_var_text",
         "cache",
         "Rules: ${txt.a}",
         Error("so `${txt.a}` cannot read a field of it"),
-        Absent(),
+        Raises("CompilationError", "so `${txt.a}` cannot read a field of it"),
         prompt_cache=("txt.a",),
         declared_inputs=declared("txt", "string"),
         params={"txt": "hello"},
