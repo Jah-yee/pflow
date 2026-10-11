@@ -444,19 +444,19 @@ def _typing_name_fix(var_name: str) -> str | None:
     return None
 
 
-def _suggest_for_nameerror(var_name: str, step_inputs: Any) -> str:
+def _suggest_for_nameerror(var_name: str, has_inputs: bool) -> str:
     """A NameError's fix: the typing-name fix, else bind the name through the step's ``inputs:``.
 
-    The node sees resolved params only: a step whose ``inputs:`` resolved to a map may have
-    written it as a map or as one template, so only a step without inputs gets the exact line.
+    The node sees resolved params only: a step with ``inputs:`` may have written it as a map or
+    as one template (possibly producing ``{}``), so only a step without inputs gets the exact line.
     """
     typing_fix = _typing_name_fix(var_name)
     if typing_fix is not None:
         return typing_fix
     from pflow.core.workflow.data_flow import binding_phrase
 
-    if step_inputs:
-        add = f"add {var_name}: ${{<source>}} to the step's inputs:"
+    if has_inputs:
+        add = f"add {var_name}: ${{<source>}} to the step's inputs: (or to the map its template produces)"
     else:
         add = binding_phrase({}, "inputs", [(var_name, "<source>")])
     return (
@@ -761,7 +761,7 @@ class PythonCodeNode(Node):
 
     def exec_fallback(self, prep_res: dict[str, Any], exc: Exception) -> dict[str, Any]:
         """Produce a user-friendly error dict after execution failure."""
-        error = self._format_exec_error(exc, prep_res)
+        error = self._format_exec_error(exc, prep_res, has_inputs="inputs" in self.params)
         return {
             "result": None,
             "stdout": "",
@@ -975,7 +975,7 @@ class PythonCodeNode(Node):
                 )
 
     @staticmethod
-    def _format_exec_error(exc: Exception, prep_res: dict[str, Any]) -> str:
+    def _format_exec_error(exc: Exception, prep_res: dict[str, Any], *, has_inputs: bool) -> str:
         """Format an execution exception into a user-friendly error string.
 
         Extracts line number from traceback when available, and provides
@@ -999,7 +999,7 @@ class PythonCodeNode(Node):
             msg = f"Undefined variable '{var_name}'"
             if location:
                 msg += f"\n{location}"
-            suggestion = _suggest_for_nameerror(var_name, prep_res.get("inputs"))
+            suggestion = _suggest_for_nameerror(var_name, has_inputs)
             msg += f"\n\nSuggestions:\n{suggestion}"
             return msg
         if isinstance(exc, ImportError):

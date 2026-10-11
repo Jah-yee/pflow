@@ -22,8 +22,8 @@ from pathlib import Path
 import pytest
 
 _SHAPES = {
-    "a JSON key": re.compile(r'"[a-z_]+": '),
-    "a Python keyword argument": re.compile(r"\b[a-z_]+=(?:True|False)\b"),
+    "a JSON key": re.compile(r'"[a-z_]+": ?'),
+    "a Python keyword argument": re.compile(r"\b[a-z_]+=(?:True|False|true|false)\b"),
 }
 
 # (file under src/pflow, matched text) -> why the literal is legitimate.
@@ -36,9 +36,12 @@ _ALLOWED: dict[tuple[str, str], str] = {
         for path in ("core/workflow/validator.py", "nodes/agent/agent_node.py")
         for key in ("type", "properties", "required", "field", "result")
     },
-    ("cli/commands/run.py", '"stdin": '): "lane #781 rewrites these two stdin hints; drop this entry with it",
     ("core/llm_client.py", "thinking=True"): "names the provider option a Python caller passed",
     ("nodes/agent/agent_node.py", "is_error=True"): "quotes the field the agent SDK reported",
+    ("core/ir_schema.py", "parallel=true"): "a JSON Schema field description, not a remedy",
+    ("nodes/file/delete_file.py", "confirm_delete=true"): (
+        "a real member outside lane #700's ownership — reword to `- confirm_delete: true`, then drop this entry"
+    ),
 }
 
 
@@ -77,6 +80,8 @@ def _hits(source: str) -> list[tuple[int, str, str]]:
     [
         ("raise NodeError(f'Increase timeout: \"timeout\": {t}')", [(1, '"timeout": ', "a JSON key")]),
         ('msg = "Set overwrite=True to replace it."', [(1, "overwrite=True", "a Python keyword argument")]),
+        ('msg = "Use force=true to overwrite."', [(1, "force=true", "a Python keyword argument")]),
+        ("msg = '{\"timeout\":2}'", [(1, '"timeout":', "a JSON key")]),
         ('def f():\n    """Use force=True or "timeout": 2."""', []),
         ('logger.info(f"Deleted {name} (force=True)")', []),
         ('msg = "Set `- overwrite: true` on the step."', []),

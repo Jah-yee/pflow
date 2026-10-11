@@ -456,11 +456,7 @@ class TestSafetyAndErrors:
     def test_name_error_identifies_variable(self):
         """NameError message includes the undefined variable name."""
         shared: dict = {}
-        action = run_code_node(
-            shared,
-            code="result: int = undefined_var",
-            inputs={},
-        )
+        action = run_code_node(shared, code="result: int = undefined_var")
         assert action == "error"
         assert "undefined_var" in shared["error"]
         # A step with no inputs gets a new `- inputs:` line (binding_phrase), not a JSON dict (#700).
@@ -475,11 +471,15 @@ class TestSafetyAndErrors:
         The node sees only the resolved map, so it cannot tell a written map from one template
         (`- inputs: ${make.result}`) — the fix must hold for both.
         """
-        shared: dict = {}
-        action = run_code_node(shared, code="x: int\nresult: int = x + missing", inputs={"x": 1})
-        assert action == "error"
-        assert "If 'missing' is a workflow value: add missing: ${<source>} to the step's inputs:," in shared["error"]
-        assert "- inputs:" not in shared["error"]
+        for code, inputs in [("x: int\nresult: int = x + missing", {"x": 1}), ("result: int = missing", {})]:
+            shared: dict = {}
+            assert run_code_node(shared, code=code, inputs=inputs) == "error"
+            # `{}` included: `- inputs: ${make.result}` producing an empty map must not be replaced either.
+            assert (
+                "If 'missing' is a workflow value: add missing: ${<source>} to the step's inputs: (or to the map its template produces),"
+                in shared["error"]
+            )
+            assert "- inputs:" not in shared["error"]
 
     def test_union_in_annotation_rejected_with_pipe_syntax_hint(self):
         """Union in an annotation should be rejected at prep with a PEP 604 hint.
