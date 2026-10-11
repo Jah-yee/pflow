@@ -140,9 +140,9 @@ class TestGetUpstreamStderr:
         assert "node-a" not in result
         assert "ERROR FROM NODE-A" not in result
 
-    def test_truncates_long_stderr(self):
-        """Truncates stderr that exceeds max length."""
-        long_stderr = "X" * 600
+    def test_long_stderr_keeps_head_and_tail(self):
+        """Long upstream stderr keeps its head and its tail — the cause is usually last (#755)."""
+        long_stderr = "HEAD " + "X" * 600 + " CAUSE-AT-TAIL"
         shared = {
             "shell-node": {
                 "stdout": "",
@@ -151,11 +151,13 @@ class TestGetUpstreamStderr:
         }
         template = "${shell-node.stdout}"
 
-        result = get_upstream_stderr(template, shared, max_stderr_len=500)
+        result = get_upstream_stderr(template, shared)
 
         assert result is not None
-        assert "..." in result
-        assert len(result) < len(long_stderr) + 100
+        assert "HEAD X" in result
+        assert "chars omitted]" in result
+        assert result.endswith("X CAUSE-AT-TAIL")
+        assert len(result) < len(long_stderr)
 
 
 class TestBatchNodeUpstreamStderr:

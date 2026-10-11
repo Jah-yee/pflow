@@ -67,6 +67,9 @@ including permissive-mode warnings. `OutputResolutionError` carries per-output
 these structures rather than canned suggestions. Context-key conventions live in
 `runtime/template_validation/CLAUDE.md`.
 
+A failed step's stdout/stderr previewed in a diagnostic goes through `head_tail_preview`
+(head + tail; tools write the cause last) — never a head-only `[:N]` slice.
+
 ## Template language (`templates.py`)
 
 The whole `${…}` language is this one module: `parse` → an immutable `Template` of
