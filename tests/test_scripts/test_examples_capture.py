@@ -41,6 +41,26 @@ Write a greeting.
 """
 
 
+PLATFORM_WORKFLOW = """# Platform
+
+Reports where it runs.
+
+## Steps
+
+### where
+
+Name the OS and machine.
+
+- type: code
+
+```python code
+import platform
+
+result: str = f"on {platform.system()} {platform.machine()}"
+```
+"""
+
+
 def write_manifest(here: Path, examples: list[str]) -> None:
     entries = [{"example": example, "params": {}} for example in examples]
     (here / "manifest.json").write_text(json.dumps(entries), encoding="utf-8")
@@ -90,6 +110,15 @@ def test_check_fails_and_names_the_example_whose_output_drifted(harness: Path) -
     assert "DIFF examples/two.pflow.md (exit 0 -> 0)" in checked.stdout
     assert "bye.txt" in checked.stdout
     assert "2 examples, 1 differing" in checked.stdout
+
+
+def test_the_os_name_and_machine_are_normalized(harness: Path) -> None:
+    # CI checks on Linux what a developer records on macOS; an example printing `uname` must match on both.
+    example = harness.parents[4] / "examples" / "one.pflow.md"
+    example.write_text(PLATFORM_WORKFLOW, encoding="utf-8")
+
+    assert run(harness).returncode == 0
+    assert '"on <OS> <ARCH>"' in (harness / "one.json").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("args", [(), ("--check",)])

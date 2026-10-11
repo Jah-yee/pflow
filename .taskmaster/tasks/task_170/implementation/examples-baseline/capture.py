@@ -10,7 +10,8 @@ in a fresh HOME (no memo cache, no settings, no traces leaking between runs), a 
 (file-writing examples write there) and an empty stdin (pflow reads a piped stdin, so an
 inherited one would change every result). Normalized fields: every `duration_ms` and
 `node_timings` value → 0; every UUID (execution ids) → `<UUID>`; the repo root → `<REPO>`;
-the run's cwd → `<CWD>`; the run's HOME → `<HOME>`.
+the run's cwd → `<CWD>`; the run's HOME → `<HOME>`; the OS name and machine (`uname -s`/`-m`) →
+`<OS>`/`<ARCH>`, so a capture recorded on macOS matches on CI's Linux runner.
 
 Exit codes: 0 = every example matches, 1 = drift (a unified diff per differing example),
 2 = harness error (the list is empty, a listed example is missing, or a stored capture has no
@@ -22,6 +23,7 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -35,6 +37,8 @@ REPO = HERE.parents[4]
 MANIFEST = HERE / "manifest.json"
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_PLATFORM = ((re.compile(rf"\b{re.escape(platform.system())}\b"), "<OS>"),
+             (re.compile(rf"\b{re.escape(platform.machine())}\b"), "<ARCH>"))
 
 
 def _normalize(value: Any, key: str | None, subs: tuple[tuple[str, str], ...]) -> Any:
@@ -50,6 +54,8 @@ def _normalize(value: Any, key: str | None, subs: tuple[tuple[str, str], ...]) -
         for old, new in subs:
             value = value.replace(old, new)
         value = _UUID.sub("<UUID>", value)
+        for pattern, placeholder in _PLATFORM:
+            value = pattern.sub(placeholder, value)
     return value
 
 
@@ -118,7 +124,7 @@ def main() -> int:
     failures = 0
     for entry in entries:
         example = entry["example"]
-        code, text = run_one(pflow, example, entry["params"])
+        code, text = run_one(pflow, example, entry.get("params", {}))
         out = HERE / _slug(example)
         if check:
             old = out.read_text(encoding="utf-8") if out.is_file() else ""
