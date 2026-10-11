@@ -174,7 +174,8 @@ A commit's PR is the `#N` of `Merge pull request #N`, or the trailing
 merged PR. Squash subjects can name issues too (`fix: … (#628) (#649)`),
 and a direct-to-main commit can end in an issue number; neither may
 become a PR link. A number missing from the 200 most recent merged PRs
-is checked with one `gh pr view`.
+costs one `gh api` lookup; a lookup that fails for any reason other
+than "no such number" fails the step rather than drop a real PR.
 
 Timeout is raised above the 30s default because `gh pr list` over 200
 merged PRs can be slow on active repos.
@@ -223,19 +224,25 @@ for line in file_log.strip().split('\n'):
 pr_out = subprocess.run(
     ['gh', 'pr', 'list', '--state', 'merged', '--limit', '200',
      '--json', 'number,title,body'],
-    capture_output=True, encoding='utf-8'
+    capture_output=True, encoding='utf-8', check=True
 ).stdout
 prs = json.loads(pr_out) if pr_out.strip() else []
 pr_by_num = {pr['number']: pr for pr in prs}
 
 def merged_pr(num):
     if num not in pr_by_num:
-        view = subprocess.run(
-            ['gh', 'pr', 'view', str(num), '--json', 'number,title,body,state'],
+        found = subprocess.run(
+            ['gh', 'api', f'repos/{repo}/issues/{num}'],
             capture_output=True, encoding='utf-8'
         )
-        pr = json.loads(view.stdout) if view.returncode == 0 else {}
-        pr_by_num[num] = pr if pr.get('state') == 'MERGED' else None
+        if found.returncode != 0 and 'HTTP 404' not in found.stderr:
+            raise RuntimeError(
+                f'Cannot check whether #{num} is a merged PR: {found.stderr.strip()}'
+                ' — re-run once gh can reach GitHub'
+            )
+        item = json.loads(found.stdout) if found.returncode == 0 else {}
+        merged = (item.get('pull_request') or {}).get('merged_at')
+        pr_by_num[num] = item if merged else None
     return pr_by_num[num]
 
 for c in commits:
