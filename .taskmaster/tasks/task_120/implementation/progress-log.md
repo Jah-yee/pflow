@@ -900,3 +900,26 @@ resume path for any successor.
   form spawns the CLI) — carried to the user checkpoint.
 - Next: commit; draft the user checkpoint page from I4's shots + `evidence.md`; hand back (embedded USER checkpoint)
   BEFORE the completion gate.
+
+## [2026-10-11 22:55] task-orchestrator — PARKED on the embedded USER checkpoint (PF screenshots + message evidence)
+- State: phases P0, PA, PC, PB, PD, PE, PF all built, self-checked, committed; mid-task reviews #1 and #2 done and folded.
+  Head `42660f09` (local; nothing pushed). `make check` rc 0; `make test` 11439 passed; Task-159 `verify.sh` 86/1/0 — the
+  one drift (`12/04-guide-auto-detect`, COOKIE) is main's own since #716 (our guide + baseline byte-identical to
+  `origin/main`). No `pflow ui` server running (I4 killed PID 71527/71523; port 8791 free).
+- Checkpoint page (drafted by me, for the main orchestrator to publish): `scratchpads/task-120/checkpoint-pf.md`;
+  evidence `scratchpads/task-120/pf/evidence.md`; shots `scratchpads/task-120/pf/shots/00…04`. Staleness: 0 respects
+  (shot 01's text re-executed on `42660f09`, identical).
+- Decisions asked: D1 §1.5 clause (rec B, built), D2 `(e.g. 3)` suggestion form (rec accept), D3 unruled messages (rec
+  accept), D4 web-form "from the command line" wording (rec ship; web-form source as follow-up issue), D5 no-diagnostic
+  behaviour changes (FYI).
+- Exact resume point: on the ruling — (1) apply any text change the ruling makes (D1=A → compiler stamps the authored
+  `inputs:` on the WorkflowExecutor + `InputTypeError` template clause + test; D4=(b) → only if ruled into THIS task);
+  (2) `git fetch` + merge `origin/main`, `make check` + `make test`; (3) commission the completion gate (plan §4 PZ.3:
+  code-mode deep-review full floor via the pflow fan-out — silent-failures, impact-completeness, feature-interactions,
+  test-fidelity, validation-consistency, agent-ux, simplicity (incl. `WORKFLOW_NODE_TYPES` copies + where
+  `declared_text_reason` lives), spec-conformance; then `review-falsifier` launched DIRECTLY by me, last), gate-runner =
+  a fresh Opus review-evaluator (I1–I4 windows are large) packeted with spec + plan + this log; (4) `make
+  test-all-local`, verify.sh vs 87/87-minus-main's-COOKIE-case, `capture.py --check` vs P0's 5; (5) spec Status done +
+  Completed; `create-task-review`; `create-pr` with closing keywords for #686 and #687 ONLY (packet: #188, #297, #742,
+  #743 are "Refs … — not a closing PR"); check `closingIssuesReferences`.
+- Next: hand back to the main orchestrator.
