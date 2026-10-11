@@ -431,6 +431,18 @@ def _format_output_block(block: dict[str, Any]) -> list[str]:
     return lines
 
 
+def written_reference(text: str, *, as_json: bool = False) -> str:
+    """``${text}`` as the author writes it: ``${text|json}`` for a reference that came from a
+    JSON insert, so a shown or pasted fix stays an insert (embedded code sends anything
+    else to the tool as JavaScript). The one place a diagnostic renders a reference."""
+    return f"${{{text}|json}}" if as_json else f"${{{text}}}"
+
+
+def _inserted(ref: dict[str, Any]) -> bool:
+    """Whether a classified unresolved reference came from a JSON insert."""
+    return bool(ref.get("as_json"))
+
+
 def _format_all_unavailable_coalesce_summary(refs: list[dict[str, Any]]) -> list[str]:
     """Render the shared fix block when one coalesce expression has no usable operand.
 
@@ -465,7 +477,7 @@ def _format_all_unavailable_coalesce_summary(refs: list[dict[str, Any]]) -> list
     )
     lines = [
         header,
-        f"    • Add another fallback: ${{{coalesce_expr} ?? {peer_example}.{sample_field}}}",
+        f"    • Add another fallback: {written_reference(f'{coalesce_expr} ?? {peer_example}.{sample_field}', as_json=_inserted(refs[0]))}",
     ]
     if any_failed:
         lines.append("    • Investigate the underlying failures (see Error/Stderr above)")
@@ -483,7 +495,7 @@ def _format_one_reference(ref: dict[str, Any]) -> list[str]:
     root = ref.get("root", "")
     status = ref.get("status", "")
     bullet = "✗" if status != "succeeded" else "✓"
-    header = f"  {bullet} ${{{var}}}"
+    header = f"  {bullet} {written_reference(var, as_json=_inserted(ref))}"
 
     if status == "absent":
         return _format_absent_reference(header, ref, root, var)
@@ -507,7 +519,9 @@ def _format_absent_reference(header: str, ref: dict[str, Any], root: str, var: s
         field = _extract_field_path(var)
         lines.append("")
         lines.append("        To fix:")
-        lines.append(f"          • Use coalesce: ${{{var} ?? {peers[0]}.{field}}}")
+        lines.append(
+            f"          • Use coalesce: {written_reference(f'{var} ?? {peers[0]}.{field}', as_json=_inserted(ref))}"
+        )
     return lines
 
 
@@ -528,7 +542,7 @@ def _format_failed_reference(header: str, ref: dict[str, Any], root: str, var: s
     if secondary_hint:
         lines.append("")
         lines.append(f"      ⚠ Additional issue: field '{_extract_field_path(var)}' may also be a typo")
-        lines.append(f"        Did you mean: ${{{secondary_hint}}}?")
+        lines.append(f"        Did you mean: {written_reference(secondary_hint, as_json=_inserted(ref))}?")
         lines.append("        (this won't resolve even if the failure is fixed)")
 
     if not ref.get("in_coalesce", False):
@@ -546,13 +560,15 @@ def _format_failed_reference_fixes(ref: dict[str, Any], root: str, var: str) -> 
     lines = ["", "        To fix:"]
     if peers:
         primary_peer = peers[0]
-        fix_template = f"${{{fix_var} ?? {primary_peer}.{field}}}"
+        fix_template = written_reference(f"{fix_var} ?? {primary_peer}.{field}", as_json=_inserted(ref))
         lines.append(f"          • Use coalesce: {fix_template}")
         if len(peers) > 1:
             other_peers = ", ".join(peers[1:])
             lines.append(f"            (other peers with this field: {other_peers})")
     else:
-        lines.append(f"          • Use coalesce with a peer node: ${{{fix_var} ?? <peer>.{field}}}")
+        lines.append(
+            f"          • Use coalesce with a peer node: {written_reference(f'{fix_var} ?? <peer>.{field}', as_json=_inserted(ref))}"
+        )
     lines.append(f"          • Add `- on-error: <handler>` to node '{root}' so the workflow")
     lines.append("            routes to a handler on failure")
     return lines
@@ -581,7 +597,7 @@ def _format_path_error_reference(header: str, ref: dict[str, Any], root: str, va
     if suggestion:
         lines.append("")
         lines.append("        To fix:")
-        lines.append(f"          • Did you mean: ${{{suggestion}}}")
+        lines.append(f"          • Did you mean: {written_reference(suggestion, as_json=_inserted(ref))}")
     return lines
 
 

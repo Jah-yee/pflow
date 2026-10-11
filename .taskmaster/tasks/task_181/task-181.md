@@ -9,7 +9,10 @@ templated — but under a rule that mirrors Task 118's: the text is the embedded
 `${x|json}` Reference that yields a quote-safe JSON/JS literal.
 
 ## Status
-not started
+done
+
+## Completed
+2026-10-11
 
 ## Priority
 
@@ -58,7 +61,38 @@ next
 - Split out of Task 118 on 2026-10-06: different surface and machinery (parser grammar, the
   TypeScript mirror), no dependency on the shell change.
 
-## Open questions (resolve at start)
+## Resolved at planning
+
+> **CP-1 RULED 2026-10-07** (user: *"181: all yes"*): the diagnostics checkpoint's R1–R6 and R8 stand as recommended;
+> `implementation/diagnostics-checkpoint.md` is the ruled text. Nouns "Embedded code" / "JSON insert" enter
+> `context/CONTEXT.md` at merge (main orchestrator).
+
+The open questions below are answered in `implementation/implementation-plan.md` §3 (D1–D12);
+every new or changed message, with BEFORE executed and AFTER drafted, is in
+`implementation/diagnostics-checkpoint.md`. The user rules R1–R6 and R8 there before the build starts. In one line each:
+
+- **Code-bearing params:** Task 118's `param_mode(node_type, key)` gains a third answer,
+  `"embedded"`, for four JavaScript params: `evaluate_script.function`, `navigate_page.initScript`,
+  `browser_evaluate.function`, `browser_run_code_unsafe.code`. The match is on the tool-name suffix
+  of `mcp-<server>-<tool>` (D2, R1).
+- **Grammar:** one optional suffix, `${<expression>|json}`, applies to the whole expression,
+  Coalesce and Dynamic index included. It is never simple and never type-preserving (D1).
+- **Policy over one parse:** a policy view, `embedded_code(template)`, keeps only the JSON
+  inserts. Every other span is cut verbatim from the source (D3).
+- **`|json` on other surfaces:** a validation ERROR. At run time it is kept verbatim like an
+  Issue, so the validator and the run agree (D4, R2).
+- **Inserts pflow cannot see:** a validation ERROR when the insert is hidden inside `$${…}` or
+  inside a JavaScript `${…}`, and when it is a near-miss spelling (D5, R4).
+- **Bare references:** a bare reference to a workflow input that is used nowhere else is an ERROR
+  that names `|json`. It replaces the unused-input error (one mistake, one diagnostic, as in
+  Task 118). Any other bare reference in the step's scope is a WARNING, and so is an insert left
+  inside quotes (D6, R3).
+- **Suggestions:** rebuilt suggestions keep `|json` (D7).
+- **Graph and web:** the payload carries `RFParam.mode`. The web's four `${…}` readers move onto
+  one segmenting walk in `scan.ts`, which closes #683 (D8, D10).
+- **Build order:** after Task 118 **Part 2** merges (plan §0).
+
+## Open questions (as posed — answered above)
 
 - **How a param is identified as code-bearing.** The node type string is
   `mcp-{server_name}-{tool}` (`src/pflow/mcp/registrar.py:121`) and the server name is
@@ -105,9 +139,10 @@ Solution / Requirements / Verification — finalized when the task is started (j
 
 ## Dependencies
 
-None blocking, but it builds after Task 118: both edit `runtime/engine/template_resolution.py`
-(engine contact → lane A, plan-mode deep-review mandatory, serialized) and this task reuses the
-classification 118 introduces. Read first: `.taskmaster/tasks/task_170/task-review.md`, Task 118's
+Builds after Task 118 **Part 2** (the PR that introduces `param_mode`, `template_params` and
+`split_params(…, node_type)`; Part 1 carries only `binds_as_text`). Both edit
+`runtime/engine/template_resolution.py`: that is engine contact, so lane A, a mandatory plan-mode
+deep-review, and serialized builds. This task reuses the classification 118 introduces. Read first: `.taskmaster/tasks/task_170/task-review.md`, Task 118's
 task-review once it exists, issues #550 and #621 in full (body + comments).
 
 ## Verification (intent)

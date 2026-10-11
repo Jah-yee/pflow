@@ -30,16 +30,16 @@ screenshot. Run with `-p -o verdict` to get just the JSON.
 Full pflow-UI URL. For the edge-coverage invariant pass
 `density=advanced&collapse=none`; the other two invariants run on any view.
 
-* type: string
-* required: true
+- type: string
+- required: true
 
 ### out_path
 
 Where to write the screenshot PNG.
 
-* type: string
-* required: false
-* default: "/tmp/pflow-shots/visual-invariants.png"
+- type: string
+- required: false
+- default: "/tmp/pflow-shots/visual-invariants.png"
 
 ## Steps
 

@@ -1365,6 +1365,11 @@ def test_refs_with_path_in_reads_the_template_parse() -> None:
     # runs through its first `}`: the `${i ?? 0}` inside a non-variable index is not a ref.
     assert refs_with_path_in("${m[0][1]}") == []
     assert refs_with_path_in("${a[${i ?? 0}]}") == []
+    # A JSON insert is an Expression (Task 181); a misspelled or spaced suffix is an Issue.
+    assert refs_with_path_in("${gen.result.ok|json}") == [("gen", "result", ("ok",))]
+    assert refs_with_path_in("${gen.result ?? idx.result | json}") == [("gen", "result", ()), ("idx", "result", ())]
+    assert refs_with_path_in("${gen.result|jsn}") == []
+    assert refs_with_path_in("${gen.result|json }") == []
 
 
 def test_dynamic_index_read_draws_a_data_flow_edge_from_the_indexed_batch() -> None:

@@ -14,8 +14,6 @@ host-side automation tool instead (`pflow guide mcp` → Choosing Tools for Dete
 
 Each run reopens the page (fresh in-page state, layout cache cleared), so a
 multi-click sequence needs its own steps inside ONE run — copy the `click` step.
-Selectors are interpolated into single-quoted JS strings: use double quotes inside
-(`.react-flow__node[data-id="n16"]`), never single quotes.
 
 ## Inputs
 
@@ -80,9 +78,9 @@ Dispatch a synthetic click on the target, then report panel + rects.
 - result_format: json_block
 - function: |
     async () => {
-      const sel = '${selector}';
-      const text = '${text}';
-      const measureId = '${measure_id}';
+      const sel = ${selector|json};
+      const text = ${text|json};
+      const measureId = ${measure_id|json};
       const nodeRect = (id) => {
         const el = document.querySelector('.react-flow__node[data-id="' + id + '"]');
         return el ? el.getBoundingClientRect().toJSON() : null;

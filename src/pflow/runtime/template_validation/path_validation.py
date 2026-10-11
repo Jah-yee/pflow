@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
+from pflow.core.diagnostic_render import written_reference
 from pflow.core.templates import (
     TRAVERSABLE_TYPES,
     TRUSTED_TRAVERSABLE_TYPES,
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 def validate_template_paths(
-    all_templates: set[str],
+    all_templates: set[tuple[str, bool]],
     available_params: dict[str, Any],
     node_outputs: dict[str, Any],
     workflow_ir: dict[str, Any],
@@ -53,7 +54,8 @@ def validate_template_paths(
     and generates an error message if missing.
 
     Args:
-        all_templates: Set of all template variable names found
+        all_templates: ``(reference path, as_json)`` per reference — a JSON insert's
+            reference is shown, and its fixes written, as ``${path|json}``
         available_params: Parameters available from workflow inputs or CLI
         node_outputs: Pre-computed node outputs from extraction
         workflow_ir: The workflow IR
@@ -64,15 +66,19 @@ def validate_template_paths(
     """
     diagnostics: list[Diagnostic] = []
 
-    for template in sorted(all_templates):
-        is_valid, warning = validate_template_path(template, available_params, node_outputs, workflow_ir, registry)
+    for template, as_json in sorted(all_templates):
+        is_valid, warning = validate_template_path(
+            template, available_params, node_outputs, workflow_ir, registry, as_json=as_json
+        )
 
         if warning:
             diagnostics.append(warning)
 
         if not is_valid:
             diagnostics.append(
-                create_template_diagnostic(template, available_params, workflow_ir, node_outputs, registry)
+                create_template_diagnostic(
+                    template, available_params, workflow_ir, node_outputs, registry, as_json=as_json
+                )
             )
 
     return diagnostics
@@ -89,8 +95,10 @@ def validate_template_path(
     node_outputs: dict[str, Any],
     workflow_ir: dict[str, Any],
     registry: Registry,
+    *,
+    as_json: bool = False,
 ) -> tuple[bool, Diagnostic | None]:
-    """Validate a template path exists in available sources.
+    """Validate a template path exists in available sources (``as_json``: a JSON insert's).
 
     With namespacing enabled, we need to distinguish between:
     1. Node output references (e.g., ${node_id.output_key})
@@ -113,7 +121,7 @@ def validate_template_path(
 
     # When namespacing is enabled, a root that is a node ID is a namespaced output reference
     if workflow_ir.get("enable_namespacing", True) and ref.root in get_node_ids(workflow_ir):
-        return validate_namespaced_output(ref, node_outputs, template)
+        return validate_namespaced_output(ref, node_outputs, template, as_json=as_json)
 
     # A root-level reference. initial_params first (higher priority): their runtime
     # structure is unknown, so nested paths and indices under them cannot be validated.
@@ -122,13 +130,18 @@ def validate_template_path(
 
     # Node outputs (for backward compatibility when namespacing is disabled)
     if ref.root in node_outputs:
-        return validate_nested_path(ref.path, node_outputs[ref.root], full_template=template, output_key=ref.root)
+        return validate_nested_path(
+            ref.path,
+            node_outputs[ref.root],
+            full_template=written_reference(template, as_json=as_json),
+            output_key=ref.root,
+        )
 
     return (False, None)
 
 
 def _batch_results_index_error(
-    output_info: dict[str, Any], base_var: str, template: str
+    output_info: dict[str, Any], base_var: str, template: str, *, as_json: bool
 ) -> tuple[bool, Diagnostic | None]:
     """Build ERROR diagnostic for index access on continue-mode batch results."""
     node_id = output_info.get("node_id", base_var)
@@ -146,10 +159,7 @@ def _batch_results_index_error(
                 f"(items: ${{{base_var}.results}}) or switch to "
                 f"error_handling: fail_fast."
             ),
-            context={
-                "template": template if template.startswith("${") else f"${{{template}}}",
-                "category": "validation",
-            },
+            context={"template": written_reference(template, as_json=as_json), "category": "validation"},
             see_also=["batch"],
         ),
     )
@@ -159,6 +169,8 @@ def validate_namespaced_output(
     ref: Reference,
     node_outputs: dict[str, Any],
     template: str,
+    *,
+    as_json: bool = False,
 ) -> tuple[bool, Diagnostic | None]:
     """Validate a namespaced node output reference (``node.output...``).
 
@@ -189,9 +201,14 @@ def validate_namespaced_output(
         and output_info.get("is_batch_output")
         and output_info.get("error_handling") == "continue"
     ):
-        return _batch_results_index_error(output_info, ref.root, template)
+        return _batch_results_index_error(output_info, ref.root, template, as_json=as_json)
 
-    return validate_nested_path(ref.path[1:], output_info, full_template=template, output_key=base_output)
+    return validate_nested_path(
+        ref.path[1:],
+        output_info,
+        full_template=written_reference(template, as_json=as_json),
+        output_key=base_output,
+    )
 
 
 def validate_nested_path(
@@ -208,7 +225,7 @@ def validate_nested_path(
     Args:
         segments: Path segments after the base variable
         output_info: Output info dict with type and structure
-        full_template: Full template string for warning context
+        full_template: The reference as written (``${…}``), for warning context
         output_key: The output key being accessed (for warning)
 
     Returns:
@@ -260,7 +277,7 @@ def _json_array_warning(info: dict[str, Any], template: str) -> Diagnostic:
             f"Non-JSON strings cause 'Unresolved variables' error."
         ),
         suggestions=["Ensure the value is a valid JSON array at runtime."],
-        context={"template": template if template.startswith("${") else f"${{{template}}}"},
+        context={"template": template},
     )
 
 
@@ -277,7 +294,7 @@ def check_type_allows_traversal(
         output_type: The output type string (may be union like "dict|str")
         path_parts: Remaining path segments for warning context
         output_info: Output info dict for warning context
-        full_template: Full template string for warning context
+        full_template: The reference as written (``${…}``), for warning context
         output_key: The output key being accessed
 
     Returns:
@@ -310,7 +327,7 @@ def check_type_allows_traversal(
                 f"Non-JSON strings cause 'Unresolved variables' error."
             ),
             suggestions=["Ensure the value is valid JSON at runtime."],
-            context={"template": full_template if full_template.startswith("${") else f"${{{full_template}}}"},
+            context={"template": full_template},
         )
 
     return (True, warning)
@@ -327,8 +344,11 @@ def create_template_diagnostic(
     workflow_ir: dict[str, Any],
     node_outputs: dict[str, Any],
     registry: Registry,
+    *,
+    as_json: bool = False,
 ) -> Diagnostic:
-    """Create appropriate diagnostic for missing template variable.
+    """Create appropriate diagnostic for missing template variable (``as_json``: a JSON
+    insert's — every reference it shows or suggests in the author's place is ``${…|json}``).
 
     Args:
         template: Template variable name
@@ -350,17 +370,19 @@ def create_template_diagnostic(
         node_ids = get_node_ids(workflow_ir)
         if base_var in node_ids:
             diagnostic = _create_node_reference_diagnostic(
-                base_var, parts, template, workflow_ir, node_outputs, registry
+                base_var, parts, template, workflow_ir, node_outputs, registry, as_json=as_json
             )
             return _attach_source_file_hint(diagnostic, template, workflow_ir)
 
     # Handle path templates (with dots)
     if "." in template:
-        diagnostic = _create_path_template_diagnostic(template, base_var, available_params, workflow_ir)
+        diagnostic = _create_path_template_diagnostic(
+            template, base_var, available_params, workflow_ir, as_json=as_json
+        )
         return _attach_source_file_hint(diagnostic, template, workflow_ir)
 
     # Handle simple templates
-    diagnostic = _create_simple_template_diagnostic(template, workflow_ir)
+    diagnostic = _create_simple_template_diagnostic(template, workflow_ir, as_json=as_json)
     return _attach_source_file_hint(diagnostic, template, workflow_ir)
 
 
@@ -443,6 +465,8 @@ def _create_node_reference_diagnostic(
     workflow_ir: dict[str, Any],
     node_outputs: dict[str, Any],
     registry: Registry,
+    *,
+    as_json: bool,
 ) -> Diagnostic:
     """Create diagnostic for node output references.
 
@@ -457,21 +481,17 @@ def _create_node_reference_diagnostic(
     Returns:
         Validation diagnostic for node reference issues
     """
+    written = written_reference(template, as_json=as_json)
     # Missing output key
     if len(parts) == 1:
+        example = written_reference(f"{base_var}.output_key", as_json=as_json)
         return Diagnostic(
             severity=Severity.ERROR,
             source="validator",
             title="Template Error",
-            message=(
-                f"Invalid template ${{{template}}} — node ID '{base_var}' requires an output key "
-                f"(for example: ${{{base_var}.output_key}})."
-            ),
-            context={
-                "category": "template_error",
-                "template": f"${{{template}}}",
-            },
-            suggestions=[f"Reference a concrete output, for example ${{{base_var}.output_key}}."],
+            message=f"Invalid template {written} — node ID '{base_var}' requires an output key (for example: {example}).",
+            context={"category": "template_error", "template": written},
+            suggestions=[f"Reference a concrete output, for example {example}."],
         )
 
     output_key = parts[1]
@@ -479,7 +499,7 @@ def _create_node_reference_diagnostic(
     # Find the node to get better error message
     node = next((n for n in workflow_ir.get("nodes", []) if n.get("id") == base_var), None)
     if node:
-        return _get_node_outputs_description(node, output_key, node_outputs, registry)
+        return _get_node_outputs_description(node, output_key, node_outputs, registry, as_json=as_json)
 
     return Diagnostic(
         severity=Severity.ERROR,
@@ -487,15 +507,12 @@ def _create_node_reference_diagnostic(
         title="Template Error",
         node_id=base_var,
         message=f"Node '{base_var}' does not output '{output_key}'.",
-        context={
-            "category": "template_error",
-            "template": f"${{{template}}}",
-        },
+        context={"category": "template_error", "template": written},
     )
 
 
 def _create_path_template_diagnostic(
-    template: str, base_var: str, available_params: dict[str, Any], workflow_ir: dict[str, Any]
+    template: str, base_var: str, available_params: dict[str, Any], workflow_ir: dict[str, Any], *, as_json: bool
 ) -> Diagnostic:
     """Create diagnostic for path templates (with dots) that aren't node references.
 
@@ -508,16 +525,14 @@ def _create_path_template_diagnostic(
     Returns:
         Validation diagnostic for path template issues
     """
+    written = written_reference(template, as_json=as_json)
     if base_var in available_params:
         return Diagnostic(
             severity=Severity.ERROR,
             source="validator",
             title="Template Error",
-            message=f"Template path ${{{template}}} cannot be validated because initial params are runtime-dependent.",
-            context={
-                "category": "template_error",
-                "template": f"${{{template}}}",
-            },
+            message=f"Template path {written} cannot be validated because initial params are runtime-dependent.",
+            context={"category": "template_error", "template": written},
         )
 
     # Check if base variable is a declared input
@@ -533,11 +548,7 @@ def _create_path_template_diagnostic(
                 f"Required input '${{{base_var}}}' not provided{input_desc} — attempted to access path "
                 f"'{path_component}'."
             ),
-            context={
-                "category": "template_error",
-                "template": f"${{{template}}}",
-                "path": "inputs",
-            },
+            context={"category": "template_error", "template": written, "path": "inputs"},
         )
 
     enable_namespacing = workflow_ir.get("enable_namespacing", True)
@@ -547,31 +558,25 @@ def _create_path_template_diagnostic(
             source="validator",
             title="Template Error",
             message=(
-                f"Template variable ${{{template}}} has no valid source — '${{{base_var}}}' is neither "
+                f"Template variable {written} has no valid source — '${{{base_var}}}' is neither "
                 f"a workflow input nor a node ID in this workflow."
             ),
-            context={
-                "category": "template_error",
-                "template": f"${{{template}}}",
-            },
+            context={"category": "template_error", "template": written},
         )
     return Diagnostic(
         severity=Severity.ERROR,
         source="validator",
         title="Template Error",
         message=(
-            f"Template variable ${{{template}}} has no valid source — not provided in initial_params and "
+            f"Template variable {written} has no valid source — not provided in initial_params and "
             f"path '{path_component}' not found in outputs from any node in the workflow."
         ),
-        context={
-            "category": "template_error",
-            "template": f"${{{template}}}",
-        },
+        context={"category": "template_error", "template": written},
         suggestions=["Provide the input at runtime or fix the template path to match an existing node output."],
     )
 
 
-def _create_simple_template_diagnostic(template: str, workflow_ir: dict[str, Any]) -> Diagnostic:
+def _create_simple_template_diagnostic(template: str, workflow_ir: dict[str, Any], *, as_json: bool) -> Diagnostic:
     """Create diagnostic for simple templates without dots.
 
     Args:
@@ -582,18 +587,15 @@ def _create_simple_template_diagnostic(template: str, workflow_ir: dict[str, Any
         Validation diagnostic for simple template issues
     """
     input_desc = _get_input_description(template, workflow_ir)
+    written = written_reference(template, as_json=as_json)
 
     if input_desc:
         return Diagnostic(
             severity=Severity.ERROR,
             source="validator",
             title="Template Error",
-            message=f"Required input '${{{template}}}' not provided{input_desc}.",
-            context={
-                "category": "template_error",
-                "template": f"${{{template}}}",
-                "path": "inputs",
-            },
+            message=f"Required input '{written}' not provided{input_desc}.",
+            context={"category": "template_error", "template": written, "path": "inputs"},
         )
 
     # Check if it might be a node ID used incorrectly
@@ -601,20 +603,17 @@ def _create_simple_template_diagnostic(template: str, workflow_ir: dict[str, Any
     if enable_namespacing:
         node_ids = get_node_ids(workflow_ir)
         if template in node_ids:
+            example = written_reference(f"{template}.output_key", as_json=as_json)
             return Diagnostic(
                 severity=Severity.ERROR,
                 source="validator",
                 title="Template Error",
                 node_id=template,
                 message=(
-                    f"Invalid template ${{{template}}} — this is a node ID. To reference node outputs, use "
-                    f"${{{template}.output_key}} format."
+                    f"Invalid template {written} — this is a node ID. To reference node outputs, use {example} format."
                 ),
-                context={
-                    "category": "template_error",
-                    "template": f"${{{template}}}",
-                },
-                suggestions=[f"Use ${{{template}.output_key}} with a concrete output field."],
+                context={"category": "template_error", "template": written},
+                suggestions=[f"Use {example} with a concrete output field."],
             )
 
     return Diagnostic(
@@ -622,13 +621,10 @@ def _create_simple_template_diagnostic(template: str, workflow_ir: dict[str, Any
         source="validator",
         title="Template Error",
         message=(
-            f"Template variable ${{{template}}} has no valid source — not provided in initial_params and not "
+            f"Template variable {written} has no valid source — not provided in initial_params and not "
             f"written by any node."
         ),
-        context={
-            "category": "template_error",
-            "template": f"${{{template}}}",
-        },
+        context={"category": "template_error", "template": written},
         suggestions=[
             "Provide the input at runtime or change the template to reference a declared input or node output."
         ],
@@ -636,7 +632,13 @@ def _create_simple_template_diagnostic(template: str, workflow_ir: dict[str, Any
 
 
 def _build_enhanced_node_diagnostic(
-    node_id: str, node_type: str, attempted_key: str, available_paths: list[tuple[str, str]], base_var: str
+    node_id: str,
+    node_type: str,
+    attempted_key: str,
+    available_paths: list[tuple[str, str]],
+    base_var: str,
+    *,
+    as_json: bool,
 ) -> Diagnostic:
     """Create structured diagnostic with available outputs and suggestions.
 
@@ -661,22 +663,25 @@ def _build_enhanced_node_diagnostic(
         safe_path = sanitize_for_display(path)
         safe_type = sanitize_for_display(type_str)
         full_path = f"{safe_base_var}.{safe_path}" if safe_base_var not in safe_path else safe_path
-        available_fields_display.append(f"${{{full_path}}} ({safe_type})")
+        available_fields_display.append(f"{written_reference(full_path, as_json=as_json)} ({safe_type})")
 
     similar = find_similar_paths(attempted_key, available_paths)
     suggestions: list[str] = []
     if similar:
         fix_path, _ = similar[0]
         full_fix = f"{base_var}.{fix_path}" if base_var not in fix_path else fix_path
-        suggestions.append(f"Change ${{{base_var}.{attempted_key}}} to ${{{full_fix}}}")
+        suggestions.append(
+            f"Change {written_reference(f'{base_var}.{attempted_key}', as_json=as_json)} to "
+            f"{written_reference(full_fix, as_json=as_json)}"
+        )
         for sugg_path, _ in similar[1:]:
             safe_sugg_path = sanitize_for_display(sugg_path)
             full_sugg = f"{safe_base_var}.{safe_sugg_path}" if safe_base_var not in safe_sugg_path else safe_sugg_path
-            suggestions.append(f"Or use ${{{full_sugg}}}")
+            suggestions.append(f"Or use {written_reference(full_sugg, as_json=as_json)}")
     elif available_paths:
         first_path, _ = available_paths[0]
         full_first = f"{base_var}.{first_path}" if base_var not in first_path else first_path
-        suggestions.append(f"Try ${{{full_first}}}")
+        suggestions.append(f"Try {written_reference(full_first, as_json=as_json)}")
 
     context: dict[str, Any] = {
         "category": "template_error",
@@ -687,7 +692,8 @@ def _build_enhanced_node_diagnostic(
     }
     if similar:
         context["similar_names"] = [
-            f"${{{safe_base_var}.{path}}}" if safe_base_var not in path else f"${{{path}}}" for path, _ in similar
+            written_reference(f"{safe_base_var}.{path}" if safe_base_var not in path else path, as_json=as_json)
+            for path, _ in similar
         ]
 
     return Diagnostic(
@@ -702,7 +708,7 @@ def _build_enhanced_node_diagnostic(
 
 
 def _get_node_outputs_description(
-    node: dict[str, Any], output_key: str, node_outputs: dict[str, Any], registry: Registry
+    node: dict[str, Any], output_key: str, node_outputs: dict[str, Any], registry: Registry, *, as_json: bool
 ) -> Diagnostic:
     """Get diagnostic for missing node output with enhanced suggestions.
 
@@ -735,7 +741,7 @@ def _get_node_outputs_description(
     is_batch = any(entry.get("is_batch_output") for entry in node_entries.values())
 
     if is_batch:
-        return _create_batch_error(node_id_str, node_type, output_key, node_entries)
+        return _create_batch_error(node_id_str, node_type, output_key, node_entries, as_json=as_json)
 
     # Non-batch node: build available paths and use standard error formatter
     all_paths = build_paths_from_entries(node_entries)
@@ -747,6 +753,7 @@ def _get_node_outputs_description(
             attempted_key=output_key,
             available_paths=all_paths,
             base_var=node_id_str,
+            as_json=as_json,
         )
 
     return Diagnostic(
@@ -794,7 +801,9 @@ def _get_node_outputs_from_registry(node: dict[str, Any], output_key: str, regis
     )
 
 
-def _create_batch_error(node_id: str, node_type: str, attempted_key: str, node_entries: dict[str, Any]) -> Diagnostic:
+def _create_batch_error(
+    node_id: str, node_type: str, attempted_key: str, node_entries: dict[str, Any], *, as_json: bool
+) -> Diagnostic:
     """Create error message for batch node output access.
 
     Two cases:
@@ -824,7 +833,7 @@ def _create_batch_error(node_id: str, node_type: str, attempted_key: str, node_e
     inner_field_exists = attempted_key in inner_structure
 
     if inner_field_exists:
-        return _build_batch_inner_field_diagnostic(safe_node_id, safe_key, node_entries)
+        return _build_batch_inner_field_diagnostic(safe_node_id, safe_key, node_entries, as_json=as_json)
 
     # Field doesn't exist in inner interface either — show standard batch outputs
     all_paths = build_paths_from_entries(node_entries)
@@ -834,10 +843,13 @@ def _create_batch_error(node_id: str, node_type: str, attempted_key: str, node_e
         attempted_key=attempted_key,
         available_paths=all_paths,
         base_var=safe_node_id,
+        as_json=as_json,
     )
 
 
-def _build_batch_inner_field_diagnostic(node_id: str, attempted_key: str, node_entries: dict[str, Any]) -> Diagnostic:
+def _build_batch_inner_field_diagnostic(
+    node_id: str, attempted_key: str, node_entries: dict[str, Any], *, as_json: bool
+) -> Diagnostic:
     """Build diagnostic for accessing an inner node field on a batch node.
 
     This is the targeted message shown when an agent writes ${node.llm_usage}
@@ -851,13 +863,13 @@ def _build_batch_inner_field_diagnostic(node_id: str, attempted_key: str, node_e
     Returns:
         Template diagnostic with corrected-path guidance
     """
-    results_path = f"${{{node_id}.results}}"
+    results_path = written_reference(f"{node_id}.results", as_json=as_json)
 
     available_fields: list[str] = []
     for key, info in node_entries.items():
         safe_key = sanitize_for_display(key)
         safe_type = sanitize_for_display(info.get("type", "any"))
-        available_fields.append(f"${{{node_id}.{safe_key}}} ({safe_type})")
+        available_fields.append(f"{written_reference(f'{node_id}.{safe_key}', as_json=as_json)} ({safe_type})")
 
     # With error_handling: continue, results only contains successes — index access
     # is blocked by the validation gate, so don't suggest it.
@@ -866,10 +878,11 @@ def _build_batch_inner_field_diagnostic(node_id: str, attempted_key: str, node_e
 
     suggestions = []
     if not is_continue:
-        item_path = f"${{{node_id}.results[0].{attempted_key}}}"
+        item_path = written_reference(f"{node_id}.results[0].{attempted_key}", as_json=as_json)
         suggestions.append(f"Use {item_path} for a single item.")
     suggestions.append(f"Use {results_path} for the full results array.")
-    suggestions.append(f"To aggregate across items, pass {results_path} to a code node and iterate.")
+    # A code node's input, not the author's place: written as a Template.
+    suggestions.append(f"To aggregate across items, pass ${{{node_id}.results}} to a code node and iterate.")
 
     return Diagnostic(
         severity=Severity.ERROR,

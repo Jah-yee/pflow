@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
+from pflow.core.diagnostic_render import written_reference
 from pflow.core.templates import (
     DynamicIndex,
     Field,
@@ -153,7 +154,9 @@ def classify_unresolved_references(
     ``Resolution.unresolved`` set, in display order. Operands that resolve are
     not included; literal operands always resolve. A dynamic index's inner
     references are classified first: an unresolved inner is the cause and is
-    reported instead of the outer reference.
+    reported instead of the outer reference. An operand of a JSON insert carries
+    ``as_json`` (its ``coalesce_expr`` without the suffix), so every rebuilt
+    template keeps the ``|json`` a pasted fix needs.
     """
     references: list[dict[str, Any]] = []
     seen_vars: set[str] = set()
@@ -164,6 +167,8 @@ def classify_unresolved_references(
             continue
         operands = [op for op in parsed[0].operands if isinstance(op, Reference)]
         is_coalesce = len(parsed[0].operands) > 1
+        as_json = parsed[0].as_json
+        body = parsed[0].bare_raw
 
         for operand in operands:
             # An inner that resolved is not a cause, whatever its root's node status
@@ -176,9 +181,9 @@ def classify_unresolved_references(
             ]
             if not classified:
                 outer = _classify_one_reference(
-                    operand, context, in_coalesce=is_coalesce, coalesce_expr=expr if is_coalesce else None
+                    operand, context, in_coalesce=is_coalesce, coalesce_expr=body if is_coalesce else None
                 )
-                classified = [outer] if outer else []
+                classified = [{**outer, "as_json": True} if as_json else outer] if outer else []
             for ref in classified:
                 if ref["var"] not in seen_vars:
                     seen_vars.add(ref["var"])
@@ -384,7 +389,9 @@ def build_template_error_diagnostic(
     failed_keys: list[str] = sorted(str(k) for k in failures) if isinstance(failures, dict) else []
 
     if references:
-        ref_summary = ", ".join(f"${{{ref['var']}}}" for ref in references[:3])
+        ref_summary = ", ".join(
+            written_reference(ref["var"], as_json=bool(ref.get("as_json"))) for ref in references[:3]
+        )
         if len(references) > 3:
             ref_summary += f" (+{len(references) - 3} more)"
         message = f"Unresolved variables in parameter '{param_key}': {ref_summary}"

@@ -916,3 +916,34 @@ def test_a_backslashed_escape_of_a_shell_expansion_form_offers_the_quote_split()
     ]
     assert _run_shell('echo "\\${NOPE:-0}"') == "${NOPE:-0}"
     assert _run_shell('echo "\\$""${NOPE:-0}"') == "$0"
+
+
+def test_a_json_insert_left_in_a_body_is_bound_without_its_suffix_and_the_fix_validates(registry: Registry) -> None:
+    """``|json`` belongs to embedded code: the binding the fix adds (``env:``/``inputs:``) is a
+    Template param, where ``${x|json}`` is itself an ERROR — so the fix binds ``${x}``."""
+    inputs = {"x": _input("v")}
+    [shell_error] = _body_errors(_ir(_shell("s", "echo ${x|json}"), inputs=inputs))
+    assert shell_error.suggestions is not None
+    assert shell_error.suggestions[0].startswith(
+        'Bind the value and read it as a shell variable: add `- env: {X: ${x}}` to the step, then replace ${x|json} with "$X"'
+    )
+    shell_fixed = _ir(_shell("s", 'echo "$X"', params={"env": {"X": "${x}"}}), inputs=inputs)
+    assert _errors(WorkflowValidator.validate(shell_fixed, extracted_params={"x": "v"}, registry=registry)) == []
+    # Presence pair: the suffixed binding the fix used to suggest is itself an error.
+    suffixed = _ir(_shell("s", 'echo "$X_JSON"', params={"env": {"X_JSON": "${x|json}"}}), inputs=inputs)
+    errors = _errors(WorkflowValidator.validate(suffixed, extracted_params={"x": "v"}, registry=registry))
+    assert [e.message.split(":")[0] for e in errors] == [
+        "${x|json} is accepted only in JavaScript passed to an MCP tool"
+    ]
+
+    code = {"id": "c", "type": "code", "params": {"inputs": {}, "code": 'result: str = "${x|json}"'}}
+    [code_error] = _body_errors(_ir(code, inputs=inputs))
+    assert code_error.suggestions == [
+        "Declare it in inputs: — add `- inputs: {x: ${x}}` to the step, declare its type in the code (`x: str`), "
+        "and use the variable `x` in place of the string."
+    ]
+    code_fixed = _ir(
+        {"id": "c", "type": "code", "params": {"inputs": {"x": "${x}"}, "code": "x: str\nresult: str = x"}},
+        inputs=inputs,
+    )
+    assert _errors(WorkflowValidator.validate(code_fixed, extracted_params={"x": "v"}, registry=registry)) == []

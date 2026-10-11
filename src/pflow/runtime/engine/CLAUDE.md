@@ -82,7 +82,9 @@ metadata through `split_params`; only cache hashing filters those keys.
 A dict/list param's string leaves are JSON-parsed unless `parses_leaves` says no
 (`shell.env` binds as text), keyed on `TemplateConfig.node_type`. A code body
 (`param_mode` → `"body"`) is static whatever it holds: `split_params` decides it
-before `has_templates`, so callers must pass `node_type`.
+before `has_templates`, so callers must pass `node_type`. Embedded code (`"embedded"`)
+is static unless it holds a JSON insert, and resolves with `embedded=True`: only inserts
+are filled in, the result is always text (never simple, never auto-parsed).
 
 Whether a param resolved is read from its `Resolution` channels, never by comparing
 resolved text with the template. `inputs` resolves per key, so Optional-input `None`

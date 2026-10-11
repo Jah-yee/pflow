@@ -25,7 +25,7 @@ from pflow.core.workflow.graph.model import (
 )
 from pflow.core.workflow.graph.scope import refs_in, refs_with_path_in
 from pflow.core.workflow.sub_workflow_resolver import SubWorkflowResult
-from pflow.core.workflow.template_surfaces import template_params
+from pflow.core.workflow.template_surfaces import param_mode, template_params
 from pflow.core.workflow_id import synthesize_inline_workflow_id
 
 logger = logging.getLogger(__name__)
@@ -519,8 +519,11 @@ class _GraphBuilder:
         level: _LevelResult,
         batch_source: tuple[NodeId, str | None] | None = None,
         batch_alias: str = "item",
+        *,
+        embedded: bool = False,
     ) -> None:
-        """Emit one DATA_FLOW edge per resolvable ``${ref}`` in authored text.
+        """Emit one DATA_FLOW edge per resolvable ``${ref}`` in authored text (in embedded
+        code, per JSON insert only).
 
         THE general-purpose emitter: every resolvable ref — workflow inputs and
         siblings alike, via ``_resolve_ref``'s inputs-first resolution — is one
@@ -531,7 +534,7 @@ class _GraphBuilder:
         target = target_inputs.get(input_name, node_id) if input_name is not None else node_id
         if not isinstance(binding, str) or "${" not in binding:
             return
-        for root, ref_field, ref_path in refs_with_path_in(binding):
+        for root, ref_field, ref_path in refs_with_path_in(binding, embedded=embedded):
             # The batch alias takes precedence over a same-named top-level input: when
             # `as: data` collides with an input also named `data`, an item binding's
             # `${data.x}` must resolve to the batch source, not the input node.
@@ -585,18 +588,22 @@ class _GraphBuilder:
             return
         target_inputs = level.incoming.get(node_id, {})
         alias = _batch_alias(raw_node) if isinstance(raw_node.get("batch"), dict) else "item"
-        for param_name, ref_value, shallow in _params_strings(template_params(raw_node)):
-            # Only a binding-level (shallow) name may target a child-input port —
-            # a depth-2 dict ref must never claim a child input that happens to
-            # share its key's name; `{}` forces the host-level fallback.
-            self._add_ref_edges(
-                param_name,
-                ref_value,
-                target_inputs if shallow else {},
-                node_id,
-                level,
-                batch_alias=alias,
-            )
+        node_type = raw_node.get("type")
+        for key, value in template_params(raw_node).items():
+            embedded = param_mode(node_type, key) == "embedded"
+            for param_name, ref_value, shallow in _params_strings({key: value}):
+                # Only a binding-level (shallow) name may target a child-input port —
+                # a depth-2 dict ref must never claim a child input that happens to
+                # share its key's name; `{}` forces the host-level fallback.
+                self._add_ref_edges(
+                    param_name,
+                    ref_value,
+                    target_inputs if shallow else {},
+                    node_id,
+                    level,
+                    batch_alias=alias,
+                    embedded=embedded,
+                )
         self._add_loop_cap_edges(raw_node, node_id, level)
 
         batch = raw_node.get("batch")

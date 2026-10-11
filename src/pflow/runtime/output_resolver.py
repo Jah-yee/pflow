@@ -27,10 +27,12 @@ def resolve_output_source(source_expr: str, shared_storage: dict[str, Any]) -> R
 
 def normalize_output_source(source_expr: str) -> str:
     """Wrap a bare source into ``${…}`` — one that is exactly an expression body, a
-    dynamic index included — or one with no template syntax at all, which then stays
-    loud (``n.out.0``, ``$n.out`` are Issues). Anything else resolves as written."""
+    dynamic index or a ``|json`` suffix included — or one with no template syntax at all,
+    which then stays loud (``n.out.0``, ``$n.out`` are Issues). Anything else resolves as
+    written."""
     wrapped = "${" + source_expr + "}"
-    if parse(wrapped).is_simple or not parse(source_expr).needs_resolution:
+    expressions = parse(wrapped).expressions
+    if (expressions and expressions[0].span == (0, len(wrapped))) or not parse(source_expr).needs_resolution:
         return wrapped
     return source_expr
 

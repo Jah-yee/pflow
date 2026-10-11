@@ -2169,6 +2169,27 @@ class TestSuggestTemplateFixes:
         assert any("messages" in s for s in suggestions)
         assert any("data" in s for s in suggestions)
 
+    def test_suggest_template_fix_reads_a_json_insert_as_its_path(self) -> None:
+        """Task 181: an unresolved JSON insert names its path (``up.result.missing``), never
+        ``missing|json``; JavaScript's own ``${a + b}`` in the template is no path at all."""
+        upstream_event = _make_event(
+            node_id="up", node_type="ShellNode", success=True, node_output={"result": {"text": "T"}}
+        )
+        failed_event = _make_event(
+            node_id="click",
+            node_type="MCPNode",
+            success=False,
+            error="Unresolved variables in parameter 'function': ${up.result.missing|json}",
+            template_resolutions={
+                "function": {
+                    "template": "`${a + b}` ${up.result.missing|json}",
+                    "resolved": "`${a + b}` ${up.result.missing|json}",
+                },
+            },
+        )
+        suggestions = _suggest_template_fixes(failed_event, [upstream_event, failed_event])
+        assert suggestions == ["`${up.result.missing}`: key `missing` not found at `up.result`. Available keys: `text`"]
+
 
 # --- Batch item warnings in _build_node_summary() ---
 

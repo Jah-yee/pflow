@@ -9,7 +9,8 @@ runtime cycle. Python contract/rendering boundaries are in `src/pflow/ui/CLAUDE.
 - Construction and representative endpoints → `flow.ts:buildFlow`, internal `renderAnchor`.
 - Leaf rows/sizing/ELK row ports → `rows.ts:paramRowsFor`, `outputRowsFor`, `nodeRows`,
   `leafSize`, `rowAnchorsFor`; handle landings → internal `flow.ts:sourceHandleFor/targetHandleFor`.
-- Read/type presentation → `scan.ts:scanParamReads`, `consumedReadPaths`, `producedTypeOf`.
+- Read/type presentation → `scan.ts:scanParamReads`, `consumedReadPaths`, `producedTypeOf`;
+  the `${…}` walk → `scan.ts:templateTokens`.
 - IO ownership/ports and batch shells → `io.ts:ioOwners`, `wrapperPorts`, `shellBatchIds`.
 - Parallel edge lanes → `flow.ts:assignEdgeLanes`; post-layout rails →
   `portSides.ts:assignDataRails`, `assignBackRails`, `assignLoopRails`.
@@ -36,13 +37,21 @@ is excluded from Edge equality). It corrects read/quiet/type presentation, never
 or unsupported field rows. Keep its scope, batch-alias, and template-grammar filters aligned
 with backend scope analysis; it scans params, not loop conditions. Backend owners are
 `src/pflow/core/workflow/graph/model.py`, `src/pflow/core/workflow/graph/build.py`, and
-`src/pflow/core/workflow/graph/scope.py`; the grammar strings are copies of `src/pflow/core/templates.py`'s,
-so a grammar change there edits `scan.ts` in the same step (parity rows in `scan.test.ts`).
-A code body (`utils/format.ts:isCodeBody` — shell `command`, code `code`; mirror of
-Python's `template_surfaces.param_mode`) reads nothing: its `${…}` is the shell's or
-Python's own text. The same predicate gates ReadPanel's batch-item expansion; the source
-pane (`sourceDecorate.ts:tealsRefs`) teals refs only in markdown and ungrammared fences,
-in both tiers and the fallback.
+`src/pflow/core/workflow/graph/scope.py`.
+
+`scan.ts:templateTokens` is the one TS walk over `${…}`: the read scan, canvas chips and
+teal (`utils/format.ts:parseTemplate`), the batch preview (`utils/batchItems.ts`) and the
+source pane all read through it. It mirrors `_tokenize` and `embedded_code` in
+`src/pflow/core/templates.py`; its grammar strings are copies of that module's, so a
+grammar change there edits `scan.ts` in the same step (parity rows in `scan.test.ts`).
+Which `${…}` are pflow's follows the param's mode, which Python decides and the payload
+carries (`RFParam.mode`, from `template_surfaces.param_mode` — no TS copy of its tables):
+a code body reads nothing, embedded code (an MCP tool's JavaScript) reads only its
+`${x|json}` inserts. The source pane has no param mode and reads all text as a Template,
+teal only in markdown and ungrammared fences (`sourceDecorate.ts:tealsRefs`, both tiers
+and the fallback). A ```` ```javascript function ```` fence has no grammar, so there, as on
+an inline `- function:` line, an identifier-shaped JavaScript `${user.name}` teals in the
+source pane while the canvas and read panel leave it plain.
 
 ## Representative endpoints and IO
 

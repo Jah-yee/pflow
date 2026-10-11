@@ -9,6 +9,8 @@
 // (its source is a runtime ref), so there is nothing to resolve. Pure + node-env
 // testable (no React, no DOM).
 
+import { templateTokens, type TemplateToken } from "../graph/scan";
+import type { ParamMode } from "../types";
 import { fullValue } from "./format";
 
 export interface ResolvedBatchItem {
@@ -17,20 +19,27 @@ export interface ResolvedBatchItem {
   label: string;
   /** The param value with every `${alias.path}` ref substituted for THIS item;
    *  non-alias refs (`${content}`) stay verbatim — they are not per-item. A
-   *  dict/list value arrives as its `fullValue` text (indented JSON). */
-  value: string;
+   *  dict/list stays structured: CodeBlock shows it as the param does. */
+  value: unknown;
 }
 
-// A `${ … }` reference. We only locate refs here; the model already decided which
-// ones draw edges. A non-plain inner (spaces, `??`, operators) parses to null and
-// is left untouched — fail-open, never a wrong substitution.
-const REF_RE = /\$\{([^}]+)\}/g;
+// The item path an expression substitutes: a single plain-path operand rooted at the
+// alias (`${item.cfg.mode}` → ["cfg", "mode"]), else null — a coalesce, an index or a
+// non-alias root is left as written: fail-open, never a wrong substitution. A JSON
+// insert substitutes only in embedded code; elsewhere the run keeps it as written.
+function aliasPath(token: TemplateToken, alias: string, mode: ParamMode | undefined): string[] | null {
+  if (token.kind !== "expression" || token.operands.length !== 1) return null;
+  if (token.asJson !== (mode === "embedded")) return null;
+  const ref = token.refs[0];
+  if (ref?.root !== alias || token.operands[0] !== [alias, ...ref.fields].join(".")) return null;
+  return ref.fields;
+}
 
-function refSegments(inner: string | undefined): string[] | null {
-  if (inner === undefined) return null;
-  const trimmed = inner.trim();
-  if (!/^[A-Za-z_][\w.]*$/.test(trimmed)) return null;
-  return trimmed.split(".");
+function aliasPaths(leaf: string, alias: string, mode: ParamMode | undefined): string[][] {
+  return templateTokens(leaf, mode).flatMap((t) => {
+    const path = aliasPath(t, alias, mode);
+    return path ? [path] : [];
+  });
 }
 
 function resolvePath(obj: unknown, segs: string[]): unknown {
@@ -65,27 +74,14 @@ function mapLeaves(value: unknown, fn: (leaf: string) => string): unknown {
 }
 
 /** Whether `value` references `${alias…}` in any string leaf (so it resolves per item). */
-export function refsBatchAlias(value: unknown, alias: string): boolean {
-  for (const leaf of stringLeaves(value)) {
-    for (const m of leaf.matchAll(REF_RE)) {
-      const segs = refSegments(m[1]);
-      if (segs && segs[0] === alias) return true;
-    }
-  }
-  return false;
+export function refsBatchAlias(value: unknown, alias: string, mode?: ParamMode): boolean {
+  return stringLeaves(value).some((leaf) => aliasPaths(leaf, alias, mode).length > 0);
 }
 
 /** The item fields the value reads via the alias (`${item.prompt}` → {"prompt"}). */
-function aliasFields(value: unknown, alias: string): Set<string> {
-  const fields = new Set<string>();
-  for (const leaf of stringLeaves(value)) {
-    for (const m of leaf.matchAll(REF_RE)) {
-      const segs = refSegments(m[1]);
-      const field = segs?.[1];
-      if (segs && segs[0] === alias && field !== undefined) fields.add(field);
-    }
-  }
-  return fields;
+function aliasFields(value: unknown, alias: string, mode: ParamMode | undefined): Set<string> {
+  const fields = stringLeaves(value).flatMap((leaf) => aliasPaths(leaf, alias, mode).flatMap((path) => path.slice(0, 1)));
+  return new Set(fields);
 }
 
 /** Head an item by its OTHER short scalar fields — the part that says WHICH
@@ -102,31 +98,36 @@ function itemLabel(item: unknown, index: number, readFields: Set<string>): strin
   return parts.length ? parts.join(", ") : `item[${index}]`;
 }
 
-/** Substitute `${alias.path}` refs in `value` with this item's resolved data;
- *  a missing field or a non-alias ref is left verbatim. */
-function substitute(value: string, alias: string, item: unknown): string {
-  return value.replace(REF_RE, (whole, inner: string) => {
-    const segs = refSegments(inner);
-    if (!segs || segs[0] !== alias) return whole;
-    const resolved = resolvePath(item, segs.slice(1));
-    return resolved === undefined ? whole : fullValue(resolved);
-  });
+/** Substitute `${alias.path}` refs in `text` with this item's resolved data;
+ *  a missing field or a non-alias ref is left verbatim. A JSON insert enters as a
+ *  JSON literal (Python's `to_json`); `JSON.stringify` omits the spaces `json.dumps`
+ *  writes (`{"a":1}`, not `{"a": 1}`) — a display-only difference. */
+function substitute(text: string, alias: string, item: unknown, mode: ParamMode | undefined): string {
+  return templateTokens(text, mode)
+    .map((token) => {
+      const written = text.slice(token.start, token.end);
+      const path = aliasPath(token, alias, mode);
+      const resolved = path == null ? undefined : resolvePath(item, path);
+      if (resolved === undefined) return written;
+      return token.kind === "expression" && token.asJson ? JSON.stringify(resolved) : fullValue(resolved);
+    })
+    .join("");
 }
 
 /** The per-item expansion of a batch-alias param value, or `null` when there is
  *  nothing to expand: no string leaf references an alias field, or there are no
- *  literal items (a dynamic batch). A dict/list value substitutes in its leaves and
- *  renders through `fullValue`, as the un-expanded param does. */
+ *  literal items (a dynamic batch). A dict/list value substitutes in its leaves. */
 export function resolveBatchItems(
   value: unknown,
   alias: string,
   items: readonly unknown[] | null | undefined,
+  mode?: ParamMode,
 ): ResolvedBatchItem[] | null {
   if (!items || items.length === 0) return null;
-  if (!refsBatchAlias(value, alias)) return null;
-  const readFields = aliasFields(value, alias);
+  if (!refsBatchAlias(value, alias, mode)) return null;
+  const readFields = aliasFields(value, alias, mode);
   return items.map((item, i) => ({
     label: itemLabel(item, i, readFields),
-    value: fullValue(mapLeaves(value, (leaf) => substitute(leaf, alias, item))),
+    value: mapLeaves(value, (leaf) => substitute(leaf, alias, item, mode)),
   }));
 }

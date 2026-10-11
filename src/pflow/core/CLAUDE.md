@@ -87,9 +87,9 @@ so a grammar change edits it in the same step.
   reference must resolve to an in-range `int` (not `bool`), or the whole reference
   is unresolved.
 - **Two channels.** `Resolution.unresolved` (Expressions left literal) and
-  `Resolution.issues` (Issues carried verbatim) are the only judge of
-  "unresolved"; never decide it by comparing or re-scanning resolved text — a
-  resolved value may legitimately contain `${…}`. The channels stay separate so a
+  `Resolution.issues` (Issues, and JSON inserts outside embedded code, carried
+  verbatim) are the only judge of "unresolved"; never decide it by comparing or
+  re-scanning resolved text — a resolved value may legitimately contain `${…}`. The channels stay separate so a
   surface can tolerate Issues without tolerating misses.
 - **Author text only.** `parse` is `lru_cache`d; call it on template text from the
   IR. On resolved runtime values use the uncached `has_templates` /
@@ -98,6 +98,11 @@ so a grammar change edits it in the same step.
   (`-o result.@type`, `read-fields result.dc:title`, `result.0`), split lexically
   with no identifier grammar, and feed the same walk. They are not templates: do
   not route them through `parse_path`, and do not accept raw paths inside `${…}`.
+- **A JSON insert** `${x|json}` is an Expression with `as_json` (its `raw` keeps
+  the suffix): never simple, its value entering text as `to_json`. Only embedded
+  code fills it in — `resolve(…, embedded=True)` reads a string through
+  `embedded_code`, a policy view whose Text may hold `${` (which params:
+  `workflow/template_surfaces.py::param_mode`).
 - **Escapes** (`$${…}`) consume through their brace-balanced `}` and yield a literal
   `${…}`; a bare `$$` is untouched. A code body is never parsed for resolution, so
   `$${` there is no escape (`workflow/template_surfaces.py::param_mode`). `TEMPLATE_PATTERN` / `SIMPLE_TEMPLATE_PATTERN`

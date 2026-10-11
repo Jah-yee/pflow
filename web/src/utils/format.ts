@@ -1,41 +1,62 @@
 // Presentation helpers shared by the node components and the read panel.
-// Pure, dependency-free, unit-testable.
+// Pure, unit-testable.
 
-export interface TemplateSegment {
-  text: string;
-  isRef: boolean;
+import { templateTokens } from "../graph/scan";
+import type { ParamMode } from "../types";
+
+/** One span of a value's display text. A ref's `text` is its expression as shown inside
+ *  `${…}` (a `|json` suffix included); its `operands` are the coalesce operands as written,
+ *  literals included. Escapes, Issues and what `mode` leaves to the embedded language are text. */
+export type TemplateSegment = { text: string; isRef: false } | { text: string; isRef: true; operands: string[] };
+
+// A JSON string in `fullValue`'s output; group 1 is the `:` that follows a key.
+const JSON_STRING = /"(?:[^"\\]|\\.)*"(:?)/g;
+
+/** Split a value's display text (`fullValue`) into literal/`${ref}` segments, so a param
+ *  value can render as text + inline connection chips (one chip per ref). A dict/list reads
+ *  each string leaf before serialization — its JSON escapes a quoted literal's `"` as `\"`,
+ *  which the walk would read as an Issue — and shows each segment JSON-escaped, so the
+ *  segments' text is exactly the JSON. Keys are names, never templates. */
+export function parseTemplate(value: unknown, mode?: ParamMode): TemplateSegment[] {
+  const text = fullValue(value);
+  if (typeof value !== "object" || value === null) return textSegments(text, mode);
+  const segments: TemplateSegment[] = [];
+  let pos = 0;
+  for (const m of text.matchAll(JSON_STRING)) {
+    if (m[1]) continue;
+    const start = m.index + 1;
+    append(segments, { text: text.slice(pos, start), isRef: false });
+    for (const seg of textSegments(JSON.parse(m[0]) as string, mode)) {
+      append(segments, { ...seg, text: JSON.stringify(seg.text).slice(1, -1) });
+    }
+    pos = start + m[0].length - 2;
+  }
+  append(segments, { text: text.slice(pos), isRef: false });
+  return segments;
 }
 
-const REF_PATTERN = /\$\{([^}]+)\}/g;
-
-/** Split a string into literal/`${ref}` segments so a param value can render as
- *  text + inline connection chips (one chip per ref). */
-export function parseTemplate(value: string): TemplateSegment[] {
+function textSegments(text: string, mode: ParamMode | undefined): TemplateSegment[] {
   const segments: TemplateSegment[] = [];
-  let last = 0;
-  for (const match of value.matchAll(REF_PATTERN)) {
-    const start = match.index ?? 0;
-    if (start > last) {
-      segments.push({ text: value.slice(last, start), isRef: false });
-    }
-    segments.push({ text: match[1] ?? "", isRef: true });
-    last = start + match[0].length;
-  }
-  if (last < value.length) {
-    segments.push({ text: value.slice(last), isRef: false });
+  for (const token of templateTokens(text, mode)) {
+    if (token.kind === "expression") {
+      segments.push({ text: text.slice(token.start + 2, token.end - 1), isRef: true, operands: token.operands });
+    } else append(segments, { text: text.slice(token.start, token.end), isRef: false });
   }
   return segments;
 }
 
-/** Whether a `${...}` ref BODY belongs to `highlightRef`. Matching is per
- *  coalesce OPERAND — `${a.b ?? "fallback"}` matches highlightRef "a.b" (a
- *  whole-text compare never matched coalesce-authored refs): an operand counts
- *  when it equals the ref or extends it with a dot path. */
-export function refMatchesHighlight(refBody: string, highlightRef: string): boolean {
-  return refBody
-    .split("??")
-    .map((op) => op.trim())
-    .some((op) => op === highlightRef || op.startsWith(`${highlightRef}.`));
+/** Append a segment, merging adjacent text and dropping empty text. */
+function append(segments: TemplateSegment[], segment: TemplateSegment): void {
+  const last = segments[segments.length - 1];
+  if (segment.isRef) segments.push(segment);
+  else if (last && !last.isRef) last.text += segment.text;
+  else if (segment.text) segments.push(segment);
+}
+
+/** Whether a segment is a ref belonging to `highlightRef`: one of its operands equals the
+ *  ref or extends it with a dot path — `${a.b ?? "fallback"}` and `${a.b|json}` match "a.b". */
+export function refMatchesHighlight(segment: TemplateSegment, highlightRef: string): boolean {
+  return segment.isRef && segment.operands.some((op) => op === highlightRef || op.startsWith(`${highlightRef}.`));
 }
 
 /** Flatten any internal whitespace runs to single spaces (for one-line previews). */
@@ -136,15 +157,6 @@ export function paramLanguage(kind: string, name: string, value: unknown): strin
   if (kind === "llm" && (name === "prompt" || name === "system")) return "markdown";
   if (kind === "agent" && (name === "prompt" || name === "system_prompt")) return "markdown";
   return null;
-}
-
-/** Whether a param holds plain code that pflow never reads for `${…}` — the
- *  mirror of Python's `param_mode(kind, name) == "body"` (`_BODIES` in
- *  `src/pflow/core/workflow/template_surfaces.py`, the source of truth — edit both
- *  together). A body's `${HOME}` is the shell's/Python's own text: no ref, no read,
- *  no per-item substitution. */
-export function isCodeBody(kind: string, name: string): boolean {
-  return (kind === "shell" && name === "command") || (kind === "code" && name === "code");
 }
 
 /** Present an edge's input_name as a binding label. `prompt_cache` is the

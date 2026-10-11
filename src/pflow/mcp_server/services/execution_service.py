@@ -691,14 +691,19 @@ class ExecutionService(BaseService):
         try:
             # Resolve ${ENV_VAR} from os.environ and settings.json
             # (the compiler's template resolver only resolves from shared store).
-            # A body (a shell command, a code block) is plain code: its ${…} is the
-            # language's own, never expanded here.
+            # A body (a shell command, a code block) or embedded code (JavaScript an MCP
+            # tool runs) is another language: its ${…} is that language's own, never
+            # expanded here.
             if node_params:
                 from pflow.core.workflow.template_surfaces import param_mode
                 from pflow.mcp.auth_utils import expand_env_vars_nested
 
                 expanded = expand_env_vars_nested(
-                    {key: value for key, value in node_params.items() if param_mode(node_type, key) != "body"},
+                    {
+                        key: value
+                        for key, value in node_params.items()
+                        if param_mode(node_type, key) not in ("body", "embedded")
+                    },
                     include_settings=True,
                     raise_on_missing=True,
                 )

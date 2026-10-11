@@ -328,9 +328,13 @@ Write the literal price variable to a file.
 
 This produces the literal string `Price: ${PRICE}` instead of trying to resolve a variable.
 
-An escape runs through its matching `}`, and anything inside it is literal, including braces nested one level deep: `$${NAME:-${default}}` produces `${NAME:-${default}}` without resolving `${default}`. So shell parameter expansion (`$${NAME:-world}`, `$${#ITEMS}`) and JavaScript template literals work the same way inside a templated parameter. Text after the closing `}` is templated as usual. Only `$${` is an escape: a bare `$$` is passed through unchanged.
+An escape runs through its matching `}`, and anything inside it is literal, including braces nested one level deep: `$${NAME:-${default}}` produces `${NAME:-${default}}` without resolving `${default}`. So shell parameter expansion (`$${NAME:-world}`, `$${#ITEMS}`) works the same way inside a templated parameter. Text after the closing `}` is templated as usual. Only `$${` is an escape: a bare `$$` is passed through unchanged.
 
 A shell command and a code node's code block are not templated, so they need no escape: `${NAME:-world}` there is already the shell's own. `$${` in either is a validation error.
+
+## JavaScript passed to an MCP tool
+
+In a code parameter of an MCP tool (such as `evaluate_script`'s `function`), `${...}` is JavaScript and `$${` is sent as written. A workflow value goes in as `${x|json}`, which inserts it as a JavaScript value — a quoted, escaped string, `true`, a number, an object literal. `|json` is accepted only there. See [MCP: code passed to a tool](/reference/nodes/mcp#code-passed-to-a-tool).
 
 ## Validation
 

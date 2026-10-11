@@ -51,7 +51,8 @@ trace-format changes must not redefine static identity.
 ## Dependency-edge limits
 
 `build.py::_add_ref_edges` is the shared dependency emitter. Scope extraction must
-match runtime grammar and skip escaped templates. Loop condition/carry references
+match runtime grammar and skip escaped templates, and read an embedded param through
+its view (`scope.refs_with_path_in(…, embedded=True)`: only a `${x|json}` insert draws an edge). Loop condition/carry references
 and references inside literal batch-item values are deliberately edge-less; do not
 assume every visible template has a DATA_FLOW edge.
 

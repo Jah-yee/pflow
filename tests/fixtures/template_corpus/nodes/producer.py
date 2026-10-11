@@ -8,7 +8,9 @@ Two nodes, registered only by ``tests/test_integration/test_template_parity.py``
   producer's own params.
 - ``TemplateCorpusSink`` has typed top-level params, the only way the engine's
   simple-template gate (auto-parse, coercion, ``validate_resolved_type``) is reached
-  for a ``str`` template — ``code.inputs`` values are nested and bypass it.
+  for a ``str`` template — ``code.inputs`` values are nested and bypass it. The corpus
+  also registers it as ``mcp-corpus-evaluate_script``, so its ``function`` param is
+  embedded code (Task 181) — the engine needs no MCP server to run it.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from typing import Any
 from pflow.core.node import Node
 
 _PRODUCER_KEYS = ("out", "out_str", "out_list", "out_arr", "out_any")
-_SINK_KEYS = ("sink", "sink_list", "sink_str", "sink_any", "sink_union")
+_SINK_KEYS = ("sink", "sink_list", "sink_str", "sink_any", "sink_union", "function")
 
 
 class TemplateCorpusProducer(Node):
@@ -73,6 +75,7 @@ class TemplateCorpusSink(Node):
     - Params: sink_str: str  # A str-typed param
     - Params: sink_any: any  # An untyped param
     - Params: sink_union: str|dict  # A union-typed param
+    - Params: function: str  # JavaScript, when registered as an MCP evaluate_script tool
     - Writes: shared["received"]: any  # {param: value} for every sink param that was set
     - Actions: default
     """
