@@ -7,9 +7,6 @@ import sys
 from collections.abc import Iterator
 from typing import Any, TextIO
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-
 from pflow.mcp.auth_utils import build_auth_headers, expand_env_vars_nested
 
 from .manager import MCPServerManager
@@ -140,6 +137,9 @@ class MCPDiscovery:
         Returns:
             List of tool definitions
         """
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+
         # Get env vars (already expanded by _discover_async)
         env = server_config.get("env", {})
         if not isinstance(env, dict):

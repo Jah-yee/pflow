@@ -171,6 +171,7 @@ def test_json_shape_and_empty_state(home, gate_wf):
     assert entry["paused_node_id"] == "gated"
     assert entry["gate_kind"] == "action_approval"
     assert entry["iteration"] is None
+    assert entry["max_iterations"] is None  # present and null on a non-loop row (loop rows: test_paused_cli)
     assert entry["workflow_name"] == "list_demo"
     assert entry["resume_command"] == f"pflow resume {token} --approve yes|no"
     assert entry["paused_at"]  # the trailer end_time made it through

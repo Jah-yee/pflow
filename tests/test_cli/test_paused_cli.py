@@ -89,6 +89,7 @@ def test_paused_run_exits_4_with_token_and_gate_content(home, gate_wf):
     assert "sk-super-secret" not in result.stderr
     assert f"To answer: pflow resume {token} --approve yes|no" in result.stderr
     assert "Loop iteration" not in result.stderr  # not a loop step (the loop chain test pins presence)
+    assert "--approve yes --auto-approve" not in result.stderr  # no bulk hint for a one-off gate (loop twin pins it)
     # The pre-flight warning speaks the post-171 outcome (pause, not fail —
     # "fail" stays only for --no-trace, pinned in test_approval_gate_cli).
     assert "will pause at approval gate(s) [gated]" in result.stderr
@@ -117,6 +118,7 @@ def test_paused_json_document_shape(home, gate_wf):
     # denied document's gate payload).
     gate = document["gate_request"]
     assert gate["kind"] == "action_approval"
+    assert (gate["iteration"], gate["max_iterations"]) == (None, None)  # present and null on a non-loop gate
     assert gate["preview"]["env"]["API_KEY"] == "<REDACTED>"
     assert "gated action" in gate["preview"]["command"]
 
@@ -248,6 +250,7 @@ def test_paused_resume_without_answer_renders_gate_and_exact_command(home, gate_
     assert "gated action" in combined  # the preview content
     assert "<REDACTED>" in combined and "sk-super-secret" not in combined
     assert f"pflow resume {token} --approve yes|no" in combined
+    assert "--approve yes --auto-approve" not in combined  # one-off gate: no bulk hint (the loop surface test pins it)
 
 
 def test_choose_on_approval_refuses_with_the_right_flag(home, gate_wf):
@@ -511,15 +514,20 @@ def test_approve_yes_on_loop_gate_pauses_each_iteration_until_done(home, loop_ga
     wf, marker = loop_gate
     first = _runner().invoke(cli, [str(wf), f"marker={marker}"])
     assert first.exit_code == 4, first.stderr
-    assert "   Loop iteration 1" in first.stderr
+    assert "   Loop iteration 1 of up to 3\n" in first.stderr
     tokens = [_ANY_TOKEN_RE.search(first.stdout).group(1)]
+    assert (
+        f"\nTo answer: pflow resume {tokens[0]} --approve yes|no\n"
+        f"To approve this and every remaining iteration of 'gated' (only with your human's OK): "
+        f"pflow resume {tokens[0]} --approve yes --auto-approve gated\n"
+    ) in first.stderr
     assert _effects(marker) == []
 
     for done in (1, 2):
         paused = _runner().invoke(cli, ["resume", tokens[-1], "--approve", "yes"])
         assert paused.exit_code == 4, paused.stderr
         assert _effects(marker) == [f"effect {n}" for n in range(1, done + 1)]
-        assert f"   Loop iteration {done + 1}" in paused.stderr
+        assert f"   Loop iteration {done + 1} of up to 3\n" in paused.stderr
         assert "will pause at approval gate(s) [gated]" in paused.stderr
         assert "answers only the first iteration" not in paused.stderr
         tokens.append(_ANY_TOKEN_RE.search(paused.stdout).group(1))
@@ -536,27 +544,129 @@ def test_approve_yes_on_loop_gate_pauses_each_iteration_until_done(home, loop_ga
 
 
 def test_loop_gate_position_reaches_every_pause_surface(home, loop_gate):
-    """Task 179 Q6: at iteration 2 the JSON pause document, `resume list` (text + JSON) and
-    the answer-required refusal all carry the iteration — the one ``gate_request`` field."""
+    """Task 179 Q6 / Task 183: at iteration 2 the JSON pause document, `resume list` (text +
+    JSON) and the answer-required refusal all carry the position AND the cap — the one
+    ``gate_request`` payload, rendered by the one ``loop_position`` rule."""
     wf, marker = loop_gate
     token = _pause(wf, f"marker={marker}")
     paused = _runner().invoke(cli, ["resume", token, "--approve", "yes", "--output-format", "json"])
     assert paused.exit_code == 4, paused.stderr
     document = json.loads(paused.stdout)
-    assert (document["paused_node_id"], document["gate_request"]["iteration"]) == ("gated", 2)
+    gate = document["gate_request"]
+    assert (document["paused_node_id"], gate["iteration"], gate["max_iterations"]) == ("gated", 2, 3)
     token = document["execution_id"]
 
     listed = _runner().invoke(cli, ["resume", "list"])
     assert listed.exit_code == 0, listed.stderr
-    assert "approval · iteration 2" in listed.stdout
+    assert _list_gate_cells(listed.stdout) == ["approval · iteration 2 of up to 3"]
     rows = json.loads(_runner().invoke(cli, ["resume", "list", "--output-format", "json"]).stdout)
-    assert [(row["execution_id"], row["iteration"]) for row in rows] == [(token, 2)]
+    assert [(row["execution_id"], row["iteration"], row["max_iterations"]) for row in rows] == [(token, 2, 3)]
 
     unanswered = _runner().invoke(cli, ["resume", token])
     assert unanswered.exit_code == 1
-    assert "Loop iteration 2" in unanswered.stdout + unanswered.stderr
-    assert f"pflow resume {token} --approve yes|no" in unanswered.stdout + unanswered.stderr
+    combined = unanswered.stdout + unanswered.stderr
+    assert "  Loop iteration 2 of up to 3\n" in combined
+    assert f"pflow resume {token} --approve yes|no" in combined
+    assert f"pflow resume {token} --approve yes --auto-approve gated" in combined  # R1 hint, as a suggestion
+    refusal = json.loads(_runner().invoke(cli, ["resume", token, "--output-format", "json"]).stdout)
+    assert refusal["errors"][0]["context"]["gate"]["max_iterations"] == 3
     assert _effects(marker) == ["effect 1"]
+
+
+def _list_gate_cells(stdout: str) -> list[str]:
+    """The GATE column of each `resume list` row, whole (columns are 2+-space separated)."""
+    rows = stdout.split("\n\n")[0].splitlines()[1:]  # drop the header; stop at the footer
+    return [re.split(r" {2,}", row)[3] for row in rows]
+
+
+def test_old_record_without_the_cap_renders_the_bare_iteration(home, loop_gate):
+    """A pause written before Task 183 has no ``max_iterations`` in its trailer: every
+    reader treats it as null — today's text, no "of up to" (its twin above shows the cap)."""
+    wf, marker = loop_gate
+    token = _pause(wf, f"marker={marker}")
+    paused = _runner().invoke(cli, ["resume", token, "--approve", "yes"])
+    assert paused.exit_code == 4, paused.stderr
+    token = _ANY_TOKEN_RE.search(paused.stdout).group(1)
+    trace = next(p for p in (home / ".pflow" / "debug").glob("workflow-trace-*.json") if token in p.read_text("utf-8"))
+    lines = trace.read_text(encoding="utf-8").splitlines()
+    trailer = json.loads(lines[-1])
+    assert trailer["kind"] == "run.complete"
+    del trailer["gate_request"]["max_iterations"]  # the realistic pre-183 (2.9.0) shape
+    trace.write_text("\n".join([*lines[:-1], json.dumps(trailer)]) + "\n", encoding="utf-8")
+
+    listed = _runner().invoke(cli, ["resume", "list"])
+    assert _list_gate_cells(listed.stdout) == ["approval · iteration 2"]
+    rows = json.loads(_runner().invoke(cli, ["resume", "list", "--output-format", "json"]).stdout)
+    assert rows[0]["iteration"] == 2
+    assert rows[0]["max_iterations"] is None
+    unanswered = _runner().invoke(cli, ["resume", token])
+    combined = unanswered.stdout + unanswered.stderr
+    assert "  Loop iteration 2\n" in combined
+    assert "of up to" not in combined
+
+
+def test_uncapped_loop_gate_shows_the_bare_iteration(home, tmp_path):
+    """No ``max_iterations``: the engine's visit guard is never shown as a limit."""
+    wf = tmp_path / "uncapped.pflow.md"
+    wf.write_text(_LOOP_GATE_WF.replace("    max_iterations: 3\n", ""), encoding="utf-8")
+    result = _runner().invoke(cli, [str(wf), f"marker={tmp_path / 'effects.txt'}"])
+    assert result.exit_code == 4, result.stderr
+    assert "   Loop iteration 1\n" in result.stderr
+    assert "of up to" not in result.stderr
+
+
+_BACK_EDGE_WF = """# Back Edge
+
+A capped gated loop whose third iteration fails and routes back into it.
+
+## Steps
+
+### k
+
+Fails at its third iteration.
+
+- type: code
+- approval: required
+- inputs:
+    i: ${__iteration__}
+- loop:
+    while: ${k.result.more}
+    max_iterations: 3
+- on-error: h
+
+```python code
+i: int
+if i == 3:
+    raise RuntimeError("boom")
+result: dict = {"more": True}
+```
+
+### h
+
+Handles the failure and routes back to k.
+
+- type: shell
+- next: k
+
+```shell command
+echo handled
+```
+"""
+
+
+def test_back_edge_past_the_cap_drops_the_cap_clause(home, tmp_path):
+    """The loop counter is per run: a back edge into a capped loop continues past the cap
+    (here iteration 4 of a cap-3 loop). The position never reads "4 of up to 3"."""
+    wf = tmp_path / "back_edge.pflow.md"
+    wf.write_text(_BACK_EDGE_WF, encoding="utf-8")
+    paused = _runner().invoke(cli, [str(wf)])
+    for _ in range(3):
+        assert paused.exit_code == 4, paused.stderr
+        token = _ANY_TOKEN_RE.search(paused.stdout).group(1)
+        paused = _runner().invoke(cli, ["resume", token, "--approve", "yes"])
+    assert paused.exit_code == 4, paused.stderr
+    assert [line for line in paused.stderr.splitlines() if "Loop iteration" in line] == ["   Loop iteration 4"]
+    assert "✓ Gate 'k' — iteration 3 of up to 3 approved via --approve yes" in paused.stderr  # the cap was known
 
 
 def test_dry_run_with_answer_on_loop_gate_still_names_auto_approve(home, loop_gate):
@@ -577,6 +687,8 @@ def test_approve_yes_with_auto_approve_runs_gated_loop_to_completion(home, loop_
     resumed = _runner().invoke(cli, ["resume", token, "--approve", "yes", "--auto-approve", "gated"])
     assert resumed.exit_code == 0, resumed.stderr
     assert _effects(marker) == ["effect 1", "effect 2", "effect 3"]
+    # Iteration 2 (not the cap): a renderer printing "of up to {iteration}" fails here.
+    assert "✓ Gate 'gated' — iteration 2 of up to 3 pre-approved via --auto-approve=gated\n" in resumed.stderr
     assert "Warning:" not in resumed.stderr
 
 

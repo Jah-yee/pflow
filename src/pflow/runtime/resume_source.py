@@ -1048,7 +1048,9 @@ class PausedRun:
     of truth — the row carries only what the list renders); ``paused_at`` is the
     trailer's ``end_time`` ISO string (the moment the run finalized paused);
     ``iteration`` is ``gate_request["iteration"]`` — the loop iteration that raised
-    the gate (``None`` for a non-loop step; Task 179).
+    the gate (``None`` for a non-loop step; Task 179); ``max_iterations`` is
+    ``gate_request["max_iterations"]`` — the loop's cap as known at the gate (``None``
+    when unknown, and for records written before Task 183).
     """
 
     execution_id: str
@@ -1059,6 +1061,7 @@ class PausedRun:
     paused_at: str | None
     path: Path
     iteration: int | None = None
+    max_iterations: int | None = None
 
 
 def _scan_tail_for_trailer(tail: bytes) -> tuple[dict[str, Any] | None, bool]:
@@ -1151,6 +1154,7 @@ def list_paused_runs(debug_dir: Path | None = None) -> list[PausedRun]:
             continue
         gate_kind = gate_request.get("kind")
         iteration = gate_request.get("iteration")
+        max_iterations = gate_request.get("max_iterations")
         paused_at = trailer.get("end_time")
         workflow_name = meta.get("workflow_name")
         pending.append(
@@ -1163,6 +1167,7 @@ def list_paused_runs(debug_dir: Path | None = None) -> list[PausedRun]:
                 paused_at=paused_at if isinstance(paused_at, str) else None,
                 path=trace_file,
                 iteration=iteration if isinstance(iteration, int) else None,
+                max_iterations=max_iterations if isinstance(max_iterations, int) else None,
             )
         )
     return pending

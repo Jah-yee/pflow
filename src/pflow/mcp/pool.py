@@ -11,6 +11,8 @@ Usage:
     pool.shutdown()  # kills all servers
 """
 
+from __future__ import annotations
+
 import asyncio
 import concurrent.futures
 import logging
@@ -19,11 +21,11 @@ import sys
 import threading
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-from mcp.types import CallToolResult
+if TYPE_CHECKING:
+    from mcp import ClientSession
+    from mcp.types import CallToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +191,9 @@ class MCPConnectionPool:
         verbose: bool,
     ) -> ClientSession:
         """Create a stdio transport session."""
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+
         env = config.get("env", {})
         if not isinstance(env, dict):
             env = {}
@@ -217,6 +222,7 @@ class MCPConnectionPool:
         verbose: bool,
     ) -> ClientSession:
         """Create an HTTP transport session."""
+        from mcp import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
 
         from pflow.mcp.auth_utils import build_auth_headers

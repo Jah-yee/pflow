@@ -235,6 +235,9 @@ Re-add the flag when done — headless is the standing default; do not leave hea
   **HTTP cache** heuristically reused old `assets/*` (index.html itself now sends
   `Cache-Control: no-cache`). Add a throwaway query param to bust it: `&v=<anything-new>`
   (unknown params are ignored by the app).
+- A hand-written `mcp-chrome-devtools-navigate_page` step cannot set the tool's own `type` param
+  (`url`/`back`/`forward`/`reload`) — in a `.pflow.md` step `- type:` is the NODE type. Leave it
+  unset: the tool's default is `url`, which is what a navigate needs.
 
 ## Tooling postmortem
 

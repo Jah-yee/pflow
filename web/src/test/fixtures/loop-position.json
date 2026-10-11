@@ -1,0 +1,46 @@
+[
+  {
+    "id": "capped",
+    "gate": {
+      "iteration": 1,
+      "max_iterations": 3
+    },
+    "text": "iteration 1 of up to 3"
+  },
+  {
+    "id": "null-cap",
+    "gate": {
+      "iteration": 2,
+      "max_iterations": null
+    },
+    "text": "iteration 2"
+  },
+  {
+    "id": "old-record",
+    "gate": {
+      "iteration": 2
+    },
+    "text": "iteration 2"
+  },
+  {
+    "id": "non-loop",
+    "gate": {
+      "iteration": null,
+      "max_iterations": 3
+    },
+    "text": null
+  },
+  {
+    "id": "empty",
+    "gate": {},
+    "text": null
+  },
+  {
+    "id": "past-cap",
+    "gate": {
+      "iteration": 4,
+      "max_iterations": 3
+    },
+    "text": "iteration 4"
+  }
+]

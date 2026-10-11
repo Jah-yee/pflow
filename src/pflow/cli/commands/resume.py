@@ -31,7 +31,7 @@ import click
 if TYPE_CHECKING:
     from pflow.core.exceptions import ResumeSideEffectConfirmationError
     from pflow.execution.result import ResolvedWorkflow
-    from pflow.runtime.resume_source import ResumeSource
+    from pflow.runtime.resume_source import PausedRun, ResumeSource
 
 logger = logging.getLogger(__name__)
 
@@ -407,6 +407,15 @@ def _gate_kind_label(kind: str | None) -> str:
     return kind or "?"
 
 
+def _gate_cell(run: PausedRun) -> str:
+    """The GATE column: the kind, then a loop step's position (``approval · iteration 2 of up to 3``)."""
+    from pflow.core.gate import loop_position
+
+    position = loop_position(run.iteration, run.max_iterations)
+    label = _gate_kind_label(run.gate_kind)
+    return f"{label} · {position}" if position else label
+
+
 @resume.command(name="list")
 @click.option(
     "--output-format",
@@ -437,6 +446,7 @@ def resume_list(output_format: str) -> None:
                 "paused_node_id": run.paused_node_id,
                 "gate_kind": run.gate_kind,
                 "iteration": run.iteration,
+                "max_iterations": run.max_iterations,
                 "paused_at": run.paused_at,
                 "path": str(run.path),
                 "resume_command": format_resume_answer_command(run.execution_id, {"kind": run.gate_kind}),
@@ -456,7 +466,7 @@ def resume_list(output_format: str) -> None:
             run.execution_id,
             run.workflow_name or "?",
             run.paused_node_id,
-            _gate_kind_label(run.gate_kind) + (f" · iteration {run.iteration}" if run.iteration is not None else ""),
+            _gate_cell(run),
             _age_of(run.paused_at),
         )
         for run in runs

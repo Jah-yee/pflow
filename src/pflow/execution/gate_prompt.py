@@ -32,7 +32,14 @@ from typing import Any
 import click
 
 from pflow.core.exceptions import GateNotInteractiveError
-from pflow.core.gate import GATE_KIND_APPROVAL, GateRequest, GateResolution, masked_preview, option_labels
+from pflow.core.gate import (
+    GATE_KIND_APPROVAL,
+    GateRequest,
+    GateResolution,
+    loop_position,
+    masked_preview,
+    option_labels,
+)
 from pflow.core.output_controller import OutputController
 
 GateResolver = Callable[..., GateResolution]
@@ -120,8 +127,9 @@ def _echo_flag_approved(request: GateRequest, output_controller: OutputControlle
 
 
 def _iteration_suffix(request: GateRequest) -> str:
-    """`` — iteration N`` for a gate raised by a loop step, else empty."""
-    return f" — iteration {request.iteration}" if request.iteration is not None else ""
+    """`` — iteration N of up to M`` for a gate raised by a loop step, else empty."""
+    position = loop_position(request.iteration, request.max_iterations)
+    return f" — {position}" if position else ""
 
 
 def _prompt(request: GateRequest, output_controller: OutputController) -> GateResolution:
@@ -209,21 +217,41 @@ def format_resume_answer_command(execution_id: str, gate_request: dict[str, Any]
     return f'pflow resume {execution_id} --choose "<answer or option number>"'
 
 
+def format_bulk_approve_hint(execution_id: str, gate_request: dict[str, Any]) -> str | None:
+    """The one-line bulk-approval hint for a LOOP approval pause, else ``None`` (Task 183).
+
+    Beside ``format_resume_answer_command`` and rendered by the same three surfaces
+    (CLI pause, MCP pause, answer-required error): an agent learns here that one
+    answer can approve every remaining iteration, instead of relaying each iteration
+    to its human as a new pause. ``--auto-approve`` is broader than this one step's loop
+    (its matching rule: ``build_gate_resolver``), so the hint asks for the human's consent.
+    """
+    node_id = gate_request.get("node_id")
+    if gate_request.get("kind") != GATE_KIND_APPROVAL or not isinstance(gate_request.get("iteration"), int):
+        return None
+    if not isinstance(node_id, str):
+        return None
+    return (
+        f"To approve this and every remaining iteration of '{node_id}' (only with your human's OK): "
+        f"pflow resume {execution_id} --approve yes --auto-approve {node_id}"
+    )
+
+
 def format_gate_lines(gate_request: dict[str, Any]) -> list[str]:
     """A gate's content as plain display lines, from the ``GateRequest.to_dict()`` payload.
 
     Task 171: ONE render shape across the durable-pause output (CLI and MCP) and
     resume's answer-required error — an agent must be able to compose the answer
     from these lines alone (no blind round-trip). A gate raised by a loop step
-    leads with ``Loop iteration N`` (Task 179: answering it runs that iteration;
+    leads with ``Loop iteration N of up to M`` (``core/gate.loop_position``; Task 179: answering it runs that iteration;
     the next gated iteration pauses again). Approval: the secret-masked param
     preview. Escalation: the question + numbered options with the recommendation
     marked (``--choose N`` maps to exactly the labels shown). Operates on the dict
     payload because pause consumers read it from the trace trailer, not a live
     ``GateRequest``.
     """
-    iteration = gate_request.get("iteration")
-    lines: list[str] = [f"Loop iteration {iteration}"] if isinstance(iteration, int) else []
+    position = loop_position(gate_request.get("iteration"), gate_request.get("max_iterations"))
+    lines: list[str] = [f"Loop {position}"] if position else []
     if gate_request.get("kind") == GATE_KIND_APPROVAL:
         return [*lines, *_format_preview(gate_request.get("preview") or {}, gate_request.get("node_type"))]
     question = gate_request.get("question")
@@ -266,6 +294,7 @@ __all__ = [
     "GateResolver",
     "build_gate_resolver",
     "can_prompt",
+    "format_bulk_approve_hint",
     "format_gate_lines",
     "format_resume_answer_command",
 ]
