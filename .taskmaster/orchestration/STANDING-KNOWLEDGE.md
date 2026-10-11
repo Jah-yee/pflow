@@ -166,6 +166,8 @@ _(nothing promoted yet)_
   `headSha`/`event` columns, or `gh run view <id>`; why: the `--branch` filter has returned stale or
   unrelated runs twice while the real push run existed, and the CI-status question is asked at every
   merge seam.
+- **The shell's `ls` is aliased to `eza` → scripts, probes and packets use `/bin/ls`** (s11, s12, s14); why: `eza` hangs on
+  large directories (1h39m in a lane once) and prints a different format, so `$(ls -t …)` returns junk.
 - **Transient API death ≠ tier exhaustion → resume the SAME agent, don't replace** (s06). The
   limit-recovery rule (never resume an exhausted tier — it re-dies) does NOT apply to a "connection
   closed mid-response" drop. Check the worktree is clean/uncommitted, then SendMessage the same
