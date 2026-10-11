@@ -56,11 +56,12 @@ def _stdin_bytes(text: str | None) -> bytes | None:
     try:
         return text.encode("utf-8")
     except UnicodeEncodeError as exc:
-        # UTF-8 encodes every code point except a surrogate, so that is the only way here.
+        # UTF-8 encodes every code point except a surrogate. Strict on purpose: surrogateescape would
+        # turn a JSON-escaped \udcXX into an arbitrary byte the command cannot tell from real data.
         raise StdinBindingError(
             # Kept under the 200-character batch error preview, so the fix survives truncation.
             f"The value bound to stdin: contains {text[exc.start]!r} at character {exc.start}, a surrogate UTF-8 "
-            "cannot encode (often a cut \\uXXXX escape). Repair the invalid Unicode upstream before binding it to stdin."
+            "cannot encode (from a cut \\uXXXX escape or non-UTF-8 input bytes). Repair the value upstream."
         ) from exc
 
 
