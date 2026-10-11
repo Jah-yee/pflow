@@ -19,6 +19,9 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 from tests.shared.llm_mock import create_mock_llm_client
 
+# Session-wide HOME/USERPROFILE redirect + real-home tripwire; see the module docstring.
+pytest_plugins = ("tests.shared.real_home_guard",)
+
 
 @pytest.fixture(autouse=True, scope="function")
 def _block_upstream_cost_map_fetch(monkeypatch):
@@ -444,6 +447,7 @@ def isolate_pflow_config(tmp_path, monkeypatch, precomputed_core_registry_nodes)
     # ``analyze-cache`` test slowdown on developer machines.
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # what Windows children and expanduser read
 
     # Create temporary paths for each component
     test_registry_path = test_pflow_dir / "registry.json"
