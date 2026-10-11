@@ -24,6 +24,7 @@ from pflow.core.diagnostic import (
     Diagnostic,
     Severity,
 )
+from pflow.core.diagnostic_render import written_reference
 from pflow.core.suggestion_utils import find_similar_items
 from pflow.core.templates import (
     Expression,
@@ -183,8 +184,10 @@ def _reserved_internal_key_diagnostic(
     param_name: str,
     *,
     has_path: bool,
+    as_json: bool = False,
 ) -> Diagnostic | None:
-    """Targeted error for ``${__execution__}`` / ``${__index__.x}`` references.
+    """Targeted error for ``${__execution__}`` / ``${__index__.x}`` references
+    (``as_json``: written as a JSON insert, so every reference shown keeps ``|json``).
 
     Catches reserved double-underscore keys in BOTH bare (``${__cache_hits__}``)
     and path (``${__execution__.x}``) forms. The ``__index__`` path-access error
@@ -203,6 +206,9 @@ def _reserved_internal_key_diagnostic(
     """
     path = f"nodes[id={node_id}].params.{param_name}"
 
+    def written(text: str) -> str:
+        return written_reference(text, as_json=as_json)
+
     if is_template_reserved_internal_key(ref_node_id):
         return Diagnostic(
             severity=Severity.ERROR,
@@ -215,7 +221,7 @@ def _reserved_internal_key_diagnostic(
                 f"Names starting and ending with double-underscore are reserved by pflow."
             ),
             suggestions=[
-                "Only `${__index__}` (the current batch item index) is available in templates.",
+                f"Only `{written('__index__')}` (the current batch item index) is available in templates.",
                 "To track iteration count across loop visits, maintain a counter explicitly: "
                 "a checker node returns `prior + 1`, seeded from `${checker.result ?? 0}` "
                 "on the first visit. See `pflow guide branching` -> Loops for a worked example.",
@@ -224,38 +230,36 @@ def _reserved_internal_key_diagnostic(
         )
 
     if ref_node_id == "__index__" and has_path:
-        path_remainder = ref[len(ref_node_id) :].lstrip(".")
         return Diagnostic(
             severity=Severity.ERROR,
             source="validator",
             title="Validation Error",
             node_id=node_id,
             message=(
-                f"Template '${{__index__.{path_remainder}}}' in node '{node_id}' "
+                f"Template '{written(ref)}' in node '{node_id}' "
                 f"(parameter '{param_name}') accesses fields on `__index__`, "
                 f"which is an integer (the current batch item index)."
             ),
             suggestions=[
-                "Use bare `${__index__}` for the item position number.",
-                "For batch item data, use `${item}` or `${item.field}` on a batch node.",
+                f"Use bare `{written('__index__')}` for the item position number.",
+                f"For batch item data, use `{written('item')}` or `{written('item.field')}` on a batch node.",
             ],
             context={"category": "validation", "path": path},
         )
 
     if ref_node_id == "__iteration__" and has_path:
-        path_remainder = ref[len(ref_node_id) :].lstrip(".")
         return Diagnostic(
             severity=Severity.ERROR,
             source="validator",
             title="Validation Error",
             node_id=node_id,
             message=(
-                f"Template '${{__iteration__.{path_remainder}}}' in node '{node_id}' "
+                f"Template '{written(ref)}' in node '{node_id}' "
                 f"(parameter '{param_name}') accesses fields on `__iteration__`, "
                 f"which is an integer (the 1-based loop iteration count)."
             ),
             suggestions=[
-                "Use bare `${__iteration__}` for the current loop iteration number.",
+                f"Use bare `{written('__iteration__')}` for the current loop iteration number.",
             ],
             context={"category": "validation", "path": path},
         )
@@ -307,7 +311,7 @@ def _validate_template_reference(
     # message. The __index__ path-access error stays inside the has_path branch
     # (bare ${__index__} is valid). Validator-only by design — see
     # _reserved_internal_key_diagnostic for the runtime-asymmetry note.
-    reserved = _reserved_internal_key_diagnostic(ref, root, node_id, param_name, has_path=has_path)
+    reserved = _reserved_internal_key_diagnostic(ref, root, node_id, param_name, has_path=has_path, as_json=as_json)
     if reserved is not None:
         return reserved
 
@@ -354,20 +358,20 @@ def _validate_template_reference(
         return None
     if ref not in declared_inputs:
         close_matches = [inp for inp in declared_inputs if inp.lower() == ref.lower()]
-        suffix = "|json" if as_json else ""
+        written = written_reference(ref, as_json=as_json)
         if close_matches:
             return Diagnostic(
                 severity=Severity.ERROR,
                 source="validator",
                 title="Validation Error",
                 node_id=node_id,
-                message=f"Node '{node_id}' references undefined input '${{{ref}}}' in parameter '{param_name}'.",
-                suggestions=[f"Did you mean '${{{close_matches[0]}{suffix}}}'?"],
+                message=f"Node '{node_id}' references undefined input '{written}' in parameter '{param_name}'.",
+                suggestions=[f"Did you mean '{written_reference(close_matches[0], as_json=as_json)}'?"],
                 context={
                     "category": "validation",
                     "path": f"nodes[id={node_id}].params.{param_name}",
-                    "template": f"${{{ref}}}",
-                    "similar_names": [f"${{{match}{suffix}}}" for match in close_matches[:3]],
+                    "template": written,
+                    "similar_names": [written_reference(match, as_json=as_json) for match in close_matches[:3]],
                 },
             )
         if not declared_inputs:
@@ -377,16 +381,17 @@ def _validate_template_reference(
                 title="Validation Error",
                 node_id=node_id,
                 message=(
-                    f"Node '{node_id}' references '${{{ref}}}' in parameter '{param_name}' "
+                    f"Node '{node_id}' references '{written}' in parameter '{param_name}' "
                     f"but no inputs are declared in this workflow."
                 ),
                 suggestions=[
-                    f"Declare '{ref}' under '## Inputs' or use a node output reference like ${{node_id.field}}."
+                    f"Declare '{ref}' under '## Inputs' or use a node output reference like "
+                    f"{written_reference('node_id.field', as_json=as_json)}."
                 ],
                 context={
                     "category": "validation",
                     "path": f"nodes[id={node_id}].params.{param_name}",
-                    "template": f"${{{ref}}}",
+                    "template": written,
                 },
             )
         sorted_inputs = sorted(declared_inputs)
@@ -395,11 +400,11 @@ def _validate_template_reference(
             source="validator",
             title="Validation Error",
             node_id=node_id,
-            message=f"Node '{node_id}' references undefined input '${{{ref}}}' in parameter '{param_name}'.",
+            message=f"Node '{node_id}' references undefined input '{written}' in parameter '{param_name}'.",
             context={
                 "category": "validation",
                 "path": f"nodes[id={node_id}].params.{param_name}",
-                "template": f"${{{ref}}}",
+                "template": written,
                 "available_fields": sorted_inputs,
                 "available_fields_total": len(sorted_inputs),
                 "available_fields_label": "inputs",
@@ -853,8 +858,6 @@ def _checked_references(kind: str, template: Template) -> tuple[Reference, ...]:
 
 _INPUTS_KEY_OWNER = "a key of this step's inputs:"
 _BATCH_ITEM_OWNER = "this step's batch item"
-_BATCH_INDEX_OWNER = "this step's batch index"
-_ITERATION_OWNER = "this step's loop iteration"
 _SHELL_IS_PLAIN = "A shell command is plain sh: pflow never fills in ${…} there."
 _CODE_IS_PLAIN = "A code step's code is plain Python: pflow never fills in ${…} there."
 _KEEP_FOREIGN = "If the text belongs to another program inside the command, leave it."
@@ -863,22 +866,37 @@ _CODE_OUTPUT_NAMES = frozenset({"result", "next"})
 _GUIDE_TOPIC: dict[BodyLanguage, str] = {"sh": "shell", "python": "code"}
 
 
+# What a name in a step's scope is, and how diagnostics phrase it (``{}`` is the name).
+ScopeKind = Literal["input", "inputs_key", "batch_item", "batch_index", "iteration", "step"]
+_OWNER_PHRASES: dict[ScopeKind, str] = {
+    "input": "workflow input '{}'",
+    "inputs_key": _INPUTS_KEY_OWNER,
+    "batch_item": _BATCH_ITEM_OWNER,
+    "batch_index": "this step's batch index",
+    "iteration": "this step's loop iteration",
+    "step": "step '{}'",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class StepScope:
     """The pflow names a ``${…}`` in one step could mean: what the runtime resolved for
     that step while bodies were Templates. A step id counts only with a path —
     ``${fetch.stdout}``, never a bare ``${fetch}`` (that is ordinary sh)."""
 
-    names: Mapping[str, str]  # name -> its owner, as diagnostics phrase it
+    names: Mapping[str, ScopeKind]
     step_ids: frozenset[str]
 
-    def owner(self, root: str, *, has_path: bool) -> str | None:
-        """Who ``root`` names in this step (``"step 'fetch'"``); ``None`` if pflow never knew it."""
+    def kind(self, root: str, *, has_path: bool) -> ScopeKind | None:
+        """What ``root`` names in this step; ``None`` if pflow never knew it."""
         if root in self.names:
             return self.names[root]
-        if has_path and root in self.step_ids:
-            return f"step '{root}'"
-        return None
+        return "step" if has_path and root in self.step_ids else None
+
+    def owner(self, root: str, *, has_path: bool) -> str | None:
+        """Who ``root`` names in this step, as diagnostics phrase it (``"step 'fetch'"``)."""
+        kind = self.kind(root, has_path=has_path)
+        return None if kind is None else _OWNER_PHRASES[kind].format(root)
 
 
 def step_scope(workflow_ir: dict[str, Any], node: dict[str, Any]) -> StepScope:
@@ -886,18 +904,18 @@ def step_scope(workflow_ir: dict[str, Any], node: dict[str, Any]) -> StepScope:
     batched or looped step only — its batch alias, ``__index__``, ``__iteration__`` (a later
     source shadows an earlier one, as at run time); every step id, with a path."""
     declared = workflow_ir.get("inputs")
-    names = {str(name): f"workflow input '{name}'" for name in (declared if isinstance(declared, dict) else {})}
+    names: dict[str, ScopeKind] = dict.fromkeys(map(str, declared if isinstance(declared, dict) else {}), "input")
     params = node.get("params")
     own_inputs = params.get("inputs") if isinstance(params, dict) else None
     if isinstance(own_inputs, dict):
-        names.update(dict.fromkeys(map(str, own_inputs), _INPUTS_KEY_OWNER))
+        names.update(dict.fromkeys(map(str, own_inputs), "inputs_key"))
     batch = node.get("batch")
     if isinstance(batch, dict):
         alias = batch.get("as")
-        names[alias if isinstance(alias, str) and alias else "item"] = _BATCH_ITEM_OWNER
-        names["__index__"] = _BATCH_INDEX_OWNER
+        names[alias if isinstance(alias, str) and alias else "item"] = "batch_item"
+        names["__index__"] = "batch_index"
     if isinstance(node.get("loop"), dict):
-        names["__iteration__"] = _ITERATION_OWNER
+        names["__iteration__"] = "iteration"
     nodes = workflow_ir.get("nodes", [])
     step_ids = frozenset(other["id"] for other in nodes if isinstance(other, dict) and isinstance(other.get("id"), str))
     return StepScope(names, step_ids)
@@ -986,6 +1004,10 @@ def _leftover(segment: Expression | Issue, scope: StepScope) -> tuple[str, str, 
 
 def _owner(scope: StepScope, ref: Reference) -> str | None:
     return scope.owner(ref.root, has_path=bool(ref.path))
+
+
+def _kind(scope: StepScope, ref: Reference) -> ScopeKind | None:
+    return scope.kind(ref.root, has_path=bool(ref.path))
 
 
 def _issue_reference(raw: str) -> Reference | None:
@@ -1467,13 +1489,6 @@ def _foreign_shape_warning(node: dict[str, Any], param: str, text: str, scope: S
 # validator reports the ones that name a pflow value, and inserts left inside quotes.
 # ------------------------------------------------------------------------------
 
-EmbeddedRootKind = Literal["input", "inputs_key", "batch_item", "batch_index", "iteration", "step"]
-_OWNER_KINDS: dict[str, EmbeddedRootKind] = {
-    _INPUTS_KEY_OWNER: "inputs_key",
-    _BATCH_ITEM_OWNER: "batch_item",
-    _BATCH_INDEX_OWNER: "batch_index",
-    _ITERATION_OWNER: "iteration",
-}
 _QUOTES = ("'", '"')
 
 
@@ -1487,7 +1502,7 @@ class EmbeddedReference:
     param: str  # the param's location (``function``)
     expression: str  # as written, without its quotes: ``${selector}``, ``${selector|json}``
     root: str  # the in-scope root a bare reference names ("" for an insert)
-    root_kind: EmbeddedRootKind | None  # None for an insert
+    root_kind: ScopeKind | None  # None for an insert
     is_insert: bool  # a quoted JSON insert, not a bare reference
     quote: str | None  # the matching quote around it, if any
     whole_value: bool  # the param's whole value is this ``${…}``
@@ -1539,9 +1554,9 @@ def _embedded_reports(
         before, after = text[start - 1 : start], text[end : end + 1]
         quote = before if before in _QUOTES and before == after else None
         if expression.as_json:
-            roots: dict[str, EmbeddedRootKind | None] = {"": None} if quote else {}
+            roots: dict[str, ScopeKind | None] = {"": None} if quote else {}
         else:
-            roots = {ref.root: _root_kind(scope, ref.root) for ref in expression.references if _owner(scope, ref)}
+            roots = {ref.root: kind for ref in expression.references if (kind := _kind(scope, ref))}
         span = (start - 1, end + 1) if quote else (start, end)
         for root, root_kind in roots.items():
             yield EmbeddedReference(
@@ -1555,12 +1570,6 @@ def _embedded_reports(
                 whole_value=whole == text[start:end],
                 name=_declared_name(text, *span) or js_value_name(expression),
             )
-
-
-def _root_kind(scope: StepScope, root: str) -> EmbeddedRootKind:
-    if root not in scope.names:
-        return "step"  # step ids are in scope only with a path, never in ``names``
-    return _OWNER_KINDS.get(scope.names[root], "input")
 
 
 def _declared_name(text: str, start: int, end: int) -> str | None:

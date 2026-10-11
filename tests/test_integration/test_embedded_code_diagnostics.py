@@ -454,6 +454,62 @@ def test_a_mis_cased_input_inside_an_insert_is_suggested_as_an_insert() -> None:
     assert error.suggestions == ["Did you mean '${repo}'?"]
 
 
+def _data_flow_error(function: str, needle: str, **step: Any) -> Diagnostic:
+    [error] = [e for e in _errors(_validate(_ir(_eval("s", function, **step)))) if needle in e.message]
+    return error
+
+
+def _llm_error(prompt: str, needle: str, **step: Any) -> Diagnostic:
+    ask = {"id": "s", "type": "llm", "params": {"prompt": prompt}, **step}
+    [error] = [e for e in _errors(_validate(_ir(ask))) if needle in e.message]
+    return error
+
+
+def test_a_reserved_name_inside_an_insert_is_corrected_as_an_insert() -> None:
+    batched = {"batch": {"items": [1, 2]}}
+    index = _data_flow_error("() => ${__index__.x|json}", "accesses fields on `__index__`", **batched)
+    assert index.message.startswith("Template '${__index__.x|json}' in node 's'")
+    assert index.suggestions == [
+        "Use bare `${__index__|json}` for the item position number.",
+        "For batch item data, use `${item|json}` or `${item.field|json}` on a batch node.",
+    ]
+    iteration = _data_flow_error("() => ${__iteration__.x|json}", "accesses fields on `__iteration__`")
+    assert iteration.suggestions == ["Use bare `${__iteration__|json}` for the current loop iteration number."]
+    reserved = _data_flow_error("() => ${__execution__|json}", "reserved by pflow")
+    assert (
+        reserved.suggestions[0] == "Only `${__index__|json}` (the current batch item index) is available in templates."
+    )
+    # Presence pair: the same mistakes in a Template param are corrected bare.
+    index = _llm_error("${__index__.x}", "accesses fields on `__index__`", **batched)
+    assert index.message.startswith("Template '${__index__.x}' in node 's'")
+    assert index.suggestions == [
+        "Use bare `${__index__}` for the item position number.",
+        "For batch item data, use `${item}` or `${item.field}` on a batch node.",
+    ]
+    iteration = _llm_error("${__iteration__.x}", "accesses fields on `__iteration__`")
+    assert iteration.suggestions == ["Use bare `${__iteration__}` for the current loop iteration number."]
+    reserved = _llm_error("${__execution__}", "reserved by pflow")
+    assert reserved.suggestions[0] == "Only `${__index__}` (the current batch item index) is available in templates."
+
+
+def test_an_undeclared_input_inside_an_insert_is_corrected_as_an_insert() -> None:
+    needle = "no inputs are declared"
+    error = _data_flow_error("() => ${missing|json}", needle)
+    assert error.message == (
+        "Node 's' references '${missing|json}' in parameter 'function' but no inputs are declared in this workflow."
+    )
+    assert error.suggestions == [
+        "Declare 'missing' under '## Inputs' or use a node output reference like ${node_id.field|json}."
+    ]
+    assert error.context["template"] == "${missing|json}"
+    # Presence pair: the same mistake in a Template param is corrected bare.
+    error = _llm_error("${missing}", needle)
+    assert error.suggestions == [
+        "Declare 'missing' under '## Inputs' or use a node output reference like ${node_id.field}."
+    ]
+    assert error.context["template"] == "${missing}"
+
+
 @pytest.mark.parametrize(
     ("function", "message"),
     [

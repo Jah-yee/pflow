@@ -188,7 +188,9 @@ Compare the page title with the expected one.
 
 - **The value arrives as a JavaScript literal of its own type**: a string quoted and
   escaped (`"Don't Stop"`), a number, `true`/`false`, `null`, an object or array literal. Put
-  no quotes around the insert — `'${title|json}'` quotes it twice (validation warns).
+  no quotes around the insert — `'${title|json}'` quotes it twice (validation warns). Inside a
+  template literal it is not detected: `` `Hello ${name|json}` `` sends `Hello "Ann"`, so
+  assign the insert to a constant first and interpolate that, as `label` does above.
 - **Text holding JSON stays text**: a shell `stdout` arrives as a string, so parse it in the
   code — `JSON.parse(${fetch.stdout|json})`.
 - The insert covers the whole expression: `${cfg.selector ?? "#main"|json}`,

@@ -53,8 +53,9 @@ def test_param_mode_reads_embedded_code_by_tool_suffix_and_param(node_type: str 
     assert param_mode(node_type, key) == mode
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def registry() -> Registry:
+    """The isolated test registry (function scope: built after ``isolate_pflow_config``)."""
     reg = Registry()
     reg.load()
     return reg

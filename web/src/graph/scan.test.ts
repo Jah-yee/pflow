@@ -361,7 +361,8 @@ describe("param reads follow the param's mode — parity with Python's param_mod
     ["template", { DATA: "${a.out}" }, { a: ["out"] }],
     ["embedded", "() => ${a.out}", {}],
     ["embedded", "() => ${a.out|json}", { a: ["out"] }],
-    ["embedded", { x: "${a.out|json}", y: "${a.out}" }, { a: ["out"] }],
+    // Distinct paths: a nested leaf read as a Template would add `out.bare`.
+    ["embedded", { x: "${a.out.inserted|json}", y: "${a.out.bare}" }, { a: ["out.inserted"] }],
     ["template", "() => ${a.out|json}", { a: ["out"] }], // an insert reads anywhere (the validator refuses it)
   ])("%s: %j", (mode, value, expected) => {
     expect(readsOf(mode, value)).toEqual(expected);

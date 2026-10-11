@@ -145,7 +145,7 @@ def validate_workflow_templates(
         | body_reference_roots(workflow_ir)
     )
     embedded = embedded_references(workflow_ir)
-    diagnostics.extend(_validate_embedded_references(workflow_ir, embedded, used))
+    diagnostics.extend(_validate_embedded_references(embedded, used))
     unused_input_diagnostics = _validate_unused_inputs(
         workflow_ir, used | {ref.root for ref in embedded if not ref.is_insert}
     )
@@ -666,9 +666,7 @@ def _validate_unused_inputs(workflow_ir: dict[str, Any], all_templates: set[str]
     return diagnostics
 
 
-def _validate_embedded_references(
-    workflow_ir: dict[str, Any], references: list[EmbeddedReference], used: set[str]
-) -> list[Diagnostic]:
+def _validate_embedded_references(references: list[EmbeddedReference], used: set[str]) -> list[Diagnostic]:
     """Bare pflow names and quoted inserts in embedded code (``embedded_references``).
 
     A bare reference to a workflow input used nowhere else is an ERROR naming ``|json``
@@ -677,7 +675,6 @@ def _validate_embedded_references(
     variable); an insert wrapped in quotes is a WARNING.
     """
     used_roots = {TemplateResolver.extract_root_node_id(var) for var in used}
-    nodes = {node.get("id"): node for node in workflow_ir.get("nodes", [])}
     diagnostics: list[Diagnostic] = []
     warned: dict[tuple[str, str], list[EmbeddedReference]] = {}
     errored: set[tuple[str, str, str]] = set()
@@ -690,7 +687,7 @@ def _validate_embedded_references(
                 diagnostics.append(_never_inserted_error(ref))
         else:
             warned.setdefault((ref.node_id, ref.param), []).append(ref)
-    diagnostics.extend(_bare_reference_warning(refs, nodes.get(refs[0].node_id, {})) for refs in warned.values())
+    diagnostics.extend(_bare_reference_warning(refs) for refs in warned.values())
     return diagnostics
 
 
@@ -754,7 +751,7 @@ def _and_list(items: list[str], word: str = "and") -> str:
     return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} {word} {items[-1]}"
 
 
-def _bare_reference_warning(refs: list[EmbeddedReference], node: dict[str, Any]) -> Diagnostic:
+def _bare_reference_warning(refs: list[EmbeddedReference]) -> Diagnostic:
     first = refs[0]
     per_expression: dict[str, EmbeddedReference] = {}  # one fix per expression, however many roots
     for ref in refs:

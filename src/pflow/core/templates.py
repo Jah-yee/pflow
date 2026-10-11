@@ -453,14 +453,22 @@ def hidden_inserts(template: Template) -> tuple[tuple[int, int], ...]:
     return tuple(spans)
 
 
+_BRACE_OR_STRING = re.compile(r'"(?:[^"\\]|\\.)*"|[{}]')
+
+
 def balanced_template(source: str, start: int) -> str:
     """The ``${…}`` opening at ``start`` through its brace-balanced ``}`` (to the end if
-    unclosed) — wider than an Issue, which ends at its first ``}``."""
+    unclosed) — wider than an Issue, which ends at its first ``}``. A brace inside a
+    ``"…"`` string does not count (``${"}"|JSON}``)."""
     depth = 0
-    for index in range(start + 1, len(source)):
-        depth += (source[index] == "{") - (source[index] == "}")
-        if depth == 0:
-            return source[start : index + 1]
+    for match in _BRACE_OR_STRING.finditer(source, start + 1):
+        brace = match.group()  # or a whole string, skipped
+        if brace == "{":
+            depth += 1
+        elif brace == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : match.end()]
     return source[start:]
 
 

@@ -537,6 +537,9 @@ def test_hidden_inserts_are_the_inserts_the_parse_could_not_see(source: str, hid
         # The Issue ends at the first `}`; the written text runs brace-balanced past it.
         ("(${{}|JSON})", ("${{}|JSON}", "${{}|json}")),
         ("${rows[${i}]|JSON} tail", ("${rows[${i}]|JSON}", "${rows[${i}]|json}")),
+        # A `}` inside a quoted literal does not close it.
+        ('${"}"|JSON}', ('${"}"|JSON}', '${"}"|json}')),
+        ('`${a ?? "x}" |JSON}`', ('${a ?? "x}" |JSON}', '${a ?? "x}"|json}')),
         ("${x|jsn}", None),  # a different word: in JavaScript a bitwise or
         ("${a + b}", None),
         ("${ x }", None),
