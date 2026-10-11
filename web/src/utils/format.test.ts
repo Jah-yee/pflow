@@ -9,6 +9,7 @@ import {
   paramLanguage,
   parseTemplate,
   previewValue,
+  refMatchesHighlight,
   stripMarkdown,
   timeAgo,
 } from "./format";
@@ -73,6 +74,42 @@ describe("parseTemplate", () => {
 
   it("treats a pure ref as a single ref segment", () => {
     expect(parseTemplate("${only}")).toEqual([{ text: "only", isRef: true }]);
+  });
+
+  // #683: an escape is literal text; the same text unescaped is a ref.
+  it.each<[string, Array<[string, boolean]>]>([
+    ["cost $${x} and ${x}", [["cost $${x} and ", false], ["x", true]]],
+    ["$${FOO:-${gen.result}}", [["$${FOO:-${gen.result}}", false]]],
+    ["${ x } then ${a + b} then ${y}", [["${ x } then ${a + b} then ", false], ["y", true]]], // Issues are text
+    ["${title|json}", [["title|json", true]]], // the written expression, suffix included
+  ])("%s", (value, segments) => {
+    expect(parseTemplate(value).map((s) => [s.text, s.isRef])).toEqual(segments);
+  });
+
+  it("reads the param's mode: embedded code keeps only its JSON inserts; a body keeps none", () => {
+    const value = "`${a + b}` $${price} ${user.name} ${title|json}";
+    const refs = (mode?: "template" | "embedded" | "body"): string[] =>
+      parseTemplate(value, mode).filter((s) => s.isRef).map((s) => s.text);
+    expect(refs("embedded")).toEqual(["title|json"]);
+    expect(refs("template")).toEqual(["user.name", "title|json"]);
+    expect(refs()).toEqual(["user.name", "title|json"]);
+    expect(refs("body")).toEqual([]);
+    expect(parseTemplate(value, "embedded")[0]).toEqual({ text: "`${a + b}` $${price} ${user.name} ", isRef: false });
+  });
+});
+
+describe("refMatchesHighlight — per parsed operand", () => {
+  it.each<[string, string, boolean]>([
+    ["gen.result|json", "gen.result", true],
+    ["gen.result|json", "gen", true],
+    ["gen.result.ok | json", "gen.result", true],
+    ['gen.result ?? "x" | json', "gen.result", true],
+    ["gen.result", "gen.result", true],
+    ["gen.result|json", "gen.res", false],
+    ["gen.result|json", "other", false],
+    ['other.x ?? "gen.result"', "gen.result", false], // a literal operand is not the ref
+  ])("${%s} for %s → %s", (body, highlightRef, expected) => {
+    expect(refMatchesHighlight(body, highlightRef)).toBe(expected);
   });
 });
 

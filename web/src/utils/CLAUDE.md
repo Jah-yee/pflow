@@ -6,7 +6,8 @@ Pure presentation, URL, and source helpers; no React or graph state.
   gradients share `nodeColor`; raw `kindColor` omits decision/transform treatment.
 - Canvas/tooltip text → `format.ts:stripMarkdown`. Keep stripping conservative: under-stripping
   is better than corrupting code, snake_case, arithmetic or globs. Param highlighting language
-  → `paramLanguage`; template text segments → `parseTemplate`.
+  → `paramLanguage`; template text segments → `parseTemplate` (over
+  `../graph/scan.ts:templateTokens`; a param's text is read in its `RFParam.mode`).
 - Syntax highlighting → `highlight.ts:highlight`, `markRefs`, `codeChildren`, consumed by
   CodeBlock and SourcePane. Rejected lazy loads reset their memo so a stale chunk URL does not
   disable highlighting for the session. Unsupported, oversized or failed highlighting returns
@@ -26,5 +27,5 @@ Pure presentation, URL, and source helpers; no React or graph state.
 - Pane sizing/persistence → `panelWidth.ts:clampPanelWidth`, `loadPanelWidth`, `savePanelWidth`,
   shared by both panes through `../hooks/usePanelPair`.
 - Kind/provider SVG lookup → `icons.ts:iconFor`; container host icon → `groupIconFor`.
-- Literal batch item display → `batchItems.ts:resolveBatchItems`, shared by ReadPanel/BatchItems.
-  Dynamic batches have no static items to substitute.
+- Literal batch item display → `batchItems.ts:resolveBatchItems` (ReadPanel's per-item preview,
+  substituted in the param's mode). Dynamic batches have no static items to substitute.

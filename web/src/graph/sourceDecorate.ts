@@ -21,6 +21,7 @@ import type { ElementContent, Properties, Root } from "hast";
 
 import { kindColor } from "../utils/format";
 import { codeChildren } from "../utils/highlight";
+import { templateTokens } from "./scan";
 
 // A fence info string = optional language word + optional pflow role word.
 const ROLE_GRAMMAR: Record<string, string> = { prompt: "markdown", cache: "markdown", command: "bash" };
@@ -30,8 +31,6 @@ const LANG_GRAMMAR: Record<string, string> = {
 // Which fence/value language words map to a node-KIND color (others stay muted).
 const LANG_KIND: Record<string, string> = { shell: "shell", bash: "shell", sh: "shell", python: "code", py: "code" };
 
-const REF_RE = /\$\{[^}]+\}/g;
-
 // --- hast helpers ---
 const txt = (value: string): ElementContent => ({ type: "text", value });
 function span(className: string | string[], children: ElementContent[], style?: string): ElementContent {
@@ -40,26 +39,25 @@ function span(className: string | string[], children: ElementContent[], style?: 
   return { type: "element", tagName: "span", properties, children };
 }
 
-/** Split a string into plain text + teal `${ref}` spans. */
+/** Split a string into plain text + teal `${ref}` spans: expressions are teal;
+ *  escapes and Issues stay plain (`templateTokens`, read as a Template — the source
+ *  pane has no param mode). */
 function refSegments(text: string): ElementContent[] {
-  if (!text.includes("${")) return text ? [txt(text)] : [];
   const out: ElementContent[] = [];
-  let last = 0;
-  REF_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = REF_RE.exec(text)) !== null) {
-    if (m.index > last) out.push(txt(text.slice(last, m.index)));
-    out.push(span("src-ref", [txt(m[0])]));
-    last = m.index + m[0].length;
+  for (const t of templateTokens(text)) {
+    const written = text.slice(t.start, t.end);
+    const last = out[out.length - 1];
+    if (t.kind === "expression") out.push(span("src-ref", [txt(written)]));
+    else if (last?.type === "text") last.value += written;
+    else out.push(txt(written));
   }
-  if (last < text.length) out.push(txt(text.slice(last)));
   return out;
 }
 
 /** Whether a block's `${…}` get the teal ref span: markdown (prompts, prose) and
  *  ungrammared fences (`text content`) yes; any other grammar's are left to that
  *  grammar, as `CodeBlock` does — a shell/python body's `${HOME}` is not a pflow
- *  ref at all (`utils/format.ts:isCodeBody`). The instant tier, the full tier and
+ *  ref at all (a "body" param mode). The instant tier, the full tier and
  *  its fallback all ask this, so no tier teals what another would not. */
 const tealsRefs = (grammar: string | null): boolean => grammar === null || grammar === "markdown";
 

@@ -95,3 +95,50 @@ describe("resolveBatchItems", () => {
     ]);
   });
 });
+
+describe("resolveBatchItems reads the param's mode and the one grammar", () => {
+  const PEOPLE = [
+    { name: "Ann", id: 7, on: true },
+    { name: "Bo", id: 8, on: false },
+  ];
+
+  it("an escaped `$${item.name}` stays as written; the same text unescaped substitutes (#683)", () => {
+    expect(resolveBatchItems("$${item.name} / ${item.name}", "item", PEOPLE)?.map((r) => r.value)).toEqual([
+      "$${item.name} / Ann",
+      "$${item.name} / Bo",
+    ]);
+    expect(resolveBatchItems("only $${item.name}", "item", PEOPLE)).toBeNull(); // nothing to expand
+  });
+
+  it("embedded code substitutes only its JSON inserts, each as a JSON literal", () => {
+    const value = "() => ({n: ${item.name|json}, on: ${item.on|json}, id: `${item.id}`})";
+    const out = resolveBatchItems(value, "item", PEOPLE, "embedded");
+    expect(out?.map((r) => r.value)).toEqual([
+      '() => ({n: "Ann", on: true, id: `${item.id}`})',
+      '() => ({n: "Bo", on: false, id: `${item.id}`})',
+    ]);
+    expect(out?.map((r) => r.label)).toEqual(["id: 7", "id: 8"]); // `name` and `on` are read; `id` is JavaScript's
+    // Presence pair: the same text as a Template substitutes the bare `${item.id}`, and
+    // keeps each insert as written, as the run does outside embedded code.
+    expect(resolveBatchItems(value, "item", PEOPLE)?.map((r) => r.value)[0]).toBe(
+      "() => ({n: ${item.name|json}, on: ${item.on|json}, id: `7`})",
+    );
+  });
+
+  it("embedded code with no JSON insert of the alias has nothing to expand", () => {
+    expect(resolveBatchItems("() => `${item.id}`", "item", PEOPLE, "embedded")).toBeNull();
+    expect(resolveBatchItems("() => `${item.id}`", "item", PEOPLE, "template")).not.toBeNull();
+  });
+
+  it("a code body never expands", () => {
+    expect(resolveBatchItems('echo "${item.name}"', "item", PEOPLE, "body")).toBeNull();
+    expect(refsBatchAlias('echo "${item.name}"', "item", "body")).toBe(false);
+    expect(refsBatchAlias('echo "${item.name}"', "item")).toBe(true);
+  });
+
+  it("an expression it cannot resolve by name alone is left as written", () => {
+    const value = '${item.tags[0]} ${item.name ?? "x"} ${ item.name }';
+    expect(refsBatchAlias(value, "item")).toBe(false);
+    expect(resolveBatchItems(`${value} ${"$"}{item.name}`, "item", PEOPLE)?.[0]?.value).toBe(`${value} Ann`);
+  });
+});

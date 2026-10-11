@@ -17,6 +17,7 @@
 import type { ElementContent, Root } from "hast";
 import type { HighlighterCore } from "shiki/core";
 
+import type { ParamMode } from "../types";
 import { parseTemplate, refMatchesHighlight } from "./format";
 
 /** The grammars the lazy chunk ships. Anything else fails closed to plain text
@@ -87,8 +88,9 @@ export async function highlight(code: string, lang: string): Promise<Root | null
  *  text yields and keeps the legacy rendering on a mismatch (a `${ref}` the
  *  tokenizer split across text nodes stays unmarked here by design; partial
  *  marking would tell the user something false, so the highlightRef fallback is
- *  count-based, never cross-node merging — tealRest is best-effort decoration). */
-export function markRefs(root: Root, highlightRef?: string, opts?: { tealRest?: boolean }): number {
+ *  count-based, never cross-node merging — tealRest is best-effort decoration).
+ *  `opts.mode` is the param's mode (which `${…}` are pflow's — `parseTemplate`). */
+export function markRefs(root: Root, highlightRef?: string, opts?: { tealRest?: boolean; mode?: ParamMode }): number {
   const tealRest = opts?.tealRest ?? false;
   let marks = 0;
   const visit = (node: { children: ElementContent[] }): void => {
@@ -100,7 +102,7 @@ export function markRefs(root: Root, highlightRef?: string, opts?: { tealRest?: 
         continue;
       }
       if (child.type !== "text" || !child.value.includes("${")) continue;
-      const segments = parseTemplate(child.value);
+      const segments = parseTemplate(child.value, opts?.mode);
       const hasMatch = highlightRef != null && segments.some((s) => s.isRef && refMatchesHighlight(s.text, highlightRef));
       const hasRef = segments.some((s) => s.isRef);
       if (!hasRef || (!hasMatch && !tealRest)) continue; // nothing to color in this text node

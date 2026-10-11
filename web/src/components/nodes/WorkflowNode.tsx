@@ -114,12 +114,14 @@ export function NameLabel({
   );
 }
 
-function ParamValue({ param }: { param: RFParam }): JSX.Element {
+/** A param row's one-line value: literal text plus a chip per pflow reference, read in
+ *  the param's mode. */
+export function ParamValue({ param }: { param: RFParam }): JSX.Element {
   if (param.is_dynamic && typeof param.value === "string") {
     const collapsed = collapseWhitespace(param.value);
     return (
       <>
-        {parseTemplate(collapsed).map((seg, i) =>
+        {parseTemplate(collapsed, param.mode).map((seg, i) =>
           seg.isRef ? (
             <span key={i} className="ref-chip" title={`\${${seg.text}}`}>
               {seg.text}

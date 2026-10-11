@@ -14,18 +14,23 @@ import { toJsxRuntime } from "hast-util-to-jsx-runtime";
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 import type { ElementContent } from "hast";
 
+import type { ParamMode } from "../types";
 import { parseTemplate, refMatchesHighlight } from "../utils/format";
 import { codeChildren, highlight, markRefs } from "../utils/highlight";
 
 export function CodeBlock({
   code,
   lang,
+  mode,
   highlightRef,
   expandLabel,
   modalBody,
 }: {
   code: string;
   lang: string | null;
+  // The param's mode when `code` is a param's text (which `${…}` are pflow's —
+  // `templateTokens`); absent for any other text, read as a Template.
+  mode?: ParamMode;
   highlightRef?: string;
   // The ⛶ expand-to-modal title. Every value box carries the expand by default
   // (the 320px scroll cap keeps panels skimmable; long values are READ in the
@@ -47,7 +52,7 @@ export function CodeBlock({
 
   // The highlighted tree is keyed by its inputs: a re-render with new props must
   // never paint a stale highlight of the OLD value while the effect catches up.
-  const key = `${lang ?? ""}\u0000${highlightRef ?? ""}\u0000${code}`;
+  const key = `${lang ?? ""}\u0000${mode ?? ""}\u0000${highlightRef ?? ""}\u0000${code}`;
   const [highlighted, setHighlighted] = useState<{ key: string; nodes: ElementContent[] } | null>(null);
   const nodes = highlighted?.key === key ? highlighted.nodes : null;
 
@@ -58,8 +63,10 @@ export function CodeBlock({
       if (cancelled || !root) return;
       // The count rule (highlightRef only): swap only when every plain-text mark
       // landed in the hast. tealRest decoration is best-effort and never gates.
-      const expected = highlightRef ? parseTemplate(code).filter((s) => s.isRef && refMatchesHighlight(s.text, highlightRef)).length : 0;
-      const landed = markRefs(root, highlightRef, { tealRest: tealRefs });
+      const expected = highlightRef
+        ? parseTemplate(code, mode).filter((s) => s.isRef && refMatchesHighlight(s.text, highlightRef)).length
+        : 0;
+      const landed = markRefs(root, highlightRef, { tealRest: tealRefs, mode });
       if (highlightRef && landed !== expected) return;
       const children = codeChildren(root);
       if (children) setHighlighted({ key, nodes: children });
@@ -67,7 +74,7 @@ export function CodeBlock({
     return () => {
       cancelled = true;
     };
-  }, [code, lang, highlightRef, key, tealRefs]);
+  }, [code, lang, mode, highlightRef, key, tealRefs]);
 
   // ONE <pre> — when the hast lands, the <code>'s children render inside OUR
   // container so the box recipe (pre-wrap, scroll cap) keeps governing; shiki's
@@ -80,7 +87,7 @@ export function CodeBlock({
   ) : (
     <pre className="read-param-value">
       {highlightRef != null || tealRefs
-        ? parseTemplate(code).map((seg, i) => {
+        ? parseTemplate(code, mode).map((seg, i) => {
             if (!seg.isRef) return seg.text;
             const t = `\${${seg.text}}`;
             if (highlightRef != null && refMatchesHighlight(seg.text, highlightRef)) {
@@ -109,6 +116,7 @@ export function CodeBlock({
       pre={pre}
       code={code}
       lang={lang}
+      mode={mode}
       highlightRef={highlightRef}
       label={expandLabel ?? "value"}
       modalBody={modalBody}
@@ -122,6 +130,7 @@ function ExpandableBox({
   pre,
   code,
   lang,
+  mode,
   highlightRef,
   label,
   modalBody,
@@ -129,6 +138,7 @@ function ExpandableBox({
   pre: JSX.Element;
   code: string;
   lang: string | null;
+  mode?: ParamMode;
   highlightRef?: string;
   label: string;
   modalBody?: JSX.Element;
@@ -149,6 +159,7 @@ function ExpandableBox({
         <ValueModal
           code={code}
           lang={lang}
+          mode={mode}
           highlightRef={highlightRef}
           label={label}
           modalBody={modalBody}
@@ -166,6 +177,7 @@ function ExpandableBox({
 function ValueModal({
   code,
   lang,
+  mode,
   highlightRef,
   label,
   modalBody,
@@ -173,6 +185,7 @@ function ValueModal({
 }: {
   code: string;
   lang: string | null;
+  mode?: ParamMode;
   highlightRef?: string;
   label: string;
   modalBody?: JSX.Element;
@@ -219,7 +232,7 @@ function ValueModal({
           </button>
         </header>
         <div className="value-modal-body">
-          {modalBody ?? <CodeBlock code={code} lang={lang} highlightRef={highlightRef} expandLabel={null} />}
+          {modalBody ?? <CodeBlock code={code} lang={lang} mode={mode} highlightRef={highlightRef} expandLabel={null} />}
         </div>
       </div>
     </div>,

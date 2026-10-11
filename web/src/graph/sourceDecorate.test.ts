@@ -211,7 +211,7 @@ describe("buildDecoratedLines", () => {
   });
 });
 
-describe("${…} teal is the same in every tier: Template text yes, a code fence no", () => {
+describe("${…} teal is the same in every tier: Template text yes, a code fence no, an escape never", () => {
   // A shell body's `${HOME}` is the shell's own text (Task 118); the prompt's and the
   // ungrammared `text content` fence's `${up.stdout}` are References. The instant tier
   // and the full tier's fail-closed fallback must agree with the full tier's success.
@@ -225,6 +225,16 @@ describe("${…} teal is the same in every tier: Template text yes, a code fence
     "```text content", // 7
     "Got ${up.stdout}", // 8
     "```", // 9
+    "````prompt", // 10
+    "Keep $${up.stdout}, read ${up.stdout}", // 11 — an escape is literal (#683)
+    "````", // 12
+    // Embedded code: the source pane has no param mode, so it reads JavaScript as a
+    // Template — an identifier-shaped `${user.name}` teals (the documented limit);
+    // `${a + b}` (an Issue) and `$${price}` (an escape) do not.
+    "```javascript function", // 13
+    "() => `${a + b}` + `$${price}` + ${user.name} + ${up.stdout|json}", // 14
+    "```", // 15
+    "- function: `$${x}` ${up.stdout|json}", // 16
   ].join("\n");
   const tok = (code: string, lang: string, extraLine: boolean): Root => ({
     type: "root",
@@ -258,10 +268,15 @@ describe("${…} teal is the same in every tier: Template text yes, a code fence
 
   it.each(tiers)("%s", async (_tier, decorate) => {
     const lines = await decorate();
-    expect(lines.length).toBe(9);
+    expect(lines.length).toBe(16);
     expect(lineText(lines[1]!)).toBe('echo "${HOME}" "$DATA"');
     expect(spansWithClass(lines[1]!, "src-ref")).toEqual([]);
     expect(spansWithClass(lines[4]!, "src-ref").map(textOf)).toEqual(["${up.stdout}"]);
     expect(spansWithClass(lines[7]!, "src-ref").map(textOf)).toEqual(["${up.stdout}"]);
+    expect(spansWithClass(lines[10]!, "src-ref").map(textOf)).toEqual(["${up.stdout}"]);
+    expect(lineText(lines[10]!)).toBe("Keep $${up.stdout}, read ${up.stdout}");
+    expect(spansWithClass(lines[13]!, "src-ref").map(textOf)).toEqual(["${user.name}", "${up.stdout|json}"]);
+    expect(spansWithClass(lines[15]!, "src-ref").map(textOf)).toEqual(["${up.stdout|json}"]);
+    expect(lineText(lines[15]!)).toBe("- function: `$${x}` ${up.stdout|json}");
   });
 });

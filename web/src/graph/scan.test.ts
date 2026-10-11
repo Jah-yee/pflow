@@ -5,12 +5,12 @@
 
 import { describe, expect, it } from "vitest";
 
-import { consumedReadPaths } from "./scan";
+import { consumedReadPaths, templateTokens } from "./scan";
 import { buildFlow } from "./flow";
 import type { NodeRow, OutputRow } from "./rows";
 import { paramHandle } from "./handles";
 import { DETAILED, edge, group, node } from "./testFixtures";
-import type { RFGraph } from "../types";
+import type { ParamMode, RFGraph } from "../types";
 
 
 // The leaf's output rows, recovered from the unified body row list (LeafData.rows
@@ -233,29 +233,138 @@ describe("consumedReadPaths — runtime parity (mirrors scope.py)", () => {
   });
 });
 
-describe("code bodies read nothing — parity with Python's param_mode (template_surfaces._BODIES)", () => {
-  // A shell `command` / code `code` is plain code: its `${a.out}` is the shell's or
-  // Python's own text (Task 118). The same Reference in a Template param — `env`,
-  // `inputs`, or a same-named param on another node type — still reads `a.out`.
+describe("templateTokens — the one walk, a mirror of `_tokenize` (test_templates.py SHAPES)", () => {
+  // Each token as `kind:written`; a JSON insert shows as `insert:`. Python folds an
+  // escape into its Text; the walk keeps it a token of its own, so a reader can show it
+  // as written.
+  const show = (source: string, mode?: ParamMode): string[] =>
+    templateTokens(source, mode).map((t) => {
+      const kind = t.kind === "expression" && t.asJson ? "insert" : t.kind;
+      return `${kind}:${source.slice(t.start, t.end)}`;
+    });
+
+  const SHAPES: Array<[string, string[]]> = [
+    ["", []],
+    ["plain", ["text:plain"]],
+    ["${a}", ["expression:${a}"]],
+    ["${node.items[0].n}", ["expression:${node.items[0].n}"]],
+    ['${a[${i.j}].x ?? "d"}', ['expression:${a[${i.j}].x ?? "d"}']],
+    ["[${a}]", ["text:[", "expression:${a}", "text:]"]],
+    ["${a}${b}", ["expression:${a}", "expression:${b}"]],
+    ["Hi $${x} ${y}!", ["text:Hi ", "escape:$${x}", "text: ", "expression:${y}", "text:!"]],
+    ["$$${x}", ["text:$", "escape:$${x}"]],
+    ["$${a[${i}]}", ["escape:$${a[${i}]}"]],
+    ["$${unclosed ${b}", ["escape:$${", "text:unclosed ", "expression:${b}"]],
+    ["${c.result.0} tail", ["issue:${c.result.0}", "text: tail"]],
+    ["${a", ["issue:${a"]],
+    ["${a[${i ?? 0}]}", ["issue:${a[${i ?? 0}", "text:]}"]],
+    ['${a ?? "\\q"}', ['issue:${a ?? "\\q"}']],
+    ["${a ?? 007}", ["issue:${a ?? 007}"]],
+    ["${0}", ["expression:${0}"]],
+    ["${true}", ["expression:${true}"]],
+    ["${x|json}", ["insert:${x|json}"]],
+    ["${x | json}", ["insert:${x | json}"]],
+    ['${a ?? "d" | json}!', ['insert:${a ?? "d" | json}', "text:!"]],
+    ['${a ?? "x|json"}', ['expression:${a ?? "x|json"}']],
+    ["${x|JSON}", ["issue:${x|JSON}"]],
+    ["${x|json }", ["issue:${x|json }"]],
+    ["${ x|json}", ["issue:${ x|json}"]],
+    ["${x||json}", ["issue:${x||json}"]],
+    ["$${x|json}", ["escape:$${x|json}"]],
+  ];
+
+  it.each(SHAPES)("%s", (source, tokens) => {
+    expect(show(source)).toEqual(tokens);
+  });
+
+  it("tokens tile the source: contiguous, non-empty, from 0 to its length", () => {
+    for (const [source] of SHAPES) {
+      for (const mode of ["template", "embedded", "body"] as const) {
+        const tokens = templateTokens(source, mode);
+        let pos = 0;
+        for (const t of tokens) {
+          expect([t.start, t.end > t.start]).toEqual([pos, true]);
+          pos = t.end;
+        }
+        expect(pos).toBe(source.length);
+      }
+    }
+  });
+
+  it("an expression carries its operands as written and the References among them", () => {
+    const [expr] = templateTokens('${a[${i.j}].x ?? "d"|json}');
+    expect(expr).toEqual({
+      kind: "expression",
+      start: 0,
+      end: 26,
+      asJson: true,
+      operands: ["a[${i.j}].x", '"d"'],
+      refs: [
+        { root: "a", fields: ["x"] },
+        { root: "i", fields: ["j"] },
+      ],
+    });
+  });
+
+  // PA's view row (test_templates.py): only the JSON insert is pflow's.
+  const VIEW_SOURCE = "`${a + b}` $${p} ${user.name} ${t|json} '${x}'";
+
+  it("embedded: only the JSON insert is an expression — the rest is text, cut verbatim", () => {
+    expect(show(VIEW_SOURCE, "embedded")).toEqual(["text:`${a + b}` $${p} ${user.name} ", "insert:${t|json}", "text: '${x}'"]);
+    // The same source as a Template: the bare `${user.name}` and `${x}` are expressions.
+    expect(show(VIEW_SOURCE)).toEqual([
+      "text:`",
+      "issue:${a + b}",
+      "text:` ",
+      "escape:$${p}",
+      "text: ",
+      "expression:${user.name}",
+      "text: ",
+      "insert:${t|json}",
+      "text: '",
+      "expression:${x}",
+      "text:'",
+    ]);
+  });
+
+  it("embedded: an insert an escape or an Issue swallows stays text, as in `embedded_code`", () => {
+    expect(show("$${foo ${x|json}} ${${y|json} + 1} ${z|json}", "embedded")).toEqual([
+      "text:$${foo ${x|json}} ${${y|json} + 1} ",
+      "insert:${z|json}",
+    ]);
+  });
+
+  it("body: one text token, whatever the text holds", () => {
+    expect(show('echo "${a.out}" ${b|json}', "body")).toEqual(['text:echo "${a.out}" ${b|json}']);
+  });
+});
+
+describe("param reads follow the param's mode — parity with Python's param_mode", () => {
+  // A code body (shell `command`, code `code`) reads nothing: its `${a.out}` is the
+  // shell's or Python's own text (Task 118). Embedded code (an MCP tool's JavaScript)
+  // reads only its `${x|json}` inserts. Python decides the mode; the payload carries it.
   const producer = node("a", { output_shape: { field: "out", data_type: "str", keys: [] } });
-  const readsOf = (kind: string, name: string, value: unknown): Record<string, string[]> => {
+  const readsOf = (mode: ParamMode | undefined, value: unknown): Record<string, string[]> => {
     const g: RFGraph = {
-      nodes: [producer, node("b", { kind, params: [{ name, value, is_dynamic: true, source: null }] })],
+      nodes: [producer, node("b", { params: [{ name: "p", value, is_dynamic: true, source: null, mode }] })],
       edges: [],
       groups: [],
     };
     return Object.fromEntries(consumedReadPaths(g));
   };
 
-  it.each<[string, string, unknown, Record<string, string[]>]>([
-    ["shell", "command", 'echo "${a.out}"', {}],
-    ["code", "code", 'print(f"${a.out}")', {}],
-    ["shell", "env", { DATA: "${a.out}" }, { a: ["out"] }],
-    ["shell", "stdin", "${a.out}", { a: ["out"] }],
-    ["code", "inputs", { x: "${a.out}" }, { a: ["out"] }],
-    ["mcp-tool-run", "command", "${a.out}", { a: ["out"] }], // keyed on (kind, name), not the name
-  ])("%s.%s", (kind, name, value, expected) => {
-    expect(readsOf(kind, name, value)).toEqual(expected);
+  it.each<[ParamMode | undefined, unknown, Record<string, string[]>]>([
+    ["body", 'echo "${a.out}"', {}],
+    ["template", 'echo "${a.out}"', { a: ["out"] }],
+    [undefined, 'echo "${a.out}"', { a: ["out"] }], // absent on a hand-built param: a Template
+    ["body", { DATA: "${a.out}" }, {}],
+    ["template", { DATA: "${a.out}" }, { a: ["out"] }],
+    ["embedded", "() => ${a.out}", {}],
+    ["embedded", "() => ${a.out|json}", { a: ["out"] }],
+    ["embedded", { x: "${a.out|json}", y: "${a.out}" }, { a: ["out"] }],
+    ["template", "() => ${a.out|json}", { a: ["out"] }], // an insert reads anywhere (the validator refuses it)
+  ])("%s: %j", (mode, value, expected) => {
+    expect(readsOf(mode, value)).toEqual(expected);
   });
 
   it("an env Reference's edge lands on the env row, labelled by its key", () => {

@@ -1,41 +1,37 @@
 // Presentation helpers shared by the node components and the read panel.
-// Pure, dependency-free, unit-testable.
+// Pure, unit-testable.
+
+import { templateTokens } from "../graph/scan";
+import type { ParamMode } from "../types";
 
 export interface TemplateSegment {
   text: string;
   isRef: boolean;
 }
 
-const REF_PATTERN = /\$\{([^}]+)\}/g;
-
 /** Split a string into literal/`${ref}` segments so a param value can render as
- *  text + inline connection chips (one chip per ref). */
-export function parseTemplate(value: string): TemplateSegment[] {
+ *  text + inline connection chips (one chip per ref). A ref segment's `text` is the
+ *  expression as written inside `${…}` (a `|json` suffix included); escapes, Issues
+ *  and everything `mode` leaves to the embedded language are literal. */
+export function parseTemplate(value: string, mode?: ParamMode): TemplateSegment[] {
   const segments: TemplateSegment[] = [];
-  let last = 0;
-  for (const match of value.matchAll(REF_PATTERN)) {
-    const start = match.index ?? 0;
-    if (start > last) {
-      segments.push({ text: value.slice(last, start), isRef: false });
-    }
-    segments.push({ text: match[1] ?? "", isRef: true });
-    last = start + match[0].length;
-  }
-  if (last < value.length) {
-    segments.push({ text: value.slice(last), isRef: false });
+  for (const token of templateTokens(value, mode)) {
+    const isRef = token.kind === "expression";
+    const text = isRef ? value.slice(token.start + 2, token.end - 1) : value.slice(token.start, token.end);
+    const last = segments[segments.length - 1];
+    if (!isRef && last && !last.isRef) last.text += text;
+    else segments.push({ text, isRef });
   }
   return segments;
 }
 
-/** Whether a `${...}` ref BODY belongs to `highlightRef`. Matching is per
- *  coalesce OPERAND — `${a.b ?? "fallback"}` matches highlightRef "a.b" (a
- *  whole-text compare never matched coalesce-authored refs): an operand counts
- *  when it equals the ref or extends it with a dot path. */
+/** Whether a `${...}` ref BODY belongs to `highlightRef`. Matching is per parsed
+ *  OPERAND — `${a.b ?? "fallback"}` and `${a.b|json}` match highlightRef "a.b": an
+ *  operand counts when it equals the ref or extends it with a dot path. */
 export function refMatchesHighlight(refBody: string, highlightRef: string): boolean {
-  return refBody
-    .split("??")
-    .map((op) => op.trim())
-    .some((op) => op === highlightRef || op.startsWith(`${highlightRef}.`));
+  const [token] = templateTokens(`\${${refBody}}`);
+  const operands = token?.kind === "expression" ? token.operands : [];
+  return operands.some((op) => op === highlightRef || op.startsWith(`${highlightRef}.`));
 }
 
 /** Flatten any internal whitespace runs to single spaces (for one-line previews). */
@@ -136,15 +132,6 @@ export function paramLanguage(kind: string, name: string, value: unknown): strin
   if (kind === "llm" && (name === "prompt" || name === "system")) return "markdown";
   if (kind === "agent" && (name === "prompt" || name === "system_prompt")) return "markdown";
   return null;
-}
-
-/** Whether a param holds plain code that pflow never reads for `${…}` — the
- *  mirror of Python's `param_mode(kind, name) == "body"` (`_BODIES` in
- *  `src/pflow/core/workflow/template_surfaces.py`, the source of truth — edit both
- *  together). A body's `${HOME}` is the shell's/Python's own text: no ref, no read,
- *  no per-item substitution. */
-export function isCodeBody(kind: string, name: string): boolean {
-  return (kind === "shell" && name === "command") || (kind === "code" && name === "code");
 }
 
 /** Present an edge's input_name as a binding label. `prompt_cache` is the
