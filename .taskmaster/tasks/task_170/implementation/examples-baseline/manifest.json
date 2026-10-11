@@ -128,12 +128,6 @@
     "output": "error-handling__source-line-multi-output.json"
   },
   {
-    "example": "examples/error-handling/typo-on-failed-node.pflow.md",
-    "params": {},
-    "exit_code": 1,
-    "output": "error-handling__typo-on-failed-node.json"
-  },
-  {
     "example": "examples/file-references/code-file-ref.pflow.md",
     "params": {
       "input": "hello"

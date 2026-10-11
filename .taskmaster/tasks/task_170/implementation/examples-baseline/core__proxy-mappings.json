@@ -16,8 +16,6 @@
   "error": "Error: File '<CWD>/input.txt' does not exist. Please check the path and try again.",
   "errors": [
     {
-      "action": "error",
-      "category": "execution_failure",
       "context": {
         "action": "error",
         "category": "execution_failure"

@@ -123,11 +123,6 @@
   "error": "Unresolved variables in output 'content': ${never_run.stdout}, ${fails.stdout}",
   "errors": [
     {
-      "available_context_keys": [
-        "selector",
-        "soak"
-      ],
-      "category": "template_error",
       "context": {
         "available_context_keys": [
           "selector",
@@ -231,106 +226,10 @@
           }
         ]
       },
-      "is_output_resolution": true,
       "message": "Unresolved variables in output 'content': ${never_run.stdout}, ${fails.stdout}",
-      "output_failures": [
-        {
-          "kind": "output",
-          "output_name": "content",
-          "source_expr": "${never_run.stdout ?? fails.stdout}",
-          "source_file": "<REPO>/examples/error-handling/coalesce-mixed-absent-failed.pflow.md",
-          "source_line": 59,
-          "template": "${never_run.stdout ?? fails.stdout}",
-          "unresolved_references": [
-            {
-              "coalesce_expr": "never_run.stdout ?? fails.stdout",
-              "in_coalesce": true,
-              "is_output_source": true,
-              "peer_suggestions": [
-                "selector",
-                "soak"
-              ],
-              "root": "never_run",
-              "status": "absent",
-              "var": "never_run.stdout"
-            },
-            {
-              "coalesce_expr": "never_run.stdout ?? fails.stdout",
-              "corrected_var": null,
-              "failure": {
-                "category": "shell_failure",
-                "command": "exit 4",
-                "data": {
-                  "command": "exit 4",
-                  "exit_code": 4,
-                  "stderr": "",
-                  "stdout": ""
-                },
-                "error": "Command failed with exit code 4",
-                "exit_code": 4,
-                "stderr": "",
-                "stdout": ""
-              },
-              "in_coalesce": true,
-              "is_output_source": true,
-              "peer_suggestions": [
-                "selector",
-                "soak"
-              ],
-              "root": "fails",
-              "secondary_hint": null,
-              "status": "failed",
-              "var": "fails.stdout"
-            }
-          ]
-        }
-      ],
-      "param_key": "output 'content'",
       "severity": "error",
       "source": "runtime",
-      "title": "Template Resolution Failed",
-      "unresolved_references": [
-        {
-          "coalesce_expr": "never_run.stdout ?? fails.stdout",
-          "in_coalesce": true,
-          "is_output_source": true,
-          "peer_suggestions": [
-            "selector",
-            "soak"
-          ],
-          "root": "never_run",
-          "status": "absent",
-          "var": "never_run.stdout"
-        },
-        {
-          "coalesce_expr": "never_run.stdout ?? fails.stdout",
-          "corrected_var": null,
-          "failure": {
-            "category": "shell_failure",
-            "command": "exit 4",
-            "data": {
-              "command": "exit 4",
-              "exit_code": 4,
-              "stderr": "",
-              "stdout": ""
-            },
-            "error": "Command failed with exit code 4",
-            "exit_code": 4,
-            "stderr": "",
-            "stdout": ""
-          },
-          "in_coalesce": true,
-          "is_output_source": true,
-          "peer_suggestions": [
-            "selector",
-            "soak"
-          ],
-          "root": "fails",
-          "secondary_hint": null,
-          "status": "failed",
-          "var": "fails.stdout"
-        }
-      ]
+      "title": "Template Resolution Failed"
     }
   ],
   "execution": {
@@ -364,6 +263,7 @@
       }
     ]
   },
+  "result": {},
   "status": "failed",
   "success": false,
   "workflow": {

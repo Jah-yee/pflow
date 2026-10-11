@@ -27,7 +27,6 @@
   "error": "Code must declare result type annotation (result: <type> = ...) or next type annotation (next: str = ...) for routing",
   "errors": [
     {
-      "category": "validation",
       "context": {
         "category": "validation",
         "missing": [
@@ -38,13 +37,7 @@
         "path": "nodes[id=split].params.code"
       },
       "message": "Code must declare result type annotation (result: <type> = ...) or next type annotation (next: str = ...) for routing",
-      "missing": [
-        "result",
-        "next"
-      ],
       "node_id": "split",
-      "node_type": "code",
-      "path": "nodes[id=split].params.code",
       "see_also": [
         "code"
       ],

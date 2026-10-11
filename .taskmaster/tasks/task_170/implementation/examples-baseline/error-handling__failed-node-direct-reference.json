@@ -96,10 +96,6 @@
   "error": "Unresolved variables in output 'content': ${primary.stdout}",
   "errors": [
     {
-      "available_context_keys": [
-        "fallback"
-      ],
-      "category": "template_error",
       "context": {
         "available_context_keys": [
           "fallback"
@@ -176,80 +172,10 @@
           }
         ]
       },
-      "is_output_resolution": true,
       "message": "Unresolved variables in output 'content': ${primary.stdout}",
-      "output_failures": [
-        {
-          "kind": "output",
-          "output_name": "content",
-          "source_expr": "${primary.stdout}",
-          "source_file": "<REPO>/examples/error-handling/failed-node-direct-reference.pflow.md",
-          "source_line": 38,
-          "template": "${primary.stdout}",
-          "unresolved_references": [
-            {
-              "coalesce_expr": null,
-              "corrected_var": null,
-              "failure": {
-                "category": "shell_failure",
-                "command": "echo \"stuff to stderr\" >&2; exit 42",
-                "data": {
-                  "command": "echo \"stuff to stderr\" >&2; exit 42",
-                  "exit_code": 42,
-                  "stderr": "stuff to stderr\n",
-                  "stdout": ""
-                },
-                "error": "Command failed with exit code 42: stuff to stderr\n",
-                "exit_code": 42,
-                "stderr": "stuff to stderr\n",
-                "stdout": ""
-              },
-              "in_coalesce": false,
-              "is_output_source": true,
-              "peer_suggestions": [
-                "fallback"
-              ],
-              "root": "primary",
-              "secondary_hint": null,
-              "status": "failed",
-              "var": "primary.stdout"
-            }
-          ]
-        }
-      ],
-      "param_key": "output 'content'",
       "severity": "error",
       "source": "runtime",
-      "title": "Template Resolution Failed",
-      "unresolved_references": [
-        {
-          "coalesce_expr": null,
-          "corrected_var": null,
-          "failure": {
-            "category": "shell_failure",
-            "command": "echo \"stuff to stderr\" >&2; exit 42",
-            "data": {
-              "command": "echo \"stuff to stderr\" >&2; exit 42",
-              "exit_code": 42,
-              "stderr": "stuff to stderr\n",
-              "stdout": ""
-            },
-            "error": "Command failed with exit code 42: stuff to stderr\n",
-            "exit_code": 42,
-            "stderr": "stuff to stderr\n",
-            "stdout": ""
-          },
-          "in_coalesce": false,
-          "is_output_source": true,
-          "peer_suggestions": [
-            "fallback"
-          ],
-          "root": "primary",
-          "secondary_hint": null,
-          "status": "failed",
-          "var": "primary.stdout"
-        }
-      ]
+      "title": "Template Resolution Failed"
     }
   ],
   "execution": {
@@ -271,6 +197,7 @@
       }
     ]
   },
+  "result": {},
   "status": "failed",
   "success": false,
   "workflow": {

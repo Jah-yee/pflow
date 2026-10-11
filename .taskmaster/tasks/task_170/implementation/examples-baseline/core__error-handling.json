@@ -86,7 +86,6 @@
   "total_cost_usd": 0.0,
   "warnings": [
     {
-      "category": "node_action_error",
       "context": {
         "category": "node_action_error",
         "type": "on_error_recovery"
@@ -94,8 +93,7 @@
       "message": "Node 'read-source' failed \u2014 on-error \u2192 'log-error'",
       "node_id": "read-source",
       "severity": "warning",
-      "source": "runtime",
-      "type": "on_error_recovery"
+      "source": "runtime"
     }
   ],
   "workflow": {
