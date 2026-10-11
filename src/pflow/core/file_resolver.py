@@ -157,18 +157,17 @@ def resolve_file_references(ir_dict: dict[str, Any], base_dir: Path) -> dict[str
             if key not in FILE_RESOLVABLE_PARAMS:
                 continue
             if is_param_file_reference(node_type, key, value):
-                content = _read_file(value, base_dir, node_id, key)
+                content = _load_file(node, key, value, base_dir)
                 if key in YAML_PARSED_PARAMS:
                     params[key] = safe_load_preserving_templates(content)
                 else:
                     params[key] = content
-                node.setdefault("_source_files", {})[key] = value
                 logger.debug(f"Resolved file reference: node '{node_id}', param '{key}' <- {value}")
 
         # B. Resolve file references in batch config
         batch = node.get("batch")
         if batch is not None:
-            _resolve_batch_file_references(node, batch, base_dir, node_id)
+            _resolve_batch_file_references(node, batch, base_dir)
 
     return ir_dict
 
@@ -177,7 +176,6 @@ def _resolve_batch_file_references(
     node: dict[str, Any],
     batch: Any,
     base_dir: Path,
-    node_id: str,
 ) -> None:
     """Resolve file references in batch config.
 
@@ -188,10 +186,9 @@ def _resolve_batch_file_references(
     # B1. Batch is a string — entire config in external file
     if isinstance(batch, str) and is_file_reference(batch):
         original_value = batch
-        content = _read_file(batch, base_dir, node_id, "batch")
+        content = _load_file(node, "batch", batch, base_dir)
         node["batch"] = safe_load_preserving_templates(content)
-        node.setdefault("_source_files", {})["batch"] = original_value
-        logger.debug(f"Resolved file reference: node '{node_id}', batch <- {original_value}")
+        logger.debug(f"Resolved file reference: node '{node.get('id')}', batch <- {original_value}")
         batch = node["batch"]  # Update local var for B2 fall-through
 
     # B2. Batch is a dict with inline items — check for file refs in items
@@ -204,29 +201,21 @@ def _resolve_batch_file_references(
                         if key not in FILE_RESOLVABLE_PARAMS:
                             continue
                         if is_param_file_reference(node.get("type"), key, value):
-                            content = _read_file(value, base_dir, node_id, f"batch.items[{i}].{key}")
+                            location = f"batch.items[{i}].{key}"
+                            content = _load_file(node, location, value, base_dir)
                             if key in YAML_PARSED_PARAMS:
                                 item[key] = safe_load_preserving_templates(content)
                             else:
                                 item[key] = content
-                            provenance_key = f"batch.items[{i}].{key}"
-                            node.setdefault("_source_files", {})[provenance_key] = value
-                            logger.debug(f"Resolved file reference: node '{node_id}', {provenance_key} <- {value}")
+                            logger.debug(f"Resolved file reference: node '{node.get('id')}', {location} <- {value}")
 
 
-def _read_file(
-    file_ref: str,
-    base_dir: Path,
-    node_id: str,
-    param_name: str,
-) -> str:
-    """Read a file reference, resolving relative to base_dir.
+def _load_file(node: dict[str, Any], location: str, file_ref: str, base_dir: Path) -> str:
+    """Read ``file_ref`` (relative to ``base_dir``) and record its provenance on ``node``.
 
-    Args:
-        file_ref: The relative file path from the workflow
-        base_dir: Directory to resolve relative paths from
-        node_id: Node ID for error messages
-        param_name: Parameter name for error messages
+    ``location`` is a param name or ``batch`` / ``batch.items[i].<key>``. The node records the
+    authored reference under ``_source_files[location]`` (what diagnostics show) and the resolved
+    absolute path under ``_resolved_files[location]`` (what a code step sees as ``__file__``).
 
     Returns:
         File content as string
@@ -238,12 +227,15 @@ def _read_file(
 
     if not resolved_path.is_file():
         raise FileNotFoundError(
-            f"File reference in node '{node_id}', param '{param_name}' not found: {file_ref}\n"
+            f"File reference in node '{node.get('id', 'unknown')}', param '{location}' not found: {file_ref}\n"
             f"  Resolved to: {resolved_path}\n"
             f"  Relative to: {base_dir}"
         )
 
-    return resolved_path.read_text(encoding="utf-8")
+    content = resolved_path.read_text(encoding="utf-8")
+    node.setdefault("_source_files", {})[location] = file_ref
+    node.setdefault("_resolved_files", {})[location] = str(resolved_path)
+    return content
 
 
 def has_file_references(ir_dict: dict[str, Any]) -> list[str]:

@@ -258,6 +258,8 @@ result: list = [d.isoformat() for d in parsed]
 
 For larger scripts, reference an external Python file. The file is read and used as the code block. Path is relative to the workflow file.
 
+Inside the file, `__file__` is its absolute path, so `Path(__file__).parent` finds files next to it from any working directory. Relative paths in the code itself (`open("data.json")`) still resolve against the working directory. An `if __name__ == "__main__":` block in the file does not run — the file is a step body, not the program's entry point.
+
 ````markdown
 ### transform
 
