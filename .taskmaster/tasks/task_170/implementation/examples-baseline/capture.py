@@ -13,7 +13,8 @@ inherited one would change every result). Normalized fields: every `duration_ms`
 the run's cwd → `<CWD>`; the run's HOME → `<HOME>`.
 
 Exit codes: 0 = every example matches, 1 = drift (a unified diff per differing example),
-2 = harness error (a listed example is missing, or a stored capture has no manifest entry).
+2 = harness error (the list is empty, a listed example is missing, or a stored capture has no
+manifest entry).
 """
 
 from __future__ import annotations
@@ -89,8 +90,10 @@ def _slug(example: str) -> str:
 
 
 def _harness_errors(entries: list[dict[str, Any]], check: bool) -> list[str]:
-    """A missing example would be captured as a file-not-found error; a stale capture would never be compared."""
-    errors = [f"listed example does not exist: {e['example']}" for e in entries if not (REPO / e["example"]).is_file()]
+    """What would make the run meaningless: an empty list checks nothing, a missing example would be
+    captured as pflow's file-not-found document, a stale capture would never be compared."""
+    errors = [] if entries else ["manifest.json lists no examples"]
+    errors += [f"listed example does not exist: {e['example']}" for e in entries if not (REPO / e["example"]).is_file()]
     if check:
         listed = {_slug(e["example"]) for e in entries}
         errors += [

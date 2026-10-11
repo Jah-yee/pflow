@@ -13,7 +13,8 @@ uv run python .taskmaster/tasks/task_170/implementation/examples-baseline/captur
 ```
 
 `--check` exit codes: 0 = clean, 1 = drift (unified diff per example), 2 = harness error
-(a listed example no longer exists, or a stored capture has no manifest entry).
+(the manifest is empty, a listed example no longer exists, or a stored capture has no
+manifest entry).
 
 CI runs `--check` on every PR and on `main`, in the `baseline-oracle` job of
 `.github/workflows/main.yml` (ubuntu, after the Task-159 oracle). **A PR that intentionally

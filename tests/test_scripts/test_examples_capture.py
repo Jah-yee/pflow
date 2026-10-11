@@ -103,6 +103,19 @@ def test_a_listed_example_that_no_longer_exists_is_a_harness_error(harness: Path
     assert not (harness / "one.json").exists()
 
 
+@pytest.mark.parametrize("args", [(), ("--check",)])
+def test_an_empty_manifest_is_a_harness_error(harness: Path, args: tuple[str, ...]) -> None:
+    # Otherwise capture deletes every stored capture and check passes having compared nothing.
+    stored = harness / "one.json"
+    stored.write_text("{}\n", encoding="utf-8")
+    write_manifest(harness, [])
+
+    result = run(harness, *args)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "harness error: manifest.json lists no examples" in result.stderr
+    assert stored.exists()
+
+
 def test_a_stored_capture_without_a_manifest_entry_fails_check_and_capture_removes_it(harness: Path) -> None:
     stale = harness / "gone.json"
     stale.write_text("{}\n", encoding="utf-8")
