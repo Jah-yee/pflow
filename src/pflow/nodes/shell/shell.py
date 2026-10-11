@@ -13,6 +13,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, ClassVar
 
+from pflow.core.diagnostic_render import head_tail_preview
 from pflow.core.exceptions import NodeError, PflowError
 from pflow.core.node import Node
 from pflow.core.user_errors import UserFriendlyError
@@ -764,10 +765,9 @@ class ShellNode(Node):
         Returns:
             A formatted error message with exit code and stderr preview
         """
-        stderr_preview = stderr[:500] if stderr else ""
         error_msg = f"Command failed with exit code {exit_code}"
-        if stderr_preview:
-            error_msg += f": {stderr_preview}"
+        if stderr:
+            error_msg += f": {head_tail_preview(stderr)}"
         return error_msg
 
     def _store_output(self, shared: dict, key: str, value: str | bytes, is_binary: bool, strip_newline: bool) -> None:
