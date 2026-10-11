@@ -104,7 +104,12 @@ _FAILED_CHILD_BATCH = {
             "index": 0,
             "error": "Sub-workflow failed",
             "item": {"url": "https://example.test"},
-            "child_failure": {"failures": {"fetch": {"data": {"headers": [{"Authorization": "Bearer raw"}]}}}},
+            "child_failure": {
+                "failed_node": "auth",
+                "failures": {
+                    "auth": {"data": {"headers": [{"Authorization": "Bearer raw"}], "errors": [[{"api_key": "raw"}]]}}
+                },
+            },
         }
     ],
 }
@@ -119,8 +124,9 @@ class TestArchivalVersusPrintingCompaction:
         assert "item" not in error
         assert error["child_failure"] == _FAILED_CHILD_BATCH["errors"][0]["child_failure"]
 
-    def test_printing_form_redacts_the_child_bundle_at_any_depth(self):
+    def test_printing_form_redacts_every_value_but_keeps_node_id_keys(self):
         [error] = compact_batch_output_value(_FAILED_CHILD_BATCH)["errors"]
 
         assert "item" not in error
-        assert error["child_failure"]["failures"]["fetch"]["data"]["headers"] == [{"Authorization": "<REDACTED>"}]
+        data = error["child_failure"]["failures"]["auth"]["data"]
+        assert data == {"headers": [{"Authorization": "<REDACTED>"}], "errors": [[{"api_key": "<REDACTED>"}]]}

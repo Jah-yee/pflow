@@ -6,7 +6,7 @@ import textwrap
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from pflow.core.security_utils import redact_sensitive
+from pflow.core.security_utils import is_sensitive_parameter
 
 MAX_BATCH_ERRORS_SHOWN = 5
 MAX_ERROR_MESSAGE_CHARS = 200
@@ -88,37 +88,28 @@ def compact_batch_error_detail(error_detail: Mapping[str, Any]) -> dict[str, Any
     return compact
 
 
-def _redact_child_failure(bundle: Mapping[str, Any]) -> dict[str, Any]:
-    """``redact_sensitive`` over the bundle, except that ``failures`` is keyed by child node ID.
+def _redact_child_failure(value: Any) -> Any:
+    """``redact_sensitive``, except the keys of a child bundle's ``failures`` map stay.
 
-    A node ID is a name the author chose, not a parameter name: a step called ``auth`` keeps
-    its failure record (the reconstructor reads it), and redaction applies inside the record.
-    A failed child batch's records nest further bundles, handled the same way.
+    Those keys are child node IDs — names the author chose, not parameter names: a step
+    called ``auth`` keeps its failure record (the reconstructor reads it), and redaction
+    applies inside the record. A bundle is any mapping carrying ``failed_node`` and
+    ``failures`` (``WorkflowExecutor._extract_child_failure``), however deep it nests —
+    under a child batch's ``errors[].child_failure`` or a child workflow's own bundle.
     """
-    redacted: dict[str, Any] = redact_sensitive({key: value for key, value in bundle.items() if key != "failures"})
-    failures = bundle.get("failures")
-    if isinstance(failures, Mapping):
-        redacted["failures"] = {
-            node_id: _redact_failure_record(record) if isinstance(record, Mapping) else redact_sensitive(record)
-            for node_id, record in failures.items()
-        }
-    elif "failures" in bundle:
-        redacted["failures"] = redact_sensitive(failures)
-    return redacted
-
-
-def _redact_failure_record(record: Mapping[str, Any]) -> dict[str, Any]:
-    redacted: dict[str, Any] = redact_sensitive({key: value for key, value in record.items() if key != "data"})
-    if "data" in record:
-        data = record["data"]
-        printable = compact_batch_output_value(data)
-        if printable is data:  # not a batch aggregate: no nested bundles to keep keyed
-            redacted["data"] = redact_sensitive(data)
+    if isinstance(value, list):
+        return [_redact_child_failure(item) for item in value]
+    if not isinstance(value, Mapping):
+        return value
+    is_bundle = "failed_node" in value and isinstance(value.get("failures"), Mapping)
+    redacted: dict[Any, Any] = {}
+    for key, item in value.items():
+        if is_bundle and key == "failures":
+            redacted[key] = {node_id: _redact_child_failure(record) for node_id, record in item.items()}
+        elif isinstance(key, str) and is_sensitive_parameter(key):
+            redacted[key] = "<REDACTED>"
         else:
-            redacted["data"] = {
-                **redact_sensitive({key: value for key, value in printable.items() if key != "errors"}),
-                "errors": printable["errors"],
-            }
+            redacted[key] = _redact_child_failure(item)
     return redacted
 
 

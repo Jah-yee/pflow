@@ -275,6 +275,29 @@ class TestBatchedSubWorkflowDocument:
         assert "node 'auth'" in text.stdout
         _assert_no_secret(text.stdout)
 
+    def test_a_sensitive_named_step_inside_a_nested_child_workflow_keeps_its_record(
+        self, tmp_path: Path, auth_server: str
+    ) -> None:
+        # batch item -> `wrap` (step `token`, an ordinary workflow step) -> child (step `auth`).
+        (tmp_path / "child.pflow.md").write_text(_CHILD_FETCH.replace("### fetch", "### auth"), encoding="utf-8")
+        wrap = _CHILD_FETCH.split("## Steps")[0].replace("# Child", "# Wrap") + (
+            "## Steps\n\n### token\n\nRun the child.\n\n- type: workflow\n- workflow: ./child.pflow.md\n"
+            "- inputs:\n    url: ${url}\n"
+        )
+        (tmp_path / "wrap.pflow.md").write_text(wrap, encoding="utf-8")
+        steps = _batch_parent(f"{auth_server}/json", f"{auth_server}/ok").replace("./child.pflow.md", "./wrap.pflow.md")
+        exit_code, stdout, doc = _run_json(tmp_path, steps)
+
+        assert exit_code == 0
+        _assert_no_secret(stdout)
+        token = doc["result"]["each"]["errors"][0]["child_failure"]["failures"]["token"]
+        leaf = token["data"]["_pflow_child_failure"]["failures"]["auth"]
+        assert leaf["data"]["response_headers"]["Set-Cookie"] == "<REDACTED>"
+
+        text = CliRunner(mix_stderr=False).invoke(main, [str(tmp_path / "leak.pflow.md")])
+        assert text.exit_code == 0, text.output
+        _assert_no_secret(text.stdout)
+
     def test_mcp_success_text_redacts_the_child_failure_data(self, tmp_path: Path, auth_server: str) -> None:
         from pflow.mcp_server.services.execution_service import ExecutionService
 
