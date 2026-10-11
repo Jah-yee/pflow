@@ -469,12 +469,17 @@ class TestSafetyAndErrors:
             in shared["error"]
         )
 
-    def test_name_error_with_existing_inputs_binds_under_them(self):
-        """A step that already has inputs: is told to add the name under them — a second bullet would replace it."""
+    def test_name_error_with_existing_inputs_adds_to_them(self):
+        """A step with inputs: is told to add the name to them, never a second `- inputs:` that would replace them.
+
+        The node sees only the resolved map, so it cannot tell a written map from one template
+        (`- inputs: ${make.result}`) — the fix must hold for both.
+        """
         shared: dict = {}
         action = run_code_node(shared, code="x: int\nresult: int = x + missing", inputs={"x": 1})
         assert action == "error"
-        assert "add missing: ${<source>} under the step's existing inputs:" in shared["error"]
+        assert "If 'missing' is a workflow value: add missing: ${<source>} to the step's inputs:," in shared["error"]
+        assert "- inputs:" not in shared["error"]
 
     def test_union_in_annotation_rejected_with_pipe_syntax_hint(self):
         """Union in an annotation should be rejected at prep with a PEP 604 hint.

@@ -445,13 +445,20 @@ def _typing_name_fix(var_name: str) -> str | None:
 
 
 def _suggest_for_nameerror(var_name: str, step_inputs: Any) -> str:
-    """A NameError's fix: the typing-name fix, else bind the name through the step's ``inputs:``."""
+    """A NameError's fix: the typing-name fix, else bind the name through the step's ``inputs:``.
+
+    The node sees resolved params only: a step whose ``inputs:`` resolved to a map may have
+    written it as a map or as one template, so only a step without inputs gets the exact line.
+    """
     typing_fix = _typing_name_fix(var_name)
     if typing_fix is not None:
         return typing_fix
     from pflow.core.workflow.data_flow import binding_phrase
 
-    add = binding_phrase({"params": {"inputs": step_inputs}}, "inputs", [(var_name, "<source>")])
+    if step_inputs:
+        add = f"add {var_name}: ${{<source>}} to the step's inputs:"
+    else:
+        add = binding_phrase({}, "inputs", [(var_name, "<source>")])
     return (
         f"  - If '{var_name}' is a workflow value: {add}, and declare its type in the code (`{var_name}: <type>`)\n"
         f"  - Or define '{var_name}' in the code before use\n"

@@ -19,6 +19,8 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
 _SHAPES = {
     "a JSON key": re.compile(r'"[a-z_]+": '),
     "a Python keyword argument": re.compile(r"\b[a-z_]+=(?:True|False)\b"),
@@ -60,6 +62,31 @@ def _message_literals(tree: ast.AST) -> list[ast.Constant]:
     ]
 
 
+def _hits(source: str) -> list[tuple[int, str, str]]:
+    """``(line, matched text, shape)`` for each banned shape in a module's message literals."""
+    return [
+        (literal.lineno, match.group(0), shape)
+        for literal in _message_literals(ast.parse(source))
+        for shape, pattern in _SHAPES.items()
+        for match in pattern.finditer(literal.value)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("raise NodeError(f'Increase timeout: \"timeout\": {t}')", [(1, '"timeout": ', "a JSON key")]),
+        ('msg = "Set overwrite=True to replace it."', [(1, "overwrite=True", "a Python keyword argument")]),
+        ('def f():\n    """Use force=True or "timeout": 2."""', []),
+        ('logger.info(f"Deleted {name} (force=True)")', []),
+        ('msg = "Set `- overwrite: true` on the step."', []),
+    ],
+)
+def test_scanner_flags_message_literals_only(source: str, expected: list[tuple[int, str, str]]) -> None:
+    """The guard sees f-string parts and plain literals, and skips docstrings and log calls."""
+    assert _hits(source) == expected
+
+
 def test_messages_name_the_syntax_the_reader_types() -> None:
     src_root = Path(__file__).resolve().parents[1] / "src" / "pflow"
     assert src_root.is_dir(), f"expected src/pflow/ at {src_root}"
@@ -68,14 +95,11 @@ def test_messages_name_the_syntax_the_reader_types() -> None:
     used: set[tuple[str, str]] = set()
     for py_file in sorted(src_root.rglob("*.py")):
         rel = py_file.relative_to(src_root).as_posix()
-        for literal in _message_literals(ast.parse(py_file.read_text(encoding="utf-8"))):
-            for shape, pattern in _SHAPES.items():
-                for match in pattern.finditer(literal.value):
-                    key = (rel, match.group(0))
-                    if key in _ALLOWED:
-                        used.add(key)
-                    else:
-                        violations.append(f"src/pflow/{rel}:{literal.lineno}: {match.group(0)!r} is {shape}")
+        for line, text, shape in _hits(py_file.read_text(encoding="utf-8")):
+            if (rel, text) in _ALLOWED:
+                used.add((rel, text))
+            else:
+                violations.append(f"src/pflow/{rel}:{line}: {text!r} is {shape}")
 
     assert not violations, (
         "A message tells the reader to type syntax they never write. Use the `.pflow.md` step line "

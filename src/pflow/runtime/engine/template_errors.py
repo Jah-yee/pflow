@@ -54,10 +54,11 @@ def build_type_error_message(
 
     error_msg = (
         f"Parameter '{param_key}' expects {expected_type} but {template_str} resolved to a {actual_type} "
-        "that cannot be written as JSON text: it holds a value JSON has no type for (a set, bytes, a datetime, ...).\n\n"
+        "that cannot be written as JSON text: it holds a value JSON has no type for (a set, bytes, a datetime, ...) "
+        "or contains itself.\n\n"
         "Fix — any one of:\n"
         "  - Convert it in the step that produces it, so it holds only JSON types "
-        "(a list instead of a set, text instead of bytes or a datetime).\n"
+        "(a list instead of a set, text instead of bytes or a datetime) and no reference to itself.\n"
     )
     if isinstance(resolved_value, dict):
         error_msg += f"  - Read only the field you need: `- {param_key}: ${{{var_name}.field_name}}`\n"
