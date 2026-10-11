@@ -30,6 +30,8 @@ SENSITIVE_KEYS = {
     "credentials",
     "authorization",
     "auth",
+    "cookie",
+    "cookies",
 }
 
 
