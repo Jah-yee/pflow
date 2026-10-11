@@ -154,6 +154,31 @@ jobs:
           /tmp/pip-smoke/bin/pflow --help > /dev/null
           /tmp/pip-smoke/bin/python -c "import pflow.nodes.agent.claude_backend; from pflow.core.litellm_runtime import import_litellm; import_litellm()"
 
+  # Task-159 baseline oracle: 87 recorded CLI outputs (parser, validator, analyze-cache,
+  # warning catalog, dry-run, run flags, guide). Any drift fails the job with a per-case diff.
+  # A PR that intentionally changes recorded text re-records the affected cases in the same PR
+  # (see the folder's README). Ubuntu and one Python only: the recordings are platform-specific
+  # text and verify.sh is bash — tests-windows is the platform gate.
+  baseline-oracle:
+    runs-on: ubuntu-latest
+    # A full run measures ~TBD on a runner; the cap stops a hung case burning the 6h default.
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        python-version: ["3.13", "3.14"]
+      fail-fast: false
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up the environment
+        uses: ./.github/actions/setup-python-env
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Verify recorded outputs
+        run: ./.taskmaster/tasks/task_159/baseline/verify.sh
+
   # Summary job for branch protection — Linux-version, Windows-shard, and
   # pip-install-smoke matrix jobs have suffixed display names, so their bare
   # names never resolve as stable required checks. Point branch protection at
