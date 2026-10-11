@@ -1060,8 +1060,7 @@ Compare the page title with the expected one.
   input used nowhere else). If it is a JavaScript variable that shares the name, write
   `${ name }` (spaces inside the braces) to clear the warning.
 - **A program produced by a step** is text: run it with
-  `() => eval(${gen.code|json})()`. The pflow MCP server's single-node run currently refuses
-  any param containing `eval(`; a workflow run is not affected.
+  `() => eval(${gen.code|json})()`.
 - `|json` is accepted only in these params; anywhere else it is a validation error.
 
 ### Node Creation Pattern
