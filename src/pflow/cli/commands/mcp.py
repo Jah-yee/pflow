@@ -774,14 +774,17 @@ def _format_tool_header(tool_info: dict) -> None:
     click.echo(f"Class: {tool_info['class_name']}")
 
 
-def _format_parameters(params: list[dict], title: str = "Parameters") -> None:
+def _format_parameters(params: list[dict], node_type: str, title: str = "Parameters") -> None:
     """Format and display parameters or inputs."""
+    from pflow.registry.context_builder import param_note
+
     if params:
         click.echo(f"\n{title}:")
         for param in params:
             required = " (required)" if param.get("required", True) else ""
+            note = param_note(node_type, param["key"])
             desc = f" - {param.get('description', '')}" if param.get("description") else ""
-            click.echo(f"  - {param['key']}: {param['type']}{required}{desc}")
+            click.echo(f"  - {param['key']}: {param['type']}{required}{note}{desc}")
     else:
         click.echo(f"\n{title}: None")
 
@@ -984,6 +987,8 @@ def describe_tool(tool: str) -> None:
     Example:
         pflow mcp describe mcp-slack-SEND_MESSAGE
     """
+    from pflow.registry.context_builder import snippet_placeholder
+
     registrar = MCPRegistrar()
     lookup_id = _resolve_tool_id(tool, registrar)
 
@@ -996,7 +1001,7 @@ def describe_tool(tool: str) -> None:
             sys.exit(1)
 
         _format_tool_header(tool_info)
-        _format_parameters(tool_info["params"])
+        _format_parameters(tool_info["params"], tool_info["node_name"])
         _format_outputs(tool_info["outputs"], tool_info.get("output_schema"))
 
         # Add .pflow.md usage snippet
@@ -1012,16 +1017,7 @@ def describe_tool(tool: str) -> None:
         for param in params[:3]:
             key = param.get("key", "")
             if key:
-                # First param gets a literal, subsequent get template refs
-                ptype = param.get("type", "str").lower()
-                if shown == 0:
-                    placeholder = "value"
-                elif ptype in ("int", "integer", "number"):
-                    placeholder = "0"
-                elif ptype in ("bool", "boolean"):
-                    placeholder = "true"
-                else:
-                    placeholder = "${previous-step.response}"
+                placeholder = snippet_placeholder(tool_name, key, param.get("type", "str").lower(), first=shown == 0)
                 click.echo(f"    - {key}: {placeholder}")
                 shown += 1
 

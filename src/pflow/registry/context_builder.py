@@ -9,6 +9,7 @@ import logging
 from typing import Any
 
 from pflow.core.workflow.manager import WorkflowManager
+from pflow.core.workflow.template_surfaces import param_mode
 
 logger = logging.getLogger(__name__)
 
@@ -461,7 +462,7 @@ def _collect_all_parameters(inputs: list, params: list) -> tuple[list[dict], set
     return all_params, input_keys
 
 
-def _format_single_param_line(param: dict) -> str:
+def _format_single_param_line(param: dict, node_type: str) -> str:
     """Format a single parameter line with all its details."""
     key = param.get("key", param) if isinstance(param, dict) else param
     type_str = param.get("type", "any") if isinstance(param, dict) else "any"
@@ -471,7 +472,8 @@ def _format_single_param_line(param: dict) -> str:
     is_config = param.get("is_config", False) if isinstance(param, dict) else False
 
     # Build parameter line
-    line = f"- `{key}: {type_str}`"
+    note = param_note(node_type, key) if isinstance(key, str) else ""  # a keyless legacy param shows as its dict
+    line = f"- `{key}: {type_str}`{note}"
 
     # Add description
     if desc:
@@ -489,13 +491,14 @@ def _format_single_param_line(param: dict) -> str:
     return line
 
 
-def _format_all_parameters_new(node_data: dict, lines: list[str]) -> None:
+def _format_all_parameters_new(node_type: str, node_data: dict, lines: list[str]) -> None:
     """Format ALL parameters for the node with clear indication they go in params field.
 
     With namespacing enabled, nodes cannot read inputs from shared store directly.
     All data must be passed via parameters using template variables.
 
     Args:
+        node_type: The workflow type string (decides how a param reads — ``param_note``)
         node_data: Node metadata containing inputs and params
         lines: List to append formatted lines to
     """
@@ -509,7 +512,7 @@ def _format_all_parameters_new(node_data: dict, lines: list[str]) -> None:
         lines.append("**Parameters**:")
 
         for param in all_params:
-            line = _format_single_param_line(param)
+            line = _format_single_param_line(param, node_type)
             lines.append(line)
 
             # Add structure display for complex types
@@ -552,6 +555,28 @@ def _format_outputs_with_access(node_data: dict, lines: list[str]) -> None:
                 lines.append(f"- `{out}`")
     else:
         lines.append("**Outputs**: none")
+
+
+def param_note(node_type: str, key: str) -> str:
+    """What an interface listing appends to a param's line: embedded code says how it reads."""
+    if param_mode(node_type, key) == "embedded":
+        return " (JavaScript, sent as written; insert a pflow value as ${x|json})"
+    return ""
+
+
+def snippet_placeholder(node_type: str, key: str, ptype: str, *, first: bool) -> str:
+    """The value a generated ``.pflow.md`` snippet shows for one param: embedded code a
+    function with a JSON insert, the first other param a literal (typically a target —
+    a channel, a path), later ones a typed literal or a reference."""
+    if param_mode(node_type, key) == "embedded":
+        return "() => ${previous-step.response|json}"
+    if first:
+        return "value"
+    if ptype in ("int", "integer", "number"):
+        return "0"
+    if ptype in ("bool", "boolean"):
+        return "true"
+    return "${previous-step.response}"
 
 
 # Rich usage templates for core node types. Each is a list of indented lines
@@ -672,17 +697,7 @@ def _format_usage_snippet(node_type: str, node_data: dict, lines: list[str]) -> 
                 key = param.get("key", "")
                 if not key:
                     continue
-                # First param gets a literal placeholder, subsequent get template refs
-                ptype = param.get("type", "str").lower()
-                if shown == 0:
-                    # First param is typically a target (channel, path, etc.) — literal
-                    placeholder = "value"
-                elif ptype in ("int", "integer", "number"):
-                    placeholder = "0"
-                elif ptype in ("bool", "boolean"):
-                    placeholder = "true"
-                else:
-                    placeholder = "${previous-step.response}"
+                placeholder = snippet_placeholder(node_type, key, param.get("type", "str").lower(), first=shown == 0)
                 snippet_lines.append(f"    - {key}: {placeholder}")
                 shown += 1
 
@@ -713,7 +728,7 @@ def _format_node_section_enhanced(node_type: str, node_data: dict) -> str:
     lines.append("")
 
     # Format ALL parameters (not just exclusive)
-    _format_all_parameters_new(node_data, lines)
+    _format_all_parameters_new(node_type, node_data, lines)
     lines.append("")
 
     # Format outputs with access pattern

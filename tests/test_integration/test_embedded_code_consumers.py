@@ -222,3 +222,43 @@ def test_consumer_reads_only_json_inserts_in_embedded_code(
     check: Callable[[Registry], None], registry: Registry
 ) -> None:
     check(registry)
+
+
+# Where an agent reads a tool's interface before writing a step: `pflow mcp describe` and the
+# discovery/MCP-server component context. Embedded code shows how it reads and a snippet
+# with a JSON insert; the same tool's other params keep the plain reference.
+_NOTE = "(JavaScript, sent as written; insert a pflow value as ${x|json})"
+
+
+def test_mcp_describe_shows_embedded_code_with_a_json_insert() -> None:
+    from click.testing import CliRunner
+
+    from pflow.cli.commands.mcp import mcp
+
+    node_type = register_mcp_tool(
+        "chrome-devtools", "evaluate_script", {"pageId": "int", "function": "str", "label": "str"}
+    )
+    result = CliRunner().invoke(mcp, ["describe", node_type])
+
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert f"  - function: str (required) {_NOTE} - function" in lines
+    assert "  - label: str (required) - label" in lines
+    assert "    - function: () => ${previous-step.response|json}" in lines
+    assert "    - label: ${previous-step.response}" in lines
+
+
+def test_component_context_shows_embedded_code_with_a_json_insert() -> None:
+    from pflow.registry.context_builder import build_component_context
+
+    node_type = register_mcp_tool(
+        "chrome-devtools", "evaluate_script", {"pageId": "int", "function": "str", "label": "str"}
+    )
+    context = build_component_context([node_type], [], Registry().load(), saved_workflows=[])
+
+    assert isinstance(context, str)
+    lines = context.splitlines()
+    assert f"- `function: str` {_NOTE} - function" in lines
+    assert "- `label: str` - label" in lines
+    assert "    - function: () => ${previous-step.response|json}" in lines
+    assert "    - label: ${previous-step.response}" in lines

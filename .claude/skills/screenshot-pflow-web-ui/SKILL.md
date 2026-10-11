@@ -151,6 +151,10 @@ A verification tool that passes on nothing is worse than none, so none of these 
   `allow_empty=true` to `screenshot` or `inspect`. Settle then waits its full 8 s instead of
   failing, the `viewport` output reports `settled: false`, and `inspect` may return
   `nodes: []`. The other workflows need a rendered canvas and take no such opt-in.
+- **Decorations (reference chips, teal `${…}` spans) are asserted through the DOM, not
+  pixels:** a param row's overflow ellipsis can clip a chip the DOM holds. Count
+  `.ref-chip` / `.src-ref` elements with an `evaluate_script` step, and keep the screenshot
+  as the visual record.
 
 ## inspect output
 

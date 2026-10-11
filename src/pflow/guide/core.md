@@ -429,6 +429,8 @@ See `pflow save --help` for details.
 
 ### Template Variable Complete Reference
 
+In JavaScript passed to an MCP tool (`evaluate_script`'s `function` and the like), `${…}` is JavaScript; a pflow value goes in as `${x|json}` — see `pflow guide mcp`, "Code Passed to a Tool".
+
 #### Resolution Order (This Matters)
 1. Check workflow `inputs` first
 2. Then check previous node outputs (in execution order)

@@ -98,6 +98,26 @@ Send a Slack notification with the issue link.
 - text: "Created issue: ${create_issue.result.issue_url}"
 ```
 
+## Code passed to a tool
+
+Some tools take JavaScript to run: `function` of `evaluate_script` (chrome-devtools) and `browser_evaluate` (Playwright), `initScript` of `navigate_page`, and `code` of `browser_run_code_unsafe`. pflow sends that code exactly as written, so a `${...}` inside it is JavaScript's own template literal, not a template variable. A workflow value goes in as `${x|json}`, which inserts it as a JavaScript value: a string arrives quoted and escaped (`"Don't Stop"`), a boolean as `true`, an object as an object literal.
+
+```markdown
+### check-title
+
+Compare the page title with the expected one.
+
+- type: mcp-chrome-devtools-evaluate_script
+- pageId: ${page_id}
+- function: |
+    () => {
+      const expected = ${title|json};
+      return { same: document.title === expected, label: `title: ${expected}` };
+    }
+```
+
+Write the insert where a value goes, without quotes around it. Text that holds JSON, such as a shell `stdout`, arrives as a string: parse it with `JSON.parse(${fetch.stdout|json})`. `$${...}` is sent unchanged here too. `|json` is accepted only in these parameters, and validation points out a `${...}` in the code that names a workflow value, with the `|json` form to use.
+
 ## Setup
 
 To use MCP tools, first add MCP servers to pflow. See [Adding MCP servers](/guides/adding-mcp-servers) for configuration format, authentication, and examples.

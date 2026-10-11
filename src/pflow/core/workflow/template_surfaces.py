@@ -26,7 +26,6 @@ ParamMode = typing.Literal["template", "body", "embedded"]
 BodyLanguage = typing.Literal["sh", "python"]
 
 # (node type, param) -> the language of a param that holds plain code — see ``param_mode``.
-# TypeScript mirror: web/src/utils/format.ts::isCodeBody — change both together.
 _BODIES: dict[tuple[str, str], BodyLanguage] = {("shell", "command"): "sh", ("code", "code"): "python"}
 # (MCP tool, param) pairs whose param is JavaScript another process runs — see ``param_mode``.
 # JavaScript only: a JSON insert is a JavaScript literal. Ordered: diagnostics list it as written.

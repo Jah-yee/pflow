@@ -361,3 +361,45 @@
   - Tooling postmortem: (S) `visual-invariants.pflow.md` `*` bullets make `out_path` required → **fix in this PR (PE)**; (S) chips clipped by row ellipsis → one skill line in PE ("assert decorations via the DOM, not pixels"); (M) no DOM-text reader workflow → issue at merge seam (not built here).
 - Rotation: I1 is past ~600k cumulative (plan: rotate past ~350k) → PE goes to I2 (holds the rule + screenshot tooling; ~265k).
 - Next: I2 on PE.
+
+## [2026-10-11 02:30] implementer I2 — PE: snippets, guide, docs, instruction files, screenshot tooling
+- Did: built PE (§4 PE plus the §5 inventory) and the 03:00 additions.
+  - **Snippets:** `pflow mcp describe` and the component context share two new helpers in `registry/context_builder.py`. `param_note` appends `(JavaScript, sent as written; insert a pflow value as ${x|json})` to an embedded param's line. `snippet_placeholder` shows `() => ${previous-step.response|json}` for it. Describe lazy-imports both.
+  - **Guide:** `guide/nodes/mcp.md` gains "Code Passed to a Tool" and a one-sentence pointer in its "JSON string" paragraph; `guide/core.md` gains one line under "Template Variable Complete Reference".
+  - **Docs:** `docs/reference/nodes/mcp.mdx` gains "Code passed to a tool". `docs/how-it-works/template-variables.mdx` loses "JavaScript template literals work the same way" and gains "JavaScript passed to an MCP tool", with a link.
+  - **Architecture:** `architecture/reference/template-variables.md` adds the JSON insert to the grammar list and to "Node parameters", and gains a new section, "Embedded Code (JavaScript in MCP Tool Params)".
+  - **Instruction files:** `runtime/template_validation/CLAUDE.md`, `core/workflow/CLAUDE.md`, `core/workflow/graph/CLAUDE.md`, and the searcher doc's location map.
+  - **Stale line:** deleted `template_surfaces.py:29`.
+  - **Screenshot tooling:** `visual-invariants.pflow.md` input bullets changed `*` → `-`; one SKILL.md line says chips and teal spans are asserted through the DOM, not pixels. Then `make sync-claude-assets`.
+- Changed:
+  - `src/pflow/cli/commands/mcp.py`, `src/pflow/registry/context_builder.py`, `src/pflow/core/workflow/template_surfaces.py`;
+  - `src/pflow/guide/{core.md,nodes/mcp.md}`; `docs/reference/nodes/mcp.mdx`, `docs/how-it-works/template-variables.mdx`; `architecture/reference/template-variables.md`;
+  - `src/pflow/runtime/template_validation/CLAUDE.md`, `src/pflow/core/workflow/CLAUDE.md`, `src/pflow/core/workflow/graph/CLAUDE.md`;
+  - `.claude/agents/pflow-codebase-searcher.md` and `.codex/` mirror; `.claude/skills/screenshot-pflow-web-ui/SKILL.md` and `.agents/` mirror;
+  - `examples/real-workflows/screenshot-pflow-web-ui/visual-invariants.pflow.md`;
+  - tests: two new rows in `tests/test_integration/test_embedded_code_consumers.py`, describe and component context. Both use the real registry via `register_mcp_tool`. Each asserts exact lines, and the same tool's `label` param keeps the plain reference as the presence pair.
+- Verified:
+  - **Gates:** `make check` rc 0 (includes the asset-sync check and `check_mdx_fences`). `make test` 10925 passed (baseline 10923, +2). Web untouched.
+  - **Mutations** (counted failures, byte-copy restore): P1 `param_note` never notes → 2 red; P2 placeholder ignores embedded → 2; P3 describe passes no node type → 1 (describe); P4 component context passes no node type → 1 (context).
+  - **The 03:00 checks:**
+    - PC's four sites are in place (`click.pflow.md:81-83`, `hover.pflow.md:56` use `|json`). No "single-quoted JS" / "double quotes inside" / "template literals work the same way" text remains in `docs/`, `src/pflow/guide/`, `examples/`, `.claude/` or `architecture/`.
+    - The MCP instruction resources hold no JavaScript or `$${` content (checked, not stale).
+  - **Real surface** (`pflow ui --port 8781`, PID 63394, stopped):
+    - `click.pflow.md` with `selector='button' text="Don't exist"`: exit 1 with the workflow's own `click target not found: 12 elements match selector "button", none with text "Don't exist" (texts: ["","advanced","beautiful",…])` — no JS SyntaxError (#550).
+    - The same with `text="beautiful"`: exit 0, it clicks (shot `/tmp/pflow-shots/t181pd/click-hit.png` shows the density switched to beautiful).
+    - `hover.pflow.md`: `row_name=command` on `conditional-branching` → `{"ringedNodes": 0, "haloedEdges": 0}`; it is a body row with no edges. `row_name=function` on the PD acceptance workflow → `{"ringedNodes": 1, "haloedEdges": 1}`, the insert's edge from `up`.
+    - `--validate-only` on all seven screenshot workflows (`click`, `hover`, `inspect`, `live-reload`, `screenshot`, `visual-invariants`, `shared/open-and-settle`): each `✓ Workflow is valid`, no warnings.
+    - `visual-invariants.pflow.md url=… -p -o verdict`, **without `out_path`** (the skill's own example form): exit 0, `passed: true`.
+    - `uv run pflow mcp describe mcp-chrome-devtools-evaluate_script`: `- function: str (required) (JavaScript, sent as written; insert a pflow value as ${x|json}) - A JavaScript function declaration…`, and the snippet `- function: () => ${previous-step.response|json}` (`pageId: value`, `args: ${previous-step.response}` unchanged).
+  - **Guide/docs examples:** the guide's `check-title` fragment and the docs' were each wrapped in a scratch workflow that declares their inputs. Both `--validate-only` ✓ valid, no warnings. The architecture example's resolution was executed (`resolve(…, embedded=True)` gives ``() => ({title: "Don't Stop", label: `${a + b}`})``).
+  - **The #722 clause** is verified, not assumed: `validate_execution_parameters({"function": "() => eval(${gen.code|json})"})` → `(False, 'Suspicious pattern detected: eval\s*\(')`. It applies at `run_registry_node` (`execution_service.py:680`) over params. `execute_workflow` checks only input values, so `eval(` written in a workflow's step is not refused there.
+  - | Assumed: nothing beyond the bullets.
+- Deviations/surprises:
+  - **Plan's guide bullet "`$${` … the opposite of a shell command, where it is an escape" is false after Task 118.** In a shell command `$${` is a validation error (`guide/nodes/shell.md:51`). The guide contrasts instead with templated params ("pflow's escape only in a templated param (a prompt, `stdin`)").
+  - **One snippet rule, not two copies:** describe and the context builder each carried the same placeholder ladder. PE edits both, so the ladder moved to `context_builder.snippet_placeholder`, and the param note to `param_note` — one home each.
+  - **An existing test caught a legacy param shape:** `test_workflow_manager_integration::test_context_builder_lists_saved_workflows` passes params with `name`, not `key`, so `_format_single_param_line`'s `key` is the dict itself. The note is computed only for a string key (commented at the site).
+  - **The docs harness checks none of the new examples.** They are fragments (no `## Steps`), and the harness skips `mcp-*` blocks anyway. They were validated by hand (above); a future edit to them has no CI guard. The plan's `_BARE_VAR_RE` note is moot: the harness already collects bare names from parsed references (Task 118).
+  - **Guide placement:** the new section sits after the whole "Choosing Tools for Deterministic Steps" section (its Slow calls and Server lifetime paragraphs included), before "Node Creation Pattern". The plan's `:107-115` points mid-section.
+  - `context/CONTEXT.md` not edited (R8 nouns are the main orchestrator's).
+- Self-checks: fully happy; one doubt kept open — the hand-validated guide/docs fragments have no CI guard (above). test-reflect: not needed — two exact-line tests through the real registry, killed by P1–P4, each with a same-output presence pair (`label`'s plain reference).
+- Next: hand back. `dev servers: none`.

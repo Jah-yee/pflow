@@ -60,6 +60,10 @@ both the validator and the runtime consume that parse. It supports:
 - Simple variables and nested object paths
 - Array access `[N]`, and a dynamic index `[${ref}]` (one reference: `${a[${i}].x}`)
 - Coalesce `??` with JSON literal operands
+- A JSON insert, `${expr|json}`: one suffix on the whole expression (`${a ?? "d"|json}`); its value
+  enters text as a JSON literal (`templates.to_json`) and is never type-preserving. It is accepted
+  only in embedded code (see [Embedded Code](#embedded-code-javascript-in-mcp-tool-params)); on any
+  other surface it is a validation error and the run keeps it as written
 
 ### Supported Patterns
 
@@ -336,7 +340,7 @@ This enables powerful patterns like combining multiple data sources:
 
 ### Supported Locations
 
-✅ **Node parameters** - Any string parameter, except a shell `command` and a code node's `code` (plain code — see [Shell Commands and Code Blocks](#shell-commands-and-code-blocks))
+✅ **Node parameters** - Any string parameter, except a shell `command` and a code node's `code` (plain code — see [Shell Commands and Code Blocks](#shell-commands-and-code-blocks)); in embedded code only JSON inserts are templates (see [Embedded Code](#embedded-code-javascript-in-mcp-tool-params))
 ✅ **Workflow inputs** - When calling workflows
 ✅ **Nested dictionaries** - Recursively resolved
 ✅ **Lists/arrays** - Each item resolved
@@ -1455,6 +1459,33 @@ A body is still read once by validation (`core/workflow/data_flow.py`, section "
 `${...}` whose root is a name the step could read — a workflow input, a step output with a path, an
 `inputs:` key, the batch alias — is an error naming the binding to add, and so is `$${`. Other
 `${...}` text is the body language's own.
+
+### Embedded Code (JavaScript in MCP Tool Params)
+
+Four MCP tool params hold JavaScript another process runs: `function` of `evaluate_script` and
+`browser_evaluate`, `initScript` of `navigate_page`, `code` of `browser_run_code_unsafe` — matched on
+the tool-name suffix of `mcp-<server>-<tool>` (`template_surfaces.EMBEDDED_CODE`; `param_mode` →
+`"embedded"`). The text is sent as written. Every reader uses one policy view of the same parse,
+`templates.embedded_code`: only JSON inserts (`${x|json}`) stay Expressions; every other span — a
+bare `${…}`, an Issue, a `$${` — is Text cut verbatim from the source, so a JavaScript template
+literal and `$${` reach the tool unchanged.
+
+```json
+{
+  "id": "check",
+  "type": "mcp-chrome-devtools-evaluate_script",
+  "params": {
+    "pageId": 1,
+    "function": "() => ({title: ${title|json}, label: `${a + b}`})"
+  }
+}
+```
+
+With `title` = `Don't Stop`, the tool receives ``() => ({title: "Don't Stop", label: `${a + b}`})``.
+Validation reads the view too, and adds checks of its own: an insert hidden inside `$${…}` or
+another `${…}`, or a near-miss spelling (`${x|JSON}`), is an error; a bare `${…}` naming a value
+the step could read is a warning, or an error when it names an input used nowhere else; an insert
+inside quotes is a warning.
 
 ---
 
