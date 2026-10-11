@@ -2,7 +2,7 @@
 
 The run-JSON regression net for the workflows under `examples/` — the files agents copy from.
 Each example listed in `manifest.json` runs as `pflow --output-format json <file> [k=v ...]`
-in a fresh HOME, a fresh cwd and an empty stdin; its output is normalized (durations, UUIDs,
+in a fresh HOME, a fresh cwd and an empty stdin; its output is normalized (durations, UUIDs, OS/arch,
 repo/cwd/HOME paths) and stored as `<dir>__<name>.json`. Built for Task 170; the Task-159
 oracle (`.taskmaster/tasks/task_159/baseline/`) is its sibling for analyze-cache, warnings,
 validation and run-flag text.
