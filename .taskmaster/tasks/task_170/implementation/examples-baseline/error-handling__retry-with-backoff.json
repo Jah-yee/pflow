@@ -79,7 +79,6 @@
   "total_cost_usd": 0.0,
   "warnings": [
     {
-      "category": "node_action_error",
       "context": {
         "category": "node_action_error",
         "type": "on_error_recovery"
@@ -87,8 +86,7 @@
       "message": "Node 'copy-missing-file' failed \u2014 on-error \u2192 'retry-exhausted'",
       "node_id": "copy-missing-file",
       "severity": "warning",
-      "source": "runtime",
-      "type": "on_error_recovery"
+      "source": "runtime"
     }
   ],
   "workflow": {

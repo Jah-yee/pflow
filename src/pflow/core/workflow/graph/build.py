@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pflow.core.ir_schema import start_node_id
+from pflow.core.types import input_usage
 from pflow.core.workflow.graph.model import (
     AncestorStep,
     BatchSpec,
@@ -184,10 +185,7 @@ class _GraphBuilder:
                     purpose=str(cfg.get("description", "")),
                     io=IOPort(
                         data_type=str(cfg.get("type")) if cfg.get("type") else None,
-                        # An input that omits `required:` IS required — the
-                        # ir_schema-documented default every runtime reader
-                        # (validator/executor/context) already applies.
-                        required=bool(cfg.get("required", True)),
+                        required=input_usage(cfg).required,
                         default=cfg.get("default"),
                     ),
                 )

@@ -26,8 +26,6 @@
   "error": "Input 'x' expects dict but receives list from ${upstream.result}.",
   "errors": [
     {
-      "annotation": "dict",
-      "category": "validation",
       "context": {
         "annotation": "dict",
         "category": "validation",
@@ -38,13 +36,8 @@
         "path": "nodes[id=downstream].params.inputs.x",
         "template": "${upstream.result}"
       },
-      "expected_type": "dict",
-      "inferred_type": "list",
-      "input_key": "x",
       "message": "Input 'x' expects dict but receives list from ${upstream.result}.",
       "node_id": "downstream",
-      "node_type": "code",
-      "path": "nodes[id=downstream].params.inputs.x",
       "severity": "error",
       "source": "validator",
       "suggestions": [
@@ -52,7 +45,6 @@
         "Or change ${upstream.result} to return dict",
         "Or accept any type (in params.code): x: Any"
       ],
-      "template": "${upstream.result}",
       "title": "Validation Error"
     }
   ],

@@ -8,6 +8,7 @@ import json
 import logging
 from typing import Any
 
+from pflow.core.types import input_usage
 from pflow.core.workflow.manager import WorkflowManager
 from pflow.core.workflow.template_surfaces import param_mode
 
@@ -799,19 +800,12 @@ def _format_workflow_inputs(workflow: dict[str, Any]) -> list[str]:
         # Use detailed format from IR
         lines.append("**Inputs**:")
         for name, spec in ir_inputs.items():
-            # Build input description
-            input_desc = f"- `{name}: {spec.get('type', 'any')}`"
-
-            # Add description if available
+            usage = input_usage(spec)
+            input_desc = f"- `{name}: {usage.type}`"
             if spec.get("description"):
                 input_desc += f" - {spec['description']}"
-
-            # Add optional/default info
-            if not spec.get("required", True):
-                if "default" in spec:
-                    input_desc += f" (optional, default: {spec['default']})"
-                else:
-                    input_desc += " (optional)"
+            if not usage.required:
+                input_desc += " (optional)" if usage.default is None else f" (optional, default: {usage.default})"
 
             lines.append(input_desc)
     else:

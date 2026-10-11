@@ -116,7 +116,7 @@
         }
       ]
     },
-    "suggested_run_command": "pflow run <BASELINE_CASE_DIR>/workflow.pflow.md concept_brief=<value>"
+    "suggested_run_command": "pflow run <BASELINE_CASE_DIR>/workflow.pflow.md concept_brief=<string>"
   },
   "blocking_errors": [],
   "other_blocking_errors": [],
