@@ -14,6 +14,7 @@ from pflow.core.diagnostic import Diagnostic, Severity, deduplicate_diagnostics,
 from pflow.core.exceptions import InputTypeError, SchemaValidationError, WorkflowValidationError
 from pflow.core.param_coercion import coerce_declared_input
 from pflow.core.templates import TemplateResolver, parse, resolve
+from pflow.core.types import input_usage
 from pflow.registry import Registry
 
 logger = logging.getLogger(__name__)
@@ -1948,9 +1949,7 @@ class WorkflowValidator:
 
         # Missing-required direction.
         for input_name, input_spec in child_inputs.items():
-            is_required = input_spec.get("required", True)
-            has_default = input_spec.get("default") is not None  # `default: null` is no value (prepare_inputs)
-            if is_required and not has_default and input_name not in supplied_keys:
+            if input_usage(input_spec).required and input_name not in supplied_keys:
                 sorted_inputs = sorted(child_inputs.keys())
                 diagnostics.append(
                     Diagnostic(

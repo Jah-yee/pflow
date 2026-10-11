@@ -17,6 +17,8 @@ Usage::
 
 from typing import Any
 
+from pflow.core.types import input_usage, usage_arguments
+
 from .history_formatter import format_execution_history
 
 
@@ -113,14 +115,8 @@ def _format_confidence_guidance(workflow_name: str, confidence: float, ir: dict[
 
 
 def _build_run_hint(workflow_name: str, ir: dict[str, Any]) -> str:
-    """Build an example pflow run command from workflow inputs."""
-    parts = [f"pflow {workflow_name}"]
-    inputs = ir.get("inputs", {})
-    for key, spec in inputs.items():
-        if spec.get("required", True) and not spec.get("stdin"):
-            input_type = spec.get("type", "any")
-            parts.append(f'{key}="<{input_type}>"')
-    return " ".join(parts)
+    """The example command: each required input as ``name=<placeholder>``."""
+    return " ".join([f"pflow {workflow_name}", *usage_arguments(ir.get("inputs") or {})])
 
 
 def format_workflow_metadata(workflow: dict[str, Any]) -> list[str]:
@@ -201,10 +197,9 @@ def format_workflow_inputs_outputs(ir: dict[str, Any]) -> list[str]:
     if inputs := ir.get("inputs"):
         lines.append("**Inputs**:")
         for key, spec in inputs.items():
-            req = "(required)" if spec.get("required", True) else "(optional)"
-            input_type = spec.get("type", "any")
-            desc = spec.get("description", "")
-            lines.append(f"  - {key}: {input_type} {req} - {desc}")
+            usage = input_usage(spec)
+            req = "(required)" if usage.required else "(optional)"
+            lines.append(f"  - {key}: {usage.type} {req} - {spec.get('description', '')}")
 
     # Format outputs
     if outputs := ir.get("outputs"):

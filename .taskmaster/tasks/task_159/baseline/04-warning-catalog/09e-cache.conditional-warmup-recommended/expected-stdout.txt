@@ -88,7 +88,7 @@
     "root_llm_node_count": 1,
     "sub_workflow_llm_node_count": 0,
     "sub_workflow_rollup": null,
-    "suggested_run_command": "pflow run <BASELINE_CASE_DIR>/workflow.pflow.md items=<value>",
+    "suggested_run_command": "pflow run <BASELINE_CASE_DIR>/workflow.pflow.md items='[...]'",
     "trace_provider_llm_call_count": 4,
     "trace_local_memo_llm_hit_count": 0,
     "trace_local_in_process_llm_hit_count": 0,

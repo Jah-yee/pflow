@@ -396,7 +396,7 @@
         }
       ]
     },
-    "suggested_run_command": "pflow run <REPO_ROOT>/.taskmaster/tasks/task_159/baseline/_shared/workflows/lyrics-generator/lyrics-generator.pflow.md sources=<value> output_base=<value>"
+    "suggested_run_command": "pflow run <REPO_ROOT>/.taskmaster/tasks/task_159/baseline/_shared/workflows/lyrics-generator/lyrics-generator.pflow.md sources='[...]' output_base=<string>"
   },
   "blocking_errors": [],
   "other_blocking_errors": [

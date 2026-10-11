@@ -4522,7 +4522,7 @@ def test_suggested_run_command_populated_for_workflow_with_inputs(
         "nodes": [{"id": "n1", "type": "llm", "params": {"prompt": "hello"}}],
     }
     result = analyze(workflow_ir, workflow_path="/abs/x.pflow.md", auto_load_trace=False)
-    assert result.summary.suggested_run_command == ("pflow run /abs/x.pflow.md article=<value> topic=<value>")
+    assert result.summary.suggested_run_command == ("pflow run /abs/x.pflow.md article=<string> topic=<string>")
 
 
 def test_suggested_run_command_is_none_for_inline_workflow() -> None:
@@ -4568,7 +4568,7 @@ def test_render_text_emits_suggested_line_on_unavailable_cost_branch(
     rendered = render_text(result, section="summary")
     if "Cost data unavailable: run the workflow once" in rendered:
         # We hit branch 4. Suggested line must follow.
-        assert "Suggested:  pflow run /abs/x.pflow.md article=<value>" in rendered
+        assert "Suggested:  pflow run /abs/x.pflow.md article=<string>" in rendered
 
 
 # ---------------------------------------------------------------------------
