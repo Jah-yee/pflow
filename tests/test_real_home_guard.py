@@ -88,6 +88,16 @@ def test_never_reached():
 """
 
 
+# pytest imports ``test*/conftest.py`` before configuring the session; the guard must already be armed.
+INNER_EARLY_CONFTEST = """
+from pathlib import Path
+
+state = Path.home() / ".pflow" / "registry.json"
+state.parent.mkdir(parents=True, exist_ok=True)
+state.write_text("written while pytest imported its first conftests", encoding="utf-8")
+"""
+
+
 def test_guard_redirects_wider_scopes_and_refuses_the_real_home(tmp_path: Path) -> None:
     real_home = tmp_path / "real_home"
     real_registry = real_home / ".pflow" / "registry.json"
@@ -98,6 +108,9 @@ def test_guard_redirects_wider_scopes_and_refuses_the_real_home(tmp_path: Path) 
     project = tmp_path / "project"
     project.mkdir()
     (project / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    (project / "conftest.py").write_text('pytest_plugins = ("tests.shared.real_home_guard",)\n', encoding="utf-8")
+    (project / "test_early").mkdir()
+    (project / "test_early" / "conftest.py").write_text(INNER_EARLY_CONFTEST, encoding="utf-8")
     (project / "test_inner.py").write_text(INNER_TESTS, encoding="utf-8")
     (project / "test_collection_time.py").write_text(INNER_COLLECTION_TIME_WRITE, encoding="utf-8")
 
@@ -105,9 +118,9 @@ def test_guard_redirects_wider_scopes_and_refuses_the_real_home(tmp_path: Path) 
     set_isolated_home(env, real_home)
     env["PYTHONPATH"] = str(REPO_ROOT)
     env["GUARD_TEST_MARKERS"] = str(markers)
-    plugins = ["-p", "tests.shared.real_home_guard", "-p", "no:xdist", "-p", "no:cacheprovider"]
+    flags = ["-p", "no:xdist", "-p", "no:cacheprovider", "-rA", "--continue-on-collection-errors"]
     result = subprocess.run(  # noqa: S603 - fixed argv
-        [sys.executable, "-m", "pytest", *plugins, "-rA", "--continue-on-collection-errors", "."],
+        [sys.executable, "-m", "pytest", *flags, "."],
         cwd=project,
         env=env,
         capture_output=True,

@@ -39,7 +39,7 @@ Check `examples/CLAUDE.md` and references to a committed fixture before changing
 
 ## Autouse fixtures and isolation
 
-**Tests never touch the developer's real home.** `tests/shared/real_home_guard.py` (registered by `tests/conftest.py`) points `HOME`/`USERPROFILE` at a throwaway session home before any fixture runs, and fails the test that opens anything under pflow's directories in the real home (`~/.pflow`, the personal skill dirs) or spawns a child whose env lacks its home variable. The per-test fixture below narrows the home further, but only for function scope: a module-, class- or session-scoped fixture that needs pflow state takes an explicit path from `tmp_path_factory`.
+**Tests never touch the developer's real home.** `tests/shared/real_home_guard.py` (registered by `tests/conftest.py`) points `HOME`/`USERPROFILE` at a throwaway session home before any other conftest, fixture or test runs, and fails the test that opens anything under pflow's directories in the real home (`~/.pflow`, the personal skill dirs) or spawns a child whose env lacks its home variable. The per-test fixture below narrows the home further, but only for function scope: a module-, class- or session-scoped fixture that needs pflow state takes an explicit path from `tmp_path_factory`.
 
 `tests/conftest.py` supplies these automatically:
 
