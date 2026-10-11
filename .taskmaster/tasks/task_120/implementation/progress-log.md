@@ -1060,3 +1060,19 @@ resume path for any successor.
   - Addendum (H3 evidence, executed): a declared output `source: ${text}` over `text: string` = `true` → `--output-format
     json` emits `"out": true` (`success_formatter.collect_declared_outputs` → `parse_json_or_original`); text mode prints
     the text. Same class as F6a, but the reader is a declared OUTPUT's — #743's boundary by ruling; not changed.
+
+## [2026-10-12 00:20] task-orchestrator — completion gate (reading battery) accepted; falsifier launched
+- Did: read G1's [15:26] entry; accepted 15 fixes (each names its class), S1 disputed (verified `run.py:378`), the
+  assumption audit (a)–(e) VERIFIED. Committed `a0528d02`. Launched `review-falsifier` directly (last, on `a0528d02`)
+  with the spec, `scratchpads/task-120/gate/requirement-inventory.md`, the ruled checkpoint and the [23:30] rulings →
+  `scratchpads/task-120/falsifier/report.md`.
+- Dispositions of G1's hand-backs: F3 (`??` never falls past a declared-text miss) — ACCEPTED (2/5; the spec's "no new
+  silent fallback"; the falsifier's first target). H2 → filed **#785** (pre-existing class; stderr warning recommended).
+  H3 → evidence commented on **#743** (declared-output reader, that issue's boundary). H4 → filed **#786** (single-spelling
+  workflow-type checks). **H1 (3/5) → user escalation**, bundled with any falsifier escalation into ONE handback: a
+  REQUIRED child input supplied only by env/settings — static child refused at validation, run-time-chosen child accepted
+  (main refused both); options A (validator honours env — environment-dependent validation), **B (required child input
+  with no default must come from the parent; env/settings fill only optional child inputs — matches main, static ==
+  dynamic; recommended)**, C (document the mismatch).
+- Open: `~/.pflow/registry.json` rewritten 15:11 with MAIN-checkout paths by another session (G1 observation; not ours).
+- Next: falsifier report → G1 evaluates it → bundle H1 + any 3+/ambiguous falsifier item → hand back.
