@@ -138,3 +138,29 @@ Append-only. Spec: `../task-184.md` · Plan: `implementation-plan.md` · Checkpo
   Follow-up (orchestrator-directed): doubt → fixed: kwarg made required (`metrics_collector` keyword-only, no default, so a new
   call site cannot silently drop metrics); direct callers `test_runner.py:681` and `test_cli/test_agent_ux_fixes.py:398` pass `None`.
 - Next: P1 — gated on #799 CLOSED + a second `git merge origin/main` (orchestrator).
+
+## [2026-10-11 22:58] task-orchestrator (Opus) — P0 accepted + committed; PARKED on #799 + F20 escalation
+- Did: verified I1's P0 handback — read the diff + log entry; my own gate on the tree: `make check` green, `make test` 11569
+  passed (baseline 11565 + 4). Loose-ends round: I1 raised that the `metrics_collector=None` default lets a future call site
+  silently drop metrics again (the #699 class) → ruled (1/5, reversible): kwarg made REQUIRED keyword-only; direct-call tests
+  pass `None` explicitly; runner/invariant/agent-ux tests 115 passed, `make check` green. Committed `9f6cb424`.
+- Accepted deviations: plan P0 (a)'s `code`-raise fixture never reaches `_exception_to_result` (node converts to an `error`
+  action) → template-resolution failure used; (d) routes the missing input via `env:`; `test_failed_node_invariant.py:707` latent
+  `get_summary()` arity bug fixed (branch was dead while metrics were dropped). Carry to P1/P2: the stale docstring of
+  `test_node_valueerror_categorized_as_execution_failure` (`test_runner.py` ~:771) claims code-raise uses `_exception_to_result`.
+- Note for P2's baseline step: from P0 on, CLI exception failures already print `❌ Workflow failed after Xs` and carry JSON
+  metrics (the old renderers read `result.metrics`); `verify.sh` 01/02/15 still PASS (I1).
+- ESCALATED (3/5) F20 — what `success` means on paused/denied outcome documents. Facts: today both `success: false`
+  (pinned `test_paused_cli.py:110`, `test_approval_gate_cli.py:72`); `docs/reference/cli/index.mdx:331` "`true` if workflow
+  completed, `false` if failed"; `guide/features/approval.md:12` deny "stops cleanly (exit 3) — not a failure"; plan §3.3
+  `success = result.success`. Options: A `success` ⇔ the run completed (true iff status ∈ {success, degraded} ⇔ exit 0); paused/
+  denied stay false, `status` says why; zero code change, two doc lines reworded in P4. B `success: true` on denied (clean
+  stop) — contradicts exit 3, the absent `result`, and the denied `errors` list. C drop `success` — contradicts D1. Recommend A.
+- Ordering predicate: #799 OPEN at 22:58 (no PR open yet). P0 done 22:50 → the 90-minute fail-closed mark is 00:20.
+- RESUME POINT (exact): on resume with (1) #799 CLOSED and (2) the F20 ruling: `git merge origin/main` in this worktree →
+  `make check` + `make test` green → record F20 ruling here (+ spec/plan line if not A) → resume I1 (same agent, Opus, effort
+  high) with P1, building `run_outcome.py` on #799's PRINTING compactor; P1's gate is the plan's narrower command
+  (`uv run pytest tests/test_execution tests/test_core/test_metrics.py tests/test_runtime/test_resume_engine.py`) — confirm it
+  runs green at P1's end (the tree is import-red in `cli/`/`mcp_server/` until P2/P3 by plan design; do NOT commit P1 alone
+  — the mid-task review (impact-completeness + silent-failures) runs on the uncommitted P1 diff, then P2+P3 bundle).
+  Nothing in flight; tree clean at `9f6cb424` except this entry.
