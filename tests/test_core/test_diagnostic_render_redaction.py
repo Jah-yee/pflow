@@ -85,7 +85,10 @@ def test_failed_reference_block_masks_sensitive_named_values(
 @pytest.mark.parametrize(
     ("context", "masked_line"),
     [
-        ({"raw_response": {"message": "bad", "access_token": SECRET}}, "    bad"),
+        (
+            {"raw_response": {"message": {"detail": "bad", "access_token": SECRET}}},
+            "    {'detail': 'bad', 'access_token': '<REDACTED>'}",
+        ),
         ({"mcp_error_details": {"server": "srv", "api_key": SECRET}}, "Details: {'api_key': '<REDACTED>'}"),
     ],
     ids=["api-response", "mcp-error-details"],
