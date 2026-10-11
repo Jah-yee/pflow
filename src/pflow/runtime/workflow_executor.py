@@ -682,15 +682,14 @@ class WorkflowExecutor(BaseNode):
         failed_node = child_storage.get("__execution__", {}).get("failed_node")
         failures = WorkflowExecutor._jsonable(child_storage.get("__failures__") or {})
         # A failed child node that is itself a batch archives the full batch output,
-        # including each error record's RAW item input. Honor the same display-safety
-        # compaction the top-level batch path applies (compact_batch_error_detail) so
-        # raw child batch inputs don't leak into the parent's trace / JSON output.
+        # including each error record's RAW item input. Drop those items, keeping every
+        # other value raw for the trace (#799).
         # (Lazy import of a leaf formatter — no module-level deps, so no import cycle.)
-        from pflow.execution.formatters.batch_errors import compact_batch_output_value
+        from pflow.execution.formatters.batch_errors import archive_batch_output_value
 
         for record in failures.values():
             if isinstance(record, dict) and isinstance(record.get("data"), dict):
-                record["data"] = compact_batch_output_value(record["data"])
+                record["data"] = archive_batch_output_value(record["data"])
         bundle: dict[str, Any] = {
             "workflow_path": str(workflow_path),
             "failed_node": failed_node,

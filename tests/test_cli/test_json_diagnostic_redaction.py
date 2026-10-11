@@ -26,11 +26,21 @@ JSON_BODY = json.dumps({"access_token": SECRET_TOKEN, "error": "nope"}).encode()
 TEXT_BODY = b"Unauthorized: sign in first"
 
 
+OK_BODY = json.dumps({"ok": True}).encode()
+
+
 class _AuthFailureHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
+        if self.path == "/ok":
+            self._answer(200, OK_BODY, "application/json")
+            return
         body, content_type = (TEXT_BODY, "text/plain") if self.path == "/text" else (JSON_BODY, "application/json")
-        self.send_response(401)
-        self.send_header("Set-Cookie", SECRET_COOKIE)
+        self._answer(401, body, content_type)
+
+    def _answer(self, status: int, body: bytes, content_type: str) -> None:
+        self.send_response(status)
+        if status == 401:  # a successful item's response is the workflow's own output, shown in full
+            self.send_header("Set-Cookie", SECRET_COOKIE)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -142,6 +152,245 @@ class TestDegradedSuccessDocument:
         assert warning in doc["diagnostics"]
         failure = warning["context"]["unresolved_references"][0]["failure"]
         assert failure["data"]["response"] == {"access_token": "<REDACTED>", "error": "nope"}
+
+
+# A batched sub-workflow step: each item runs `child.pflow.md`, whose fetch hits `${url}`.
+_BATCH_PARENT = """### each
+
+Run the child workflow for every URL.
+
+- type: workflow
+- workflow: ./child.pflow.md
+- inputs:
+    url: ${item}
+
+```yaml batch
+items: ITEMS
+error_handling: continue
+```
+"""
+
+_CHILD_FETCH = """# Child
+
+Fetch one URL.
+
+## Inputs
+
+### url
+
+The URL to fetch.
+
+- type: string
+
+## Steps
+
+### fetch
+
+Fetch the URL.
+
+- type: http
+- url: ${url}
+"""
+
+
+def _write_child(tmp_path: Path, extra_steps: str = "") -> None:
+    fetch_extra = "- on-error: handle\n" if extra_steps else ""
+    (tmp_path / "child.pflow.md").write_text(_CHILD_FETCH + fetch_extra + extra_steps, encoding="utf-8")
+
+
+def _batch_parent(*urls: str) -> str:
+    return _BATCH_PARENT.replace("ITEMS", json.dumps(list(urls)))
+
+
+def _child_failure(batch_error: dict[str, Any]) -> dict[str, Any]:
+    child_failure = batch_error["child_failure"]
+    assert child_failure["failed_node"] == "fetch"
+    return child_failure
+
+
+class TestBatchedSubWorkflowDocument:
+    """A failed batch item's `child_failure` carries the child's failure data and diagnostics (#799)."""
+
+    def test_failed_run_redacts_the_child_failure_data(self, tmp_path: Path, auth_server: str) -> None:
+        _write_child(tmp_path)
+        exit_code, stdout, doc = _run_json(tmp_path, _batch_parent(f"{auth_server}/json", f"{auth_server}/json"))
+
+        assert exit_code == 1
+        _assert_no_secret(stdout)
+        details = doc["execution"]["steps"][0]["batch_error_details"]
+        assert len(details) == 2
+        for detail in details:
+            data = _child_failure(detail)["failures"]["fetch"]["data"]
+            assert data["response"] == {"access_token": "<REDACTED>", "error": "nope"}
+            assert data["response_headers"]["Set-Cookie"] == "<REDACTED>"
+
+    def test_failed_run_redacts_the_child_template_diagnostic(self, tmp_path: Path, auth_server: str) -> None:
+        # The child's handler quotes the failed fetch, so the bundle also carries a template diagnostic.
+        _write_child(tmp_path, "\n" + _REF_HANDLER)
+        exit_code, stdout, doc = _run_json(tmp_path, _batch_parent(f"{auth_server}/json"))
+
+        assert exit_code == 1
+        _assert_no_secret(stdout)
+        child_failure = doc["execution"]["steps"][0]["batch_error_details"][0]["child_failure"]
+        diagnostic = child_failure["diagnostics"][0]
+        assert diagnostic["context"]["category"] == "template_error"
+        failure = diagnostic["context"]["unresolved_references"][0]["failure"]
+        assert failure["data"]["response"] == {"access_token": "<REDACTED>", "error": "nope"}
+        assert failure["data"]["response_headers"]["Set-Cookie"] == "<REDACTED>"
+
+    def test_partially_failed_run_redacts_result_and_execution(self, tmp_path: Path, auth_server: str) -> None:
+        _write_child(tmp_path)
+        exit_code, stdout, doc = _run_json(tmp_path, _batch_parent(f"{auth_server}/json", f"{auth_server}/ok"))
+
+        assert exit_code == 0
+        _assert_no_secret(stdout)
+        detail = doc["execution"]["steps"][0]["batch_error_details"][0]
+        assert detail["index"] == 0
+        assert _child_failure(detail)["failures"]["fetch"]["data"]["response"] == {
+            "access_token": "<REDACTED>",
+            "error": "nope",
+        }
+        result_error = doc["result"]["each"]["errors"][0]
+        assert _child_failure(result_error)["failures"]["fetch"]["data"]["response"] == {
+            "access_token": "<REDACTED>",
+            "error": "nope",
+        }
+
+    def test_a_sensitive_named_child_step_keeps_its_failure_record(self, tmp_path: Path, auth_server: str) -> None:
+        # `failures` is keyed by node ID: a step named `auth` is a name, not a secret to redact.
+        _write_child(tmp_path)
+        child = tmp_path / "child.pflow.md"
+        child.write_text(child.read_text(encoding="utf-8").replace("### fetch", "### auth"), encoding="utf-8")
+        steps = _batch_parent(f"{auth_server}/json", f"{auth_server}/ok")
+        exit_code, stdout, doc = _run_json(tmp_path, steps)
+
+        assert exit_code == 0
+        _assert_no_secret(stdout)
+        child_failure = doc["result"]["each"]["errors"][0]["child_failure"]
+        assert child_failure["failed_node"] == "auth"
+        assert child_failure["failures"]["auth"]["data"]["response_headers"]["Set-Cookie"] == "<REDACTED>"
+
+        text = CliRunner(mix_stderr=False).invoke(main, [str(tmp_path / "leak.pflow.md")])
+        assert text.exit_code == 0, text.output
+        assert "node 'auth'" in text.stdout
+        _assert_no_secret(text.stdout)
+
+    def test_a_sensitive_named_step_inside_a_nested_child_workflow_keeps_its_record(
+        self, tmp_path: Path, auth_server: str
+    ) -> None:
+        # batch item -> `wrap` (step `token`, an ordinary workflow step) -> child (step `auth`).
+        (tmp_path / "child.pflow.md").write_text(_CHILD_FETCH.replace("### fetch", "### auth"), encoding="utf-8")
+        wrap = _CHILD_FETCH.split("## Steps")[0].replace("# Child", "# Wrap") + (
+            "## Steps\n\n### token\n\nRun the child.\n\n- type: workflow\n- workflow: ./child.pflow.md\n"
+            "- inputs:\n    url: ${url}\n"
+        )
+        (tmp_path / "wrap.pflow.md").write_text(wrap, encoding="utf-8")
+        steps = _batch_parent(f"{auth_server}/json", f"{auth_server}/ok").replace("./child.pflow.md", "./wrap.pflow.md")
+        exit_code, stdout, doc = _run_json(tmp_path, steps)
+
+        assert exit_code == 0
+        _assert_no_secret(stdout)
+        token = doc["result"]["each"]["errors"][0]["child_failure"]["failures"]["token"]
+        leaf = token["data"]["_pflow_child_failure"]["failures"]["auth"]
+        assert leaf["data"]["response_headers"]["Set-Cookie"] == "<REDACTED>"
+
+        text = CliRunner(mix_stderr=False).invoke(main, [str(tmp_path / "leak.pflow.md")])
+        assert text.exit_code == 0, text.output
+        _assert_no_secret(text.stdout)
+
+    def test_mcp_success_text_redacts_the_child_failure_data(self, tmp_path: Path, auth_server: str) -> None:
+        from pflow.mcp_server.services.execution_service import ExecutionService
+
+        _write_child(tmp_path)
+        workflow = tmp_path / "leak.pflow.md"
+        steps = _batch_parent(f"{auth_server}/json", f"{auth_server}/ok")
+        workflow.write_text(f"# Leak\n\nRedaction probe.\n\n## Steps\n\n{steps}", encoding="utf-8")
+
+        text = ExecutionService.execute_workflow(str(workflow))
+
+        _assert_no_secret(text)
+        assert '"child_failure"' in text
+        assert '"access_token": "<REDACTED>"' in text
+
+
+# A batched sub-workflow step whose child is itself a batch of the fetching child. The middle and leaf
+# steps' sensitive-looking names are node IDs, so their failure records survive printing redaction.
+_MID_BATCH = """# Mid
+
+Run the fetching child for every URL.
+
+## Inputs
+
+### urls
+
+The URLs.
+
+- type: array
+
+## Steps
+
+### token
+
+Run the child workflow for every URL.
+
+- type: workflow
+- workflow: ./child.pflow.md
+- inputs:
+    url: ${item}
+
+```yaml batch
+items: ${urls}
+```
+"""
+
+
+def _nested_batch_parent(tmp_path: Path, auth_server: str) -> str:
+    (tmp_path / "child.pflow.md").write_text(_CHILD_FETCH.replace("### fetch", "### auth"), encoding="utf-8")
+    (tmp_path / "mid.pflow.md").write_text(_MID_BATCH, encoding="utf-8")
+    return (
+        _BATCH_PARENT
+        .replace("./child.pflow.md", "./mid.pflow.md")
+        .replace("url: ${item}", "urls: ${item}")
+        .replace("ITEMS", json.dumps([[f"{auth_server}/json"]]))
+    )
+
+
+def _nested_fetch_data(batch_error: dict[str, Any]) -> dict[str, Any]:
+    """The leaf fetch's failure data two batch levels down."""
+    inner_error = batch_error["child_failure"]["failures"]["token"]["data"]["errors"][0]
+    data: dict[str, Any] = inner_error["child_failure"]["failures"]["auth"]["data"]
+    return data
+
+
+@pytest.mark.trace_files
+class TestNestedBatchedSubWorkflow:
+    """A batch of a batch: every printed level is redacted; the trace keeps raw values (#799)."""
+
+    def test_printed_document_redacts_every_level(self, tmp_path: Path, auth_server: str) -> None:
+        exit_code, stdout, doc = _run_json(tmp_path, _nested_batch_parent(tmp_path, auth_server))
+
+        assert exit_code == 1
+        _assert_no_secret(stdout)
+        data = _nested_fetch_data(doc["execution"]["steps"][0]["batch_error_details"][0])
+        assert data["response"] == {"access_token": "<REDACTED>", "error": "nope"}
+        assert data["response_headers"]["Set-Cookie"] == "<REDACTED>"
+
+    def test_trace_keeps_raw_values_and_report_redacts(self, tmp_path: Path, auth_server: str) -> None:
+        from pflow.core.trace_io import load_trace_file
+
+        _run_json(tmp_path, _nested_batch_parent(tmp_path, auth_server))
+
+        (trace_path,) = (Path.home() / ".pflow" / "debug").glob("workflow-trace-*.json")
+        nodes = load_trace_file(trace_path)["nodes"]
+        each = next(event for event in nodes if event.get("node_id") == "each")
+        assert _nested_fetch_data(each["node_output"]["errors"][0])["response"]["access_token"] == SECRET_TOKEN
+
+        report_dir = tmp_path / "report"
+        result = CliRunner(mix_stderr=False).invoke(main, ["report", str(trace_path), "-o", str(report_dir)])
+        assert result.exit_code == 0, result.output
+        report = "".join(path.read_text(encoding="utf-8") for path in sorted(report_dir.rglob("*.md")))
+        _assert_no_secret(report)
+        assert '"access_token": "<REDACTED>"' in report
 
 
 _GATED_FINALIZE = (
@@ -276,3 +525,23 @@ def test_printed_documents_never_serialize_a_diagnostic_raw() -> None:
                 if isinstance(node, ast.Call) and isinstance(func, ast.Attribute) and func.attr in _RAW_SERIALIZERS:
                     hits.append(f"{path.relative_to(src_root)}:{node.lineno}: .{func.attr}()")
     assert not hits, "a printed document serializes raw — use Diagnostic.to_output_dict():\n" + "\n".join(hits)
+
+
+_ARCHIVAL_COMPACTOR = "archive_batch_output_value"
+_ARCHIVAL_COMPACTOR_USERS = frozenset({"execution/formatters/batch_errors.py", "runtime/workflow_executor.py"})
+
+
+def test_only_the_runtime_takes_the_raw_batch_compactor() -> None:
+    """Ratchet (#799): every printer takes the redacting `compact_batch_*` form.
+
+    The archival form keeps a failed item's `child_failure` raw for the trace. A new reference
+    anywhere else is a printer that would ship it unredacted.
+    """
+    src_root = Path(__file__).resolve().parents[2] / "src" / "pflow"
+    users = {
+        path.relative_to(src_root).as_posix()
+        for path in src_root.rglob("*.py")
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if _ARCHIVAL_COMPACTOR in (getattr(node, "id", None), getattr(node, "attr", None), getattr(node, "name", None))
+    }
+    assert users == _ARCHIVAL_COMPACTOR_USERS
