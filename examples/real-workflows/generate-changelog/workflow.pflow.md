@@ -57,8 +57,8 @@ pflow examples/real-workflows/generate-changelog/workflow.pflow.md \
   are detected but `is_major_release=false`, the workflow ships as
   minor and surfaces a prominent warning for review.
 * Zero-commit ranges are not tested — LLM batch with 0 items may error
-* `gh pr list --limit 200` is not date-scoped — very active repos may
-  miss older merged PRs relevant to the tag range
+* PRs merged with the rebase strategy get no PR link — only squash
+  and merge commits name their PR
 * Every run writes to CHANGELOG.md, docs/changelog.mdx, and releases/
   (use `--dry-run` to preview cost/plan without side effects)
 
@@ -169,6 +169,15 @@ the classifier can identify internal-only changes like `.taskmaster/`
 or `tests/`), and task numbers. Uses `--first-parent` to avoid
 duplicates from PR branch commits.
 
+A commit's PR is the `#N` of `Merge pull request #N`, or the trailing
+` (#N)` GitHub appends to a squash subject — kept only when N is a
+merged PR. Squash subjects can name issues too (`fix: … (#628) (#649)`),
+and a direct-to-main commit can end in an issue number; neither may
+become a PR link. A number missing from the 200 most recent merged PRs
+costs one `gh api` lookup; a lookup that fails for any reason other
+than "no such number" (404, or 410 for a deleted issue) fails the step
+rather than drop a real PR.
+
 Timeout is raised above the 30s default because `gh pr list` over 200
 merged PRs can be slow on active repos.
 
@@ -186,12 +195,12 @@ import subprocess, json, re
 
 repo = subprocess.run(
     ['gh', 'repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'],
-    capture_output=True, text=True, check=True
+    capture_output=True, encoding='utf-8', check=True
 ).stdout.strip()
 
 log_out = subprocess.run(
     ['git', 'log', '--first-parent', f'{tag}..{to_ref}', '--format=%H|%B%x00'],
-    capture_output=True, text=True
+    capture_output=True, encoding='utf-8'
 ).stdout
 commits = []
 for record in log_out.split('\0'):
@@ -203,7 +212,7 @@ for record in log_out.split('\0'):
 
 file_log = subprocess.run(
     ['git', 'log', '--first-parent', f'{tag}..{to_ref}', '--format=HASH:%H', '--name-only'],
-    capture_output=True, text=True
+    capture_output=True, encoding='utf-8'
 ).stdout
 file_changes = {}
 current_hash = None
@@ -213,13 +222,32 @@ for line in file_log.strip().split('\n'):
     elif line.strip() and current_hash:
         file_changes.setdefault(current_hash, []).append(line.strip())
 
-pr_out = subprocess.run(
+pr_list = subprocess.run(
     ['gh', 'pr', 'list', '--state', 'merged', '--limit', '200',
      '--json', 'number,title,body'],
-    capture_output=True, text=True
-).stdout
-prs = json.loads(pr_out) if pr_out.strip() else []
+    capture_output=True, encoding='utf-8'
+)
+if pr_list.returncode != 0:
+    raise RuntimeError(f'gh pr list failed: {pr_list.stderr.strip()}')
+prs = json.loads(pr_list.stdout) if pr_list.stdout.strip() else []
 pr_by_num = {pr['number']: pr for pr in prs}
+
+def merged_pr(num):
+    if num not in pr_by_num:
+        found = subprocess.run(
+            ['gh', 'api', f'repos/{repo}/issues/{num}'],
+            capture_output=True, encoding='utf-8'
+        )
+        gone = 'HTTP 404' in found.stderr or 'HTTP 410' in found.stderr
+        if found.returncode != 0 and not gone:
+            raise RuntimeError(
+                f'Cannot check whether #{num} is a merged PR: {found.stderr.strip()}'
+                ' — re-run once gh can reach GitHub'
+            )
+        item = json.loads(found.stdout) if found.returncode == 0 else {}
+        merged = (item.get('pull_request') or {}).get('merged_at')
+        pr_by_num[num] = item if merged else None
+    return pr_by_num[num]
 
 for c in commits:
     h, msg = c['hash'], c['commit_message']
@@ -229,7 +257,6 @@ for c in commits:
     c['pr_body'] = ''
     c['pr_link'] = ''
     c['pr_summary'] = ''
-    c['is_merge'] = False
     c['task_number'] = None
 
     task_m = re.search(r'[Tt]ask[- ]?(\d+)', msg)
@@ -237,26 +264,22 @@ for c in commits:
         c['task_number'] = int(task_m.group(1))
 
     merge_m = re.match(r'^Merge pull request #(\d+)', msg)
-    squash_m = re.search(r'\(#(\d+)\)', msg)
+    squash_m = re.search(r'\(#(\d+)\)$', msg.split('\n', 1)[0].rstrip())
+    pr_m = merge_m or squash_m
+    pr = merged_pr(int(pr_m.group(1))) if pr_m else None
+    c['is_merge'] = bool(merge_m)
 
-    if merge_m:
-        pr_num = int(merge_m.group(1))
-        pr = pr_by_num.get(pr_num, {})
+    if pr:
         body = pr.get('body', '') or ''
         c.update({
-            'pr_number': pr_num,
+            'pr_number': pr['number'],
             'pr_title': pr.get('title', ''),
             'pr_body': body,
-            'pr_link': f'https://github.com/{repo}/pull/{pr_num}',
-            'is_merge': True,
+            'pr_link': f'https://github.com/{repo}/pull/{pr["number"]}',
         })
         body_task = re.search(r'[Tt]ask[- _]?(\d+)', body)
-        if body_task:
+        if merge_m and body_task:
             c['task_number'] = int(body_task.group(1))
-    elif squash_m:
-        pr_num = int(squash_m.group(1))
-        c['pr_number'] = pr_num
-        c['pr_link'] = f'https://github.com/{repo}/pull/{pr_num}'
 
     # Fallback: extract task number from task-review.md in file paths
     if c['task_number'] is None:
@@ -268,7 +291,7 @@ for c in commits:
 
     body = c['pr_body']
     if body:
-        sections = body.split('\n## ')
+        sections = ('\n' + body).split('\n## ')
         summaries = [s for s in sections if s.startswith('Summary')]
         if summaries:
             c['pr_summary'] = '\n\n'.join(summaries[0].split('\n\n')[:2])[:800]
@@ -301,7 +324,7 @@ import subprocess, re
 diff_output = subprocess.run(
     ['git', 'diff', '--name-only', f'{tag}..{to_ref}', '--',
      '.taskmaster/tasks/'],
-    capture_output=True, text=True
+    capture_output=True, encoding='utf-8'
 ).stdout
 
 reviews = {}
@@ -314,7 +337,7 @@ for line in diff_output.strip().split('\n'):
     num = m.group(1)
     content = subprocess.run(
         ['git', 'show', f'{to_ref}:{line}'],
-        capture_output=True, text=True
+        capture_output=True, encoding='utf-8'
     ).stdout.strip()
     if content:
         reviews[num] = content
@@ -489,7 +512,7 @@ if to_ref != 'HEAD':
     next_version = to_ref if to_ref.startswith('v') else f'v{to_ref}'
     tag_date_str = subprocess.run(
         ['git', 'log', '-1', '--format=%ai', to_ref],
-        capture_output=True, text=True
+        capture_output=True, encoding='utf-8'
     ).stdout.strip()
     tag_date = datetime.strptime(tag_date_str[:10], '%Y-%m-%d')
     date_iso = tag_date.strftime('%Y-%m-%d')
@@ -597,7 +620,7 @@ import subprocess
 
 diff_output = subprocess.run(
     ['git', 'diff', f'{tag}..{to_ref}', '--name-only', '--', 'docs/'],
-    capture_output=True, text=True
+    capture_output=True, encoding='utf-8'
 ).stdout
 files = [
     f for f in diff_output.strip().split('\n')
@@ -608,12 +631,12 @@ file_sections = []
 for file in files:
     commits = subprocess.run(
         ['git', 'log', f'{tag}..{to_ref}', '--oneline', '--', file],
-        capture_output=True, text=True
+        capture_output=True, encoding='utf-8'
     ).stdout.strip().replace('\n', ', ')
 
     diff = subprocess.run(
         ['git', 'diff', f'{tag}..{to_ref}', '--', file],
-        capture_output=True, text=True
+        capture_output=True, encoding='utf-8'
     ).stdout
     change_lines = [
         line for line in diff.split('\n')
@@ -994,6 +1017,7 @@ changelog_path: str
 mintlify_path: str
 context_path: str
 
+linked = sum(1 for e in entries if e['context']['pr_link'])
 lines = []
 
 if warnings:
@@ -1008,14 +1032,14 @@ lines.extend([
     f'Date: {date_iso}\n',
     'Created files:',
     f'  {changelog_path}',
-    f'    {len(entries)} entries with PR links',
+    f'    {len(entries)} entries, {linked} with PR links',
 ])
 
 if mintlify_path:
     lines.append(f'  {mintlify_path}')
 
 lines.append(f'  {context_path}')
-lines.append(f'    {len(skipped)} skipped changes, {len(task_reviews)} — review before committing')
+lines.append(f'    {len(skipped)} skipped changes, {len(task_reviews)} task reviews included — review before committing')
 
 result: str = '\n'.join(lines)
 ```
