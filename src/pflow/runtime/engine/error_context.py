@@ -10,6 +10,7 @@ node type that writes stderr to the shared store.
 
 from typing import Any
 
+from pflow.core.diagnostic_render import head_tail_preview
 from pflow.core.templates import parse
 
 
@@ -38,7 +39,6 @@ def extract_node_ids_from_template(template: str) -> set[str]:
 def get_upstream_stderr(
     template: str,
     shared: dict[str, Any],
-    max_stderr_len: int = 500,
 ) -> str | None:
     """Get stderr context from upstream nodes referenced in a template.
 
@@ -50,7 +50,6 @@ def get_upstream_stderr(
     Args:
         template: Template string with ${node.field} references
         shared: Shared store containing node outputs
-        max_stderr_len: Maximum characters of stderr to include per node
 
     Returns:
         Formatted stderr context string, or None if no relevant stderr found
@@ -72,10 +71,7 @@ def get_upstream_stderr(
         if not stderr or not isinstance(stderr, str) or not stderr.strip():
             continue
 
-        # Truncate if too long
-        stderr_display = stderr.strip()
-        if len(stderr_display) > max_stderr_len:
-            stderr_display = stderr_display[:max_stderr_len] + "..."
+        stderr_display = head_tail_preview(stderr.strip())
 
         # Indent multi-line stderr for readability
         indented_stderr = stderr_display.replace("\n", "\n     ")

@@ -88,35 +88,47 @@ class TestShellStderrDisplay:
         error = output["errors"][0]
         assert "stderr content here" in error["context"]["shell_stderr"]
 
-    def test_shell_stderr_truncated_when_long(self, tmp_path):
-        """Long stderr should be truncated in verbose output."""
-        # Create stderr longer than 300 chars
-        long_error = "X" * 400
+    def test_long_output_previews_keep_the_tail_where_the_cause_is(self, tmp_path):
+        """Long stderr and stdout show their head AND tail in every text preview (#755).
 
+        Tools write the cause last, after progress noise. Each cause marker sits only at
+        the very end of ~1,100 chars and is printed via ``%s`` so it never appears in the
+        command text — the text channels must show it, and JSON keeps the whole stderr.
+        """
+        command = (
+            "i=0; while [ $i -lt 60 ]; do printf 'progress-noise-%02d ' $i >&2; "
+            "printf 'stdout-noise-%02d ' $i; i=$((i+1)); done; "
+            "printf 'STDOUT-%s-TAIL' AT; printf 'CAUSE-%s-TAIL' AT >&2; exit 3"
+        )
         workflow = {
             "ir_version": "0.1.0",
-            "nodes": [
-                {
-                    "id": "verbose-error",
-                    "type": "shell",
-                    "params": {"command": f"echo '{long_error}' >&2; exit 1"},
-                }
-            ],
+            "nodes": [{"id": "noisy", "type": "shell", "params": {"command": command}}],
             "edges": [],
         }
-
         workflow_path = tmp_path / "test.pflow.md"
         write_workflow_file(workflow, workflow_path)
-
         runner = CliRunner(mix_stderr=False)
-        result = runner.invoke(main, ["--verbose", str(workflow_path)])
 
-        assert result.exit_code != 0
+        text = runner.invoke(main, [str(workflow_path)])
+        lines = (text.output + (text.stderr or "")).splitlines()
+        headline = next(line for line in lines if line.startswith("Command failed with exit code 3:"))
+        details = next(line for line in lines if line.startswith("    Stderr: "))
+        for preview in (headline, details):
+            assert "progress-noise-00" in preview  # the head stays
+            assert "progress-noise-30" not in preview  # the middle is cut
+            assert "chars omitted]" in preview
+            assert preview.endswith("CAUSE-AT-TAIL")  # the tail stays
+        stdout = next(line for line in lines if line.startswith("    Stdout: "))
+        assert "stdout-noise-00" in stdout
+        assert "stdout-noise-30" not in stdout
+        assert "chars omitted]" in stdout
+        assert stdout.endswith("STDOUT-AT-TAIL")
 
-        # Output should contain truncated stderr with "..."
-        combined_output = result.output + (result.stderr or "")
-        assert "Stderr:" in combined_output
-        assert "..." in combined_output  # Truncation indicator
+        as_json = runner.invoke(main, ["--output-format", "json", str(workflow_path)])
+        error = json.loads(as_json.stdout)["errors"][0]
+        assert error["context"]["shell_stderr"].startswith("progress-noise-00")
+        assert "progress-noise-30" in error["context"]["shell_stderr"]  # JSON carries the full text
+        assert error["context"]["shell_stderr"].endswith("CAUSE-AT-TAIL")
 
     def test_no_stderr_section_when_stderr_empty(self, tmp_path):
         """No stderr section should appear when shell has no stderr output."""

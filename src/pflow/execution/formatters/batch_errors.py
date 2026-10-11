@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import textwrap
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
+
+from pflow.core.security_utils import is_sensitive_parameter
 
 MAX_BATCH_ERRORS_SHOWN = 5
 MAX_ERROR_MESSAGE_CHARS = 200
@@ -74,7 +76,50 @@ def format_batch_provider_message(error_detail: Mapping[str, Any]) -> str | None
 
 
 def compact_batch_error_detail(error_detail: Mapping[str, Any]) -> dict[str, Any]:
-    """Return a JSON/API-safe batch error detail without raw item data."""
+    """Return a printable batch error detail: the archival record, its ``child_failure`` redacted.
+
+    The runtime builds that bundle raw (child failure data, ``Diagnostic.to_dict()``
+    payloads) and archives it raw (#799); every surface that prints a batch error takes
+    this form.
+    """
+    compact = _archive_batch_error_detail(error_detail)
+    if "child_failure" in compact:
+        compact["child_failure"] = _redact_child_failure(compact["child_failure"])
+    return compact
+
+
+# The keys a child-failure bundle sits under: a batch error record's field, and a failed
+# child workflow step's output (``WorkflowExecutor``) inside an enclosing bundle.
+_BUNDLE_KEYS = frozenset({"child_failure", "_pflow_child_failure"})
+
+
+def _redact_child_failure(value: Any, *, is_bundle: bool = True) -> Any:
+    """``redact_sensitive``, except the keys of a child bundle's ``failures`` map stay.
+
+    Those keys are child node IDs — names the author chose, not parameter names: a step
+    called ``auth`` keeps its failure record (the reconstructor reads it), and redaction
+    applies inside the record. A value is a bundle by position (the root, or under a
+    ``_BUNDLE_KEYS`` key), never by shape, so node output shaped like one is redacted in full.
+    """
+    if isinstance(value, list):
+        return [_redact_child_failure(item, is_bundle=False) for item in value]
+    if not isinstance(value, Mapping):
+        return value
+    redacted: dict[Any, Any] = {}
+    for key, item in value.items():
+        if is_bundle and key == "failures" and isinstance(item, Mapping):
+            redacted[key] = {
+                node_id: _redact_child_failure(record, is_bundle=False) for node_id, record in item.items()
+            }
+        elif isinstance(key, str) and is_sensitive_parameter(key):
+            redacted[key] = "<REDACTED>"
+        else:
+            redacted[key] = _redact_child_failure(item, is_bundle=key in _BUNDLE_KEYS)
+    return redacted
+
+
+def _archive_batch_error_detail(error_detail: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a batch error detail without the raw item, values otherwise kept raw."""
     compact: dict[str, Any] = {
         "index": error_detail.get("index", "?"),
         "error": _truncate_error_message(str(error_detail.get("error", "Unknown error"))),
@@ -98,9 +143,8 @@ def compact_batch_error_detail(error_detail: Mapping[str, Any]) -> dict[str, Any
     if "item" in error_detail:
         compact["has_full_item"] = True
 
-    # Preserve the structured child-failure bundle (#252) so JSON/MCP consumers
-    # get the child's per-node category + data, not a flattened string. The bundle
-    # holds child failure records (never the raw batch item), so it is API-safe.
+    # Keep the structured child-failure bundle (#252) so JSON/MCP consumers get the
+    # child's per-node category + data, not a flattened string.
     child_failure = error_detail.get("child_failure")
     if isinstance(child_failure, Mapping):
         compact["child_failure"] = dict(child_failure)
@@ -138,12 +182,25 @@ def _format_child_failure_lines(child_failure: dict[str, Any], node_id: str, hea
 
 
 def compact_batch_output_value(value: Any) -> Any:
-    """Return a display/API-safe copy of a batch aggregate output value.
+    """Return a printable copy of a batch aggregate output value.
 
     Successful ``results[].item`` values remain full-fidelity. Only failed
-    ``errors[]`` records are compacted because they are the unbounded failure
-    surface that renderers may otherwise dump as workflow output.
+    ``errors[]`` records are compacted (``compact_batch_error_detail``) because they
+    are the unbounded failure surface that renderers may otherwise dump as workflow output.
     """
+    return _compact_batch_errors(value, compact_batch_error_detail)
+
+
+def archive_batch_output_value(value: Any) -> Any:
+    """Return the archival copy of a batch aggregate output value — the runtime's form.
+
+    Drops each failed record's raw item like ``compact_batch_output_value`` but keeps
+    every other value raw for the trace; a printer takes ``compact_batch_output_value``.
+    """
+    return _compact_batch_errors(value, _archive_batch_error_detail)
+
+
+def _compact_batch_errors(value: Any, compact_error: Callable[[Mapping[str, Any]], dict[str, Any]]) -> Any:
     if not isinstance(value, Mapping):
         return value
     errors = value.get("errors")
@@ -155,7 +212,7 @@ def compact_batch_output_value(value: Any) -> Any:
         return value
 
     compact = dict(value)
-    compact["errors"] = [compact_batch_error_detail(error) if isinstance(error, Mapping) else error for error in errors]
+    compact["errors"] = [compact_error(error) if isinstance(error, Mapping) else error for error in errors]
     return compact
 
 
