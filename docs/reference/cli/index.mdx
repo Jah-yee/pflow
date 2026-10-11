@@ -302,17 +302,24 @@ All workflow results, metrics, and errors serialize to a single JSON object on s
 ```json
 {
   "success": false,
-  "error": "Workflow failed with action: error",
+  "status": "failed",
+  "error": "HTTP 401",
   "errors": [
     {
+      "severity": "error",
+      "message": "HTTP 401",
       "source": "runtime",
-      "category": "api_validation",
-      "message": "Missing required parameter: 'repo'",
+      "title": "Execution Failed",
       "node_id": "fetch-issues",
-      "fixable": true,
-      "available_fields": ["user_input", "stdin"]
+      "context": {
+        "category": "execution_failure",
+        "status_code": 401,
+        "raw_response": {"access_token": "<REDACTED>", "error": "bad credentials"},
+        "response_headers": {"Content-Type": "application/json", "Set-Cookie": "<REDACTED>"}
+      }
     }
   ],
+  "diagnostics": [ ... ],
   "execution": {
     "steps": [
       {"node_id": "fetch-issues", "status": "failed", "duration_ms": 120.5}
@@ -330,7 +337,10 @@ All workflow results, metrics, and errors serialize to a single JSON object on s
 | `duration_ms` | Total execution time in milliseconds |
 | `total_cost_usd` | LLM API cost (0.0 if no LLM calls) |
 | `execution.cache_hits` | Number of nodes served from memoization cache |
-| `errors[].available_fields` | Valid fields for template variables - helps agents fix errors |
+| `errors[]` | The failure's error diagnostics: `message`, `title`, `suggestions`, `node_id`, and the details under `context` (e.g. `context.available_fields` — valid fields for a template variable) |
+| `diagnostics[]` / `warnings[]` / `advisories[]` | Every diagnostic, the warnings, and the non-degrading notes — same entry shape as `errors[]` |
+
+Values under a sensitive name (`token`, `password`, `authorization`, `cookie`, …) print as `<REDACTED>` at any depth of a diagnostic. The trace keeps them raw for `pflow resume`; `pflow report` masks them too.
 
 </Expandable>
 

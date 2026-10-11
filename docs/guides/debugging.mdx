@@ -28,15 +28,18 @@ When a workflow fails, errors include the data needed for self-correction:
 ```json
 {
   "errors": [{
-    "message": "Node 'fetch' does not output 'msg'",
-    "node_id": "process",
-    "available_fields": ["result", "result.messages", "result.messages[0].text"],
-    "fixable": true
+    "message": "Node 'fetch' (type: shell) does not output 'msg'.",
+    "suggestions": ["Try ${fetch.stdout}"],
+    "node_id": "fetch",
+    "context": {
+      "category": "template_error",
+      "available_fields": ["${fetch.stdout} (str)", "${fetch.stderr} (str)", "${fetch.exit_code} (int)"]
+    }
   }]
 }
 ```
 
-Your agent sees that `msg` doesn't exist, but `result.messages` does. It fixes the template and retries. No human intervention needed.
+Your agent sees that `msg` doesn't exist, but `stdout` does. It fixes the template and retries. No human intervention needed.
 
 These errors are specific because the error space is finite — pflow knows every node type and every declared output. When agents compose known building blocks instead of writing arbitrary code, errors say "node X doesn't output Y, did you mean Z?" instead of handing you a stack trace.
 

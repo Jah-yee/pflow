@@ -860,7 +860,7 @@ class TestJSONOutputFormat:
             None,
         )
         assert multi_stdin_error is not None
-        assert multi_stdin_error["category"] == "validation"
+        assert multi_stdin_error["context"]["category"] == "validation"
 
     @patch("pflow.core.shell_integration.stdin_has_data", return_value=True)
     def test_multiple_stdin_error_text_output(self, mock_stdin, tmp_path):

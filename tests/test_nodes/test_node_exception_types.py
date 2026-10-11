@@ -142,11 +142,9 @@ def test_param_error_reaches_the_author_as_a_validation_error(
     assert result.exit_code != 0
     [error] = json.loads(result.stdout)["errors"]
     assert error["title"] == "Validation Error"
-    assert error["category"] == "validation"
     assert error["context"] == {"category": "validation", "param": param}
     assert error["node_id"] == node_id
     assert message in error["message"]
-    assert "exception_type" not in error
 
     text = runner.invoke(main, [str(path)])
     output = text.output + (text.stderr or "")
@@ -170,7 +168,6 @@ def test_translated_runtime_failure_reaches_the_author_as_an_execution_failure(t
     assert error["context"] == {"category": "execution_failure"}
     assert error["node_id"] == "fetch"
     assert error["message"].startswith("Could not connect to http://service.invalid/data.")
-    assert "exception_type" not in error
 
 
 def test_param_error_on_one_batch_item_does_not_abort_a_continue_batch(tmp_path: Path) -> None:

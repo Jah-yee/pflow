@@ -1,13 +1,8 @@
-"""Error formatting utilities for execution results.
-
-This module provides shared error formatting logic used by both CLI and MCP server
-to ensure consistent error handling across interfaces.
-"""
+"""Error formatting for the CLI's JSON failure document (``cli/error_output.py``)."""
 
 import logging
 from typing import Any
 
-from pflow.core.diagnostic import Diagnostic
 from pflow.execution.execution_state import build_execution_steps
 from pflow.execution.formatters.batch_errors import compact_batch_error_detail
 from pflow.execution.result import ExecutionResult
@@ -20,25 +15,18 @@ def format_execution_errors(
     shared_storage: dict[str, Any] | None = None,
     ir_data: dict[str, Any] | None = None,
     metrics_collector: Any | None = None,
-    sanitize: bool = True,
 ) -> dict[str, Any]:
-    """Format execution errors with optional sanitization for API consumption.
-
-    This function extracts error information from ExecutionResult and applies
-    sanitization to sensitive fields. Used by both CLI JSON output and MCP server.
+    """Extract the failure document's errors, checkpoint, execution state, and metrics from a result.
 
     Args:
         result: ExecutionResult from execute_workflow()
         shared_storage: Optional shared store for execution state building
         ir_data: Optional workflow IR for execution state building
         metrics_collector: Optional metrics collector for timing and cost data
-        sanitize: Whether to sanitize sensitive fields (default: True)
-            - Set True for MCP/API responses
-            - Set False for CLI display (sanitization happens at display layer)
 
     Returns:
         Dictionary with:
-        - errors: List of error dicts (all fields from result.errors)
+        - errors: Error diagnostics in their printed form (``Diagnostic.to_output_dict``)
         - checkpoint: Execution checkpoint data
         - execution: Execution state with per-node status (if ir_data provided)
         - metrics: Metrics summary (if metrics_collector provided)
@@ -47,27 +35,11 @@ def format_execution_errors(
 
         result = execute_workflow(...)
         formatted = format_execution_errors(result)
-        formatted["errors"][0]["status_code"]   # e.g. 422
-        formatted["errors"][0]["raw_response"]  # sanitized
-        formatted["execution"]["steps"]         # per-node execution state
+        formatted["errors"][0]["context"]["status_code"]   # e.g. 422
+        formatted["execution"]["steps"]                    # per-node execution state
     """
     checkpoint = result.shared_after.get("__execution__", {})
-
-    formatted_errors = []
-    for error in result.errors:
-        formatted_error = error.to_display_dict() if isinstance(error, Diagnostic) else error.copy()
-
-        if sanitize:
-            # Lazy import to avoid circular dependencies
-            from pflow.core.security_utils import sanitize_parameters
-
-            if "raw_response" in formatted_error:
-                formatted_error["raw_response"] = sanitize_parameters(formatted_error["raw_response"])
-
-            if "response_headers" in formatted_error:
-                formatted_error["response_headers"] = sanitize_parameters(formatted_error["response_headers"])
-
-        formatted_errors.append(formatted_error)
+    formatted_errors = [error.to_output_dict() for error in result.errors]
 
     result_dict: dict[str, Any] = {
         "errors": formatted_errors,

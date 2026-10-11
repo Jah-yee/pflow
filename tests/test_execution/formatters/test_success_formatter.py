@@ -435,10 +435,8 @@ class TestFormatSuccessAsText:
         Real bug this catches: Raw Diagnostic objects under ``warnings`` get
         stringified to ``Diagnostic(...)`` reprs by JSON serialization.
 
-        After diagnostic rendering redesign (Task 144), Diagnostic uses
-        ``title`` and ``suggestions`` (list) instead of ``suggestion`` (str).
-        ``to_display_dict()`` serializes these new fields. ``to_dict()`` is used
-        for the ``diagnostics`` key (without context merging).
+        Every list carries the printed form (``to_output_dict()``): ``warnings`` and
+        ``diagnostics`` hold the same entry, context nested and redacted (#776).
         """
         result = format_execution_success(
             shared_storage={"stdout": "ok"},
@@ -451,30 +449,21 @@ class TestFormatSuccessAsText:
                     suggestions=["Use '- cache: true' only if output is purely a function of declared inputs."],
                     node_id="run-shell",
                     source="validator",
+                    context={"category": "cache", "headers": {"Authorization": "Bearer abc"}},
                 )
             ],
         )
 
-        # warnings uses to_display_dict() — includes suggestions as list
-        assert result["warnings"] == [
-            {
-                "severity": "warning",
-                "message": "Shell node has no template inputs",
-                "source": "validator",
-                "suggestions": ["Use '- cache: true' only if output is purely a function of declared inputs."],
-                "node_id": "run-shell",
-            }
-        ]
-        # diagnostics uses to_dict() — same shape (no context to merge here)
-        assert result["diagnostics"] == [
-            {
-                "severity": "warning",
-                "message": "Shell node has no template inputs",
-                "source": "validator",
-                "suggestions": ["Use '- cache: true' only if output is purely a function of declared inputs."],
-                "node_id": "run-shell",
-            }
-        ]
+        expected = {
+            "severity": "warning",
+            "message": "Shell node has no template inputs",
+            "source": "validator",
+            "suggestions": ["Use '- cache: true' only if output is purely a function of declared inputs."],
+            "node_id": "run-shell",
+            "context": {"category": "cache", "headers": {"Authorization": "<REDACTED>"}},
+        }
+        assert result["warnings"] == [expected]
+        assert result["diagnostics"] == [expected]
 
     def test_info_advisory_goes_to_advisories_not_warnings_in_json(self):
         """REGRESSION: INFO advisories must not appear under ``warnings`` in the
