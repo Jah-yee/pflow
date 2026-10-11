@@ -336,21 +336,27 @@ def _manual_sync_components(tmp_path: Path, configs: dict[str, dict]):
     registry = Registry(registry_path=tmp_path / "registry.json")
     registry._save_with_metadata({})
     discovery = MagicMock()
+    discovery.convert_to_pflow_params = MCPDiscovery(manager).convert_to_pflow_params
     registrar = MCPRegistrar(registry=registry, manager=manager, discovery=discovery)
     registrar._settings_manager = MagicMock()
     registrar._settings_manager.should_include_node.return_value = True
     return manager, registry, discovery, registrar
 
 
+def _tool(name: str) -> dict:
+    """A tool definition as discovery produces it (zero-argument)."""
+    return {"name": name, "description": name, "inputSchema": {"type": "object", "properties": {}}}
+
+
 def _mcp_entry(registrar: MCPRegistrar, server: str, tool: str) -> dict:
-    return registrar._create_registry_entry(server, {"name": tool})
+    return registrar._create_registry_entry(server, _tool(tool))
 
 
 def test_manual_single_sync_replaces_tools(tmp_path: Path) -> None:
     configs = {"one": {"command": "one"}}
     manager, registry, discovery, registrar = _manual_sync_components(tmp_path, configs)
     registry.save({"mcp-one-old": _mcp_entry(registrar, "one", "old")})
-    discovery.discover_tools.return_value = [{"name": "new"}]
+    discovery.discover_tools.return_value = [_tool("new")]
 
     with (
         patch("pflow.cli.commands.mcp.MCPServerManager", return_value=manager),
@@ -391,7 +397,7 @@ def test_manual_sync_all_replaces_success_and_preserves_failure(tmp_path: Path) 
     def discover(server_name, **_kwargs):
         if server_name == "bad":
             raise RuntimeError("down")
-        return [{"name": "new"}]
+        return [_tool("new")]
 
     discovery.discover_tools.side_effect = discover
     with (
@@ -413,7 +419,7 @@ def test_manual_single_config_change_during_discovery_aborts_without_registry_wr
 
     def discover(*_args, **_kwargs):
         manager.save({"mcpServers": {"one": {"command": "changed"}}})
-        return [{"name": "observed"}]
+        return [_tool("observed")]
 
     discovery.discover_tools.side_effect = discover
     with (
@@ -500,7 +506,7 @@ def test_remove_uses_exact_owner(tmp_path: Path) -> None:
 def _discover_good_fail_bad(server_name: str, **_kwargs) -> list[dict]:
     if server_name == "bad":
         raise ConnectionError("connection refused")
-    return [{"name": "echo", "description": "echo"}]
+    return [_tool("echo")]
 
 
 def test_add_syncs_only_added_servers_and_keeps_a_failed_one_configured() -> None:
@@ -509,7 +515,7 @@ def test_add_syncs_only_added_servers_and_keeps_a_failed_one_configured() -> Non
     registry = Registry()
     # Entries a full reconciliation would delete — a targeted add sync must leave them alone.
     unrelated = {
-        "mcp-gone-tool": MCPRegistrar()._create_registry_entry("gone", {"name": "tool"}),
+        "mcp-gone-tool": MCPRegistrar()._create_registry_entry("gone", _tool("tool")),
         "mcp-legacy": {"type": "mcp"},
     }
     registry.save(registry.load(include_filtered=True) | unrelated)

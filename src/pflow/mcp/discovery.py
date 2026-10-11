@@ -5,15 +5,36 @@ import contextlib
 import logging
 import sys
 from collections.abc import Iterator
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 
 from pflow.mcp.auth_utils import build_auth_headers, expand_env_vars_nested
 
 from .manager import MCPServerManager
 
+if TYPE_CHECKING:
+    from mcp.types import Tool
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_DISCOVERY_TIMEOUT_SECONDS = 60
+
+
+def _tool_definition(tool: "Tool", server_name: str) -> dict[str, Any]:
+    """Return one discovered tool as pflow's tool definition, schemas exactly as the server sent them.
+
+    Schemas are read as attributes, never probed with ``hasattr``: an SDK that renames
+    them (2.x spells ``input_schema``) must fail discovery, which keeps the server's
+    prior tools, rather than register every tool without parameters (#756).
+    """
+    tool_def: dict[str, Any] = {
+        "name": tool.name,
+        "description": tool.description or f"MCP tool from {server_name}",
+        "server": server_name,
+        "inputSchema": tool.inputSchema,
+    }
+    if tool.outputSchema is not None:
+        tool_def["outputSchema"] = tool.outputSchema
+    return tool_def
 
 
 class MCPDiscovery:
@@ -152,8 +173,6 @@ class MCPDiscovery:
 
         logger.info(f"Connecting to MCP server '{server_name}'...")
 
-        tools_list = []
-
         # Use the stderr handler context manager for proper file management
         with self._get_stderr_handler(verbose) as errlog:
             # Now use the configured errlog with stdio_client
@@ -165,30 +184,7 @@ class MCPDiscovery:
                 # List available tools
                 tools_response = await session.list_tools()
 
-                for tool in tools_response.tools:
-                    tool_def: dict[str, Any] = {
-                        "name": tool.name,
-                        "description": tool.description or f"MCP tool from {server_name}",
-                        "server": server_name,
-                    }
-
-                    # Extract input schema
-                    if hasattr(tool, "inputSchema") and tool.inputSchema:
-                        schema = tool.inputSchema
-                        if hasattr(schema, "model_dump"):
-                            schema = schema.model_dump()
-                        tool_def["inputSchema"] = dict(schema)
-                    else:
-                        tool_def["inputSchema"] = {"type": "object", "properties": {}, "required": []}
-
-                    # Extract output schema if available
-                    if hasattr(tool, "outputSchema") and tool.outputSchema:
-                        schema = tool.outputSchema
-                        if hasattr(schema, "model_dump"):
-                            schema = schema.model_dump()
-                        tool_def["outputSchema"] = dict(schema)
-
-                    tools_list.append(tool_def)
+                tools_list = [_tool_definition(tool, server_name) for tool in tools_response.tools]
 
                 logger.info(f"Discovered {len(tools_list)} tools from {server_name}")
 
@@ -220,8 +216,6 @@ class MCPDiscovery:
 
         logger.info(f"Connecting to HTTP MCP server '{server_name}' at {url}...")
 
-        tools_list = []
-
         async with (
             streamablehttp_client(url=url, headers=headers, timeout=timeout, sse_read_timeout=sse_timeout) as (
                 read,
@@ -239,30 +233,7 @@ class MCPDiscovery:
             # List available tools (same as stdio)
             tools_response = await session.list_tools()
 
-            for tool in tools_response.tools:
-                tool_def: dict[str, Any] = {
-                    "name": tool.name,
-                    "description": tool.description or f"MCP tool from {server_name}",
-                    "server": server_name,
-                }
-
-                # Extract input schema (same as stdio)
-                if hasattr(tool, "inputSchema") and tool.inputSchema:
-                    schema = tool.inputSchema
-                    if hasattr(schema, "model_dump"):
-                        schema = schema.model_dump()
-                    tool_def["inputSchema"] = dict(schema)
-                else:
-                    tool_def["inputSchema"] = {"type": "object", "properties": {}, "required": []}
-
-                # Extract output schema if available (same as stdio)
-                if hasattr(tool, "outputSchema") and tool.outputSchema:
-                    schema = tool.outputSchema
-                    if hasattr(schema, "model_dump"):
-                        schema = schema.model_dump()
-                    tool_def["outputSchema"] = dict(schema)
-
-                tools_list.append(tool_def)
+            tools_list = [_tool_definition(tool, server_name) for tool in tools_response.tools]
 
             logger.info(f"Discovered {len(tools_list)} tools from HTTP server {server_name}")
 
