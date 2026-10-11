@@ -90,6 +90,8 @@ jq -r '.data.name'
 | bool | Lowercase string (`true`/`false`) |
 | bytes | Decoded UTF-8 (fallback: latin-1) |
 
+The resulting text is piped as UTF-8. Text holding a surrogate code point (usually a `\uXXXX` escape pair cut in half upstream) cannot be encoded, so the step fails before the command starts, naming `stdin:`.
+
 ## Validation and error handling
 
 <Info>
