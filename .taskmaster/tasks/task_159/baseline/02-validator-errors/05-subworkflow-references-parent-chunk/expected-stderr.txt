@@ -1,5 +1,6 @@
 Executing workflow (1 nodes):
 WARNING: Found 1 unused inputs
+WARNING: Template validation found 1 errors
 ❌ Workflow execution failed (2 errors, 1 warning)
 
 Error 1: Validation Error

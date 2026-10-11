@@ -1,5 +1,5 @@
-Error: Workflow Not Found
+Error: Workflow File Not Found
 
-Workflow '<BASELINE_CASE_DIR>/does-not-exist.pflow.md' not found
+No file at: <BASELINE_CASE_DIR>/does-not-exist.pflow.md
 
-  → Use 'pflow list' to see all available workflows.
+  → Check your working directory, or pass an absolute path.

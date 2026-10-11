@@ -81,7 +81,13 @@ Answer in one sentence using the reference document.
 ## Outputs
 
 ### answer_a
-source: answer-a.response
+
+The answer to question_a.
+
+- source: ${answer-a.response}
 
 ### answer_b
-source: answer-b.response
+
+The answer to question_b.
+
+- source: ${answer-b.response}

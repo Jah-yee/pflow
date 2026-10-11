@@ -38,5 +38,5 @@ echo "$ARTICLE"
 
 Echoed text.
 
-- source: ${echo.response}
+- source: ${echo.stdout}
 - type: string
