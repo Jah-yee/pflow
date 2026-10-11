@@ -9,7 +9,9 @@ and the CLI guessed a type for every `key=value` token before the workflow's dec
 known (`cli/param_parsing.infer_type`: `02134` → `2134`, #687). Task 120 decides: **the type of a
 value is fixed once, where it enters, by the declared type of what receives it** — a workflow
 input's `## Inputs` type, a code step's `inputs:` annotation, a shell step's `env:` (text, ADR-0016)
-— and a reference whose root is a declared non-`any` input is never JSON-parsed downstream. The
+— and a reference whose root is a declared non-`any` input is never JSON-parsed downstream, nor is a name bound
+to one by a single whole reference — a step `inputs:` key or a batch alias, read from the authored template (a
+carried key from its carry template), never from the value. The
 parent therefore stops auto-parsing a sub-workflow step's `inputs:`; the child's declaration types
 each value at its own boundary. Upstream step outputs keep today's auto-parse: their producers' declarations (`stdout: str`, a code
 `result: str`) are deliberately NOT treated as a type to preserve, and the guide's promise about them stands —

@@ -185,7 +185,7 @@ jobs:
     # Every job listed here needs a matching result check below. `if: always()` means
     # a missing check silently un-gates that job: it gets waited on, its result is
     # never inspected, and this job still exits 0.
-    needs: [tests-and-type-check, tests-windows, tests-windows-mcp-smoke, tests-macos-make, pip-install-smoke]
+    needs: [tests-and-type-check, tests-windows, tests-windows-mcp-smoke, tests-macos-make, pip-install-smoke, baseline-oracle]
     runs-on: ubuntu-latest
     steps:
       - run: |
@@ -202,6 +202,9 @@ jobs:
             exit 1
           fi
           if [[ "${{ needs.pip-install-smoke.result }}" != "success" ]]; then
+            exit 1
+          fi
+          if [[ "${{ needs.baseline-oracle.result }}" != "success" ]]; then
             exit 1
           fi
 
