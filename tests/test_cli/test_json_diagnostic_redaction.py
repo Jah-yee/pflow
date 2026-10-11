@@ -256,6 +256,25 @@ class TestBatchedSubWorkflowDocument:
             "error": "nope",
         }
 
+    def test_a_sensitive_named_child_step_keeps_its_failure_record(self, tmp_path: Path, auth_server: str) -> None:
+        # `failures` is keyed by node ID: a step named `auth` is a name, not a secret to redact.
+        _write_child(tmp_path)
+        child = tmp_path / "child.pflow.md"
+        child.write_text(child.read_text(encoding="utf-8").replace("### fetch", "### auth"), encoding="utf-8")
+        steps = _batch_parent(f"{auth_server}/json", f"{auth_server}/ok")
+        exit_code, stdout, doc = _run_json(tmp_path, steps)
+
+        assert exit_code == 0
+        _assert_no_secret(stdout)
+        child_failure = doc["result"]["each"]["errors"][0]["child_failure"]
+        assert child_failure["failed_node"] == "auth"
+        assert child_failure["failures"]["auth"]["data"]["response_headers"]["Set-Cookie"] == "<REDACTED>"
+
+        text = CliRunner(mix_stderr=False).invoke(main, [str(tmp_path / "leak.pflow.md")])
+        assert text.exit_code == 0, text.output
+        assert "node 'auth'" in text.stdout
+        _assert_no_secret(text.stdout)
+
     def test_mcp_success_text_redacts_the_child_failure_data(self, tmp_path: Path, auth_server: str) -> None:
         from pflow.mcp_server.services.execution_service import ExecutionService
 
@@ -271,7 +290,8 @@ class TestBatchedSubWorkflowDocument:
         assert '"access_token": "<REDACTED>"' in text
 
 
-# A batched sub-workflow step whose child is itself a batch of the fetching child.
+# A batched sub-workflow step whose child is itself a batch of the fetching child. The middle and leaf
+# steps' sensitive-looking names are node IDs, so their failure records survive printing redaction.
 _MID_BATCH = """# Mid
 
 Run the fetching child for every URL.
@@ -286,7 +306,7 @@ The URLs.
 
 ## Steps
 
-### inner
+### token
 
 Run the child workflow for every URL.
 
@@ -302,7 +322,7 @@ items: ${urls}
 
 
 def _nested_batch_parent(tmp_path: Path, auth_server: str) -> str:
-    _write_child(tmp_path)
+    (tmp_path / "child.pflow.md").write_text(_CHILD_FETCH.replace("### fetch", "### auth"), encoding="utf-8")
     (tmp_path / "mid.pflow.md").write_text(_MID_BATCH, encoding="utf-8")
     return (
         _BATCH_PARENT
@@ -314,8 +334,8 @@ def _nested_batch_parent(tmp_path: Path, auth_server: str) -> str:
 
 def _nested_fetch_data(batch_error: dict[str, Any]) -> dict[str, Any]:
     """The leaf fetch's failure data two batch levels down."""
-    inner_error = batch_error["child_failure"]["failures"]["inner"]["data"]["errors"][0]
-    data: dict[str, Any] = _child_failure(inner_error)["failures"]["fetch"]["data"]
+    inner_error = batch_error["child_failure"]["failures"]["token"]["data"]["errors"][0]
+    data: dict[str, Any] = inner_error["child_failure"]["failures"]["auth"]["data"]
     return data
 
 

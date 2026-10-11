@@ -84,8 +84,42 @@ def compact_batch_error_detail(error_detail: Mapping[str, Any]) -> dict[str, Any
     """
     compact = _archive_batch_error_detail(error_detail)
     if "child_failure" in compact:
-        compact["child_failure"] = redact_sensitive(compact["child_failure"])
+        compact["child_failure"] = _redact_child_failure(compact["child_failure"])
     return compact
+
+
+def _redact_child_failure(bundle: Mapping[str, Any]) -> dict[str, Any]:
+    """``redact_sensitive`` over the bundle, except that ``failures`` is keyed by child node ID.
+
+    A node ID is a name the author chose, not a parameter name: a step called ``auth`` keeps
+    its failure record (the reconstructor reads it), and redaction applies inside the record.
+    A failed child batch's records nest further bundles, handled the same way.
+    """
+    redacted: dict[str, Any] = redact_sensitive({key: value for key, value in bundle.items() if key != "failures"})
+    failures = bundle.get("failures")
+    if isinstance(failures, Mapping):
+        redacted["failures"] = {
+            node_id: _redact_failure_record(record) if isinstance(record, Mapping) else redact_sensitive(record)
+            for node_id, record in failures.items()
+        }
+    elif "failures" in bundle:
+        redacted["failures"] = redact_sensitive(failures)
+    return redacted
+
+
+def _redact_failure_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    redacted: dict[str, Any] = redact_sensitive({key: value for key, value in record.items() if key != "data"})
+    if "data" in record:
+        data = record["data"]
+        printable = compact_batch_output_value(data)
+        if printable is data:  # not a batch aggregate: no nested bundles to keep keyed
+            redacted["data"] = redact_sensitive(data)
+        else:
+            redacted["data"] = {
+                **redact_sensitive({key: value for key, value in printable.items() if key != "errors"}),
+                "errors": printable["errors"],
+            }
+    return redacted
 
 
 def _archive_batch_error_detail(error_detail: Mapping[str, Any]) -> dict[str, Any]:
