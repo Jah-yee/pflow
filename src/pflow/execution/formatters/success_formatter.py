@@ -231,7 +231,9 @@ def _collect_outputs(
         assert output_key is not None, "EXPLICIT_KEY ⇒ output_key truthy"  # type narrowing for mypy  # noqa: S101
         if TemplateResolver.variable_exists(output_key, shared_storage):
             resolved: Any = TemplateResolver.resolve_value(output_key, shared_storage)
-            result[output_key] = compact_batch_output_value(parse_json_or_original(resolved))
+            if not TemplateResolver.reads_declared_input(output_key, shared_storage):
+                resolved = parse_json_or_original(resolved)  # a declared input's text is never re-parsed
+            result[output_key] = compact_batch_output_value(resolved)
 
     elif mode is OutputMode.ONLY:
         # --only is target-scoped: declared full-run outputs and unrelated

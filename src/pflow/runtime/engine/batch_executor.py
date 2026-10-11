@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
-from pflow.core.exceptions import CompilationError
+from pflow.core.exceptions import CompilationError, DeclaredInputTextError
 from pflow.core.node_type_display import is_model_node_type
 
 if TYPE_CHECKING:
@@ -114,11 +114,13 @@ def resolve_batch_items(items_template: Any, shared: dict[str, Any]) -> Any:
     Returns:
         Resolved value (list on success, None if unresolved).
     """
-    if isinstance(items_template, list):
-        return resolve(items_template, shared, auto_parse=True).value
-
     # A whole `${…}` holding JSON text is parsed (shell → batch), unless it is a declared input's.
-    resolution = resolve(items_template.strip(), shared, auto_parse=True)
+    template = items_template if isinstance(items_template, list) else items_template.strip()
+    resolution = resolve(template, shared, auto_parse=True)
+    if not resolution.ok:
+        DeclaredInputTextError.raise_for(resolution, shared, where="Batch items")
+    if isinstance(items_template, list):
+        return resolution.value  # an unresolved inline item stays literal, as before
     return resolution.value if resolution.ok else None
 
 

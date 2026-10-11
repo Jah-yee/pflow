@@ -885,16 +885,24 @@ class WorkflowEngine:
         # constant rather than ``None`` so a future consumer that drops the
         # ``or {}`` defense hits a Mapping, not None.get(...).
         #
-        # Build BEFORE installing anything so an exception during
-        # ``build_prompt_cache_dict`` leaves shared completely unchanged —
-        # otherwise a build-time exception would leak the trace install
+        # Build BEFORE installing the trace and the prompt cache so an exception
+        # during ``build_prompt_cache_dict`` cannot leak those installs
         # (saved_trace overwritten, finally never fires).
         saved_trace = shared.get("__trace_collector__")
         saved_prompt_cache = shared.get("__pflow_prompt_cache__")
-        new_prompt_cache = MappingProxyType(build_prompt_cache_dict(workflow, shared))
         # The declared-input map rides the same save/install/restore: a child engine masks its
-        # parent's declarations with its own and reinstates the parent's on exit.
+        # parent's declarations with its own and reinstates the parent's on exit. It goes in
+        # FIRST — the prompt-cache builder resolves templates (the prewarm model) against this
+        # store — and comes back out if that build raises.
         saved_input_types = shared.get(DECLARED_INPUT_TYPES_KEY)
+        shared[DECLARED_INPUT_TYPES_KEY] = MappingProxyType(workflow.input_types)
+        try:
+            new_prompt_cache = MappingProxyType(build_prompt_cache_dict(workflow, shared))
+        except BaseException:
+            shared[DECLARED_INPUT_TYPES_KEY] = (
+                saved_input_types if saved_input_types is not None else _EMPTY_INPUT_TYPES
+            )
+            raise
         if self.trace is not None:
             shared["__trace_collector__"] = self.trace
             # 2.4.0: stamp the run's ``--only`` target (None for a full run) so the saved trace excludes
@@ -910,7 +918,6 @@ class WorkflowEngine:
                 # MCP/--no-trace and under the pytest trace_files gate).
                 self.trace.start_streaming()
         shared["__pflow_prompt_cache__"] = new_prompt_cache
-        shared[DECLARED_INPUT_TYPES_KEY] = MappingProxyType(workflow.input_types)
         try:
             return self._run_inner(workflow, shared)
         finally:

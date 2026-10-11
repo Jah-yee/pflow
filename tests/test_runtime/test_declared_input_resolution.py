@@ -156,6 +156,19 @@ class TestStructuredParams:
             resolve_templates(config, shared, "ask")
         assert "declare `- type: object` for 'v'" in str(exc_info.value)
 
+    @pytest.mark.parametrize(
+        ("template", "blamed"),
+        [
+            ("${up.stdout ?? v}", "malformed JSON"),  # the malformed upstream text won
+            ('${"{" ?? v}', "malformed JSON"),  # a literal won
+            ("${gone.x ?? v}", "reads input 'v'"),  # the declared input won
+        ],
+    )
+    def test_a_type_error_blames_the_operand_that_won(self, template: str, blamed: str) -> None:
+        config, shared = self._merged(template, {"up": {"stdout": "{"}}, {"v": JSON_TEXT})
+        with pytest.raises(ValueError, match=blamed):
+            resolve_templates(config, shared, "ask")
+
     def test_upstream_array_text_into_a_dict_param_names_the_shape(self) -> None:
         config, shared = self._merged("${up.list_text}", UPSTREAM)
         with pytest.raises(ValueError, match=r"expects dict but \$\{up.list_text\} resolved to list"):
@@ -444,3 +457,144 @@ class TestPostRunReaders:
         result = self._invoke(tmp_path, "d.payload")
         assert result.exit_code == 0, result.output
         assert JSON_TEXT in result.output
+
+
+# --- Consumers that read "unresolved" as "absent" (mid-task review #1) ----------------------
+
+NESTED = {"payload": json.dumps({"again": True, "a": 1, "rules": "Use these instructions"})}
+
+LOOP_ON_INPUT = """# Loop on input
+
+A loop condition reading into a declared object.
+
+## Inputs
+
+### d
+
+An object.
+
+- type: object
+
+## Steps
+
+### step
+
+Run once.
+
+- type: code
+- loop:
+    while: @COND@
+    max_iterations: 2
+
+```python code
+result: int = 1
+```
+"""
+
+
+class TestUnreadTextIsNeverAbsent:
+    """A reference stopped at a declared input's JSON text is an author error everywhere —
+    never the "absent" a loop condition, inline batch items or a cache chunk would read it as."""
+
+    def test_a_loop_condition_fails_instead_of_stopping(self, tmp_path: Path) -> None:
+        wf = _write(tmp_path / "loop.pflow.md", LOOP_ON_INPUT.replace("@COND@", "${d.payload.again}"))
+        result = WorkflowRunner().run(str(wf), {"d": NESTED}, RunnerConfig(trace_enabled=False))
+        assert not result.success
+        message = " ".join(d.message for d in result.diagnostics)
+        assert "Node 'step' loop condition reads ${d.payload.again}: 'd.payload' is text" in message
+
+    def test_a_condition_on_a_real_field_of_the_input_still_runs(self, tmp_path: Path) -> None:
+        wf = _write(tmp_path / "loop.pflow.md", LOOP_ON_INPUT.replace("@COND@", "${d.again}"))
+        result = _run(wf, {"d": {**NESTED, "again": False}})
+        assert result.shared_after["step"]["result"] == 1
+
+    def test_inline_batch_items_fail_instead_of_carrying_the_literal(self) -> None:
+        from pflow.core.exceptions import DeclaredInputTextError
+
+        shared = {"d": NESTED, DECLARED_INPUT_TYPES_KEY: MappingProxyType({"d": "object"})}
+        with pytest.raises(DeclaredInputTextError, match=r"Batch items reads \$\{d.payload.a\}: 'd.payload' is text"):
+            resolve_batch_items(["${d.payload.a}"], shared)
+        assert resolve_batch_items(["${d.payload}"], shared) == [NESTED["payload"]]
+        assert resolve_batch_items(["${gone.x}"], shared) == ["${gone.x}"]  # an absent node: as before
+
+    def test_a_cache_chunk_fails_instead_of_being_dropped(self) -> None:
+        from pflow.core.exceptions import DeclaredInputTextError
+        from pflow.core.prompt_cache import CacheBlockIR, CacheChunkIR, CacheRenderContext, render_cache_chunks
+
+        def ctx(var: str) -> CacheRenderContext:
+            block = CacheBlockIR(ttl=None, items=(CacheChunkIR("rules", var, "Rules: ", 1),), source_line=1)
+            return CacheRenderContext(block, ("rules",), False, None, None)
+
+        shared: dict[str, Any] = {"d": NESTED, DECLARED_INPUT_TYPES_KEY: MappingProxyType({"d": "object"})}
+        with pytest.raises(DeclaredInputTextError, match=r"Cache chunk 'rules' reads \$\{d.payload.rules\}"):
+            render_cache_chunks(ctx("d.payload.rules"), shared)
+        rendered, skipped = render_cache_chunks(ctx("d.payload"), shared)
+        assert [chunk.name for chunk in rendered] == ["rules"]
+        assert skipped == []
+        assert render_cache_chunks(ctx("gone.x"), shared) == ([], ["rules"])  # an absent branch: skipped, as before
+
+    def test_json_output_of_a_declared_input_path_is_its_text(self, tmp_path: Path) -> None:
+        wf = _write(tmp_path / "wf.pflow.md", OBJECT_INPUT.replace("${d.payload.a}", "${d.payload}"))
+
+        def selected(declared: str) -> Any:
+            _write(
+                wf, OBJECT_INPUT.replace("${d.payload.a}", "${d.payload}").replace("type: object", f"type: {declared}")
+            )
+            payload = json.dumps({"payload": "1.10"})
+            args = ["--no-trace", "--output-format", "json", "-o", "d.payload", str(wf), f"d={payload}"]
+            result = click.testing.CliRunner().invoke(main, args)
+            assert result.exit_code == 0, result.output
+            return json.loads(result.output[result.output.index("{") :])["result"]["d.payload"]
+
+        assert selected("object") == "1.10"
+        assert selected("any") == 1.1  # an undeclared root keeps the JSON envelope's parse
+
+
+def test_prompt_cache_setup_sees_the_declarations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The prompt-cache builder resolves the prewarm model against the store — it must see
+    this workflow's declarations, and a failing build must not leave them installed."""
+    from pflow.runtime.engine import engine as engine_module
+
+    compiled = compile_workflow(
+        _ir([{"id": "sh", "type": "shell", "params": {"command": "true"}}], {"s": {"type": "string"}}),
+        Registry(),
+        {"s": "x"},
+    )
+    seen: list[Any] = []
+    monkeypatch.setattr(
+        engine_module,
+        "build_prompt_cache_dict",
+        lambda wf, shared: seen.append(shared.get(DECLARED_INPUT_TYPES_KEY)) or {},
+    )
+    WorkflowEngine().run(compiled, {"s": "x"})
+    assert [dict(m) for m in seen] == [{"s": "string"}]
+
+    def boom(wf: Any, shared: Any) -> Any:
+        raise RuntimeError("build failed")
+
+    monkeypatch.setattr(engine_module, "build_prompt_cache_dict", boom)
+    sentinel = MappingProxyType({"outer": "integer"})
+    shared: dict[str, Any] = {"s": "x", DECLARED_INPUT_TYPES_KEY: sentinel}
+    with pytest.raises(RuntimeError):
+        WorkflowEngine().run(compiled, shared)
+    assert shared[DECLARED_INPUT_TYPES_KEY] is sentinel
+
+
+def test_planner_prompt_cache_setup_sees_the_declarations(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`--dry-run` builds its prompt-cache map the way the engine does: after the declarations."""
+    from pflow.execution import plan as plan_module
+    from pflow.runtime.cache import MemoizationCache
+
+    compiled = compile_workflow(
+        _ir([{"id": "sh", "type": "shell", "params": {"command": "true"}}], {"s": {"type": "string"}}),
+        Registry(),
+        {"s": "x"},
+    )
+    seen: list[Any] = []
+    monkeypatch.setattr(
+        plan_module,
+        "build_prompt_cache_dict",
+        lambda wf, shared: seen.append(shared.get(DECLARED_INPUT_TYPES_KEY)) or {},
+    )
+    plan_module.create_planner_shared(compiled, {"s": "x"}, MemoizationCache(db_path=tmp_path / "c.db"), None)
+    assert [dict(m) for m in seen] == [{"s": "string"}]

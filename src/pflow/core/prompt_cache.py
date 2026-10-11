@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from pflow.core.cache_ttl import parse_cache_ttl
+from pflow.core.exceptions import DeclaredInputTextError
 from pflow.core.llm_capabilities import get_breakpoint_budget
 from pflow.core.templates import Expression, TemplateResolver, Text, parse, resolve
 
@@ -212,6 +213,9 @@ def render_cache_chunks(cache_ctx: CacheRenderContext, shared: dict[str, Any]) -
             continue
         value = _resolve_chunk_value(chunk, shared)
         if isinstance(value, _ChunkAbsentSentinel):
+            # An absent branch skips the chunk; a declared input's unread JSON text never does.
+            resolution = resolve("${" + chunk.var_expr + "}", shared)
+            DeclaredInputTextError.raise_for(resolution, shared, where=f"Cache chunk '{name}'")
             skipped.append(name)
             continue
         rendered.append(RenderedChunk(name, _render_segments(chunk.prose_before, None), value))

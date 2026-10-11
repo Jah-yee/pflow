@@ -595,6 +595,20 @@ def unparsed_declared_text(ref: Reference, context: Mapping[str, Any]) -> tuple[
     return None
 
 
+def declared_text_misses(resolution: Resolution, context: Mapping[str, Any]) -> list[tuple[str, str, str]]:
+    """``(reference, text path, text)`` for every operand of ``resolution``'s unresolved
+    expressions that stopped at a declared input's JSON text (``unparsed_declared_text``).
+    A consumer that treats "unresolved" as "absent" reads this first: such a miss is never
+    an absent value, always an author error."""
+    misses: list[tuple[str, str, str]] = []
+    for raw in sorted(resolution.unresolved):
+        for expression in parse("${" + raw + "}").expressions:
+            for operand in expression.operands:
+                if isinstance(operand, Reference) and (hit := unparsed_declared_text(operand, context)):
+                    misses.append((operand.raw, *hit))
+    return misses
+
+
 def _dynamic_index(inner: Reference, context: Mapping[str, Any]) -> int | None:
     found, value = lookup(inner, context)
     if not found:
@@ -956,6 +970,12 @@ class TemplateResolver:
 
     # Kept: the direct-test surface of `test_template_resolver.py`.
     _convert_to_string = staticmethod(to_string)
+
+    @staticmethod
+    def reads_declared_input(var_name: str, context: Mapping[str, Any]) -> bool:
+        """Whether a RAW path's root is a declared non-``any`` input of ``context``'s workflow —
+        a value read there is never re-parsed, by the walk or by whoever displays it."""
+        return _declared_typed(context, _split_raw_path(var_name)[0])
 
     @staticmethod
     def variable_exists(var_name: str, context: Mapping[str, Any]) -> bool:

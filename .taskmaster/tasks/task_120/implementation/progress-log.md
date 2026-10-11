@@ -308,3 +308,60 @@ resume path for any successor.
   fixed by I1, both ledgers re-run clean (PA 16/16, PC 23/23).
 - Next: mid-task review #1 (engine contact) on PA+PC, gate-run by I1 (it holds the code); then a FRESH Opus implementer
   for PB → PD (I1 at ~480k tokens, past the plan's ~350k rotation point).
+
+## [2026-10-11 16:20] I1 (Opus) — mid-task review #1 (engine contact) on PA+PC, gate-runner
+- Did: dispatched the pflow fan-out (codex) with three lenses, each with its own target per plan §4 PC, over `git diff
+  f6a789ed..d9d90332` → `scratchpads/task-120/mid-review-1.md` (exit 0, 328 s, Coverage: 3/3 lenses received, no failed
+  lens). Read the report in full; verified each finding against code; fixed all 6 with tests.
+- Changed: `core/{templates,exceptions,diagnostic_render,prompt_cache}.py`, `runtime/engine/{engine,loop_control,
+  batch_executor,template_resolution}.py`, `execution/{plan,formatters/success_formatter}.py`, `runtime/CLAUDE.md`
+  (consumer rule); tests in `tests/test_runtime/test_declared_input_resolution.py`.
+- Dispositions:
+
+  | # | Lens · sev | Finding (verified at) | Disposition |
+  |---|---|---|---|
+  | 1 | impact · Critical → **Warning** | `-o <path> --output-format json` re-parses the selected value (`success_formatter.py:234` `parse_json_or_original`) — a declared input's `"1.10"` emits `1.1` | **Fixed**: `TemplateResolver.reads_declared_input(raw_path, ctx)` (raw-path facade, beside `variable_exists`); the formatter skips the parse for a declared root. Downgraded: one output surface, explicit `-o` into an input. Test: real CLI, `object` → `"1.10"` with `any` → `1.1` as the presence half. |
+  | 2 | impact · Warning | Prompt-cache map built BEFORE the declarations are installed (`engine.py` run; `plan.py:600`) — prewarm model resolution reads unprotected | **Fixed**: engine installs the map first, then builds, and restores it if the build raises (the trace/prompt-cache installs keep "build first"); planner reordered. Tests: build sees `{"s": "string"}` (engine and planner); a raising build leaves the outer map in place. |
+  | 3 | silent · Critical | Cache chunk `${d.payload.rules}` into declared-object text → `_CHUNK_ABSENT` → chunk + prose silently dropped (`prompt_cache.py:170-174`) | **Fixed, different fix**: loud ONLY for the declared-text miss, at the one renderer `render_cache_chunks` (both the hash and the prepare sites); an absent branch is still skipped; the analyzer's direct `_resolve_chunk_value` use is unchanged (offline analysis). |
+  | 4 | silent · Critical | Inline `batch.items: ["${d.payload.a}"]` keeps the literal (`batch_executor.py:118` took `.value`) | **Fixed**: the same check in `resolve_batch_items` (both branches); an unresolved inline item for an ABSENT node stays literal as before (pinned). |
+  | 5 | silent · Critical | `loop.while: ${d.payload.again}` → unresolved → `None` → loop stops "normally" (`loop_control.py:145`) | **Fixed**: `evaluate_loop_condition` raises for the declared-text miss before the absent→stop rule; a real field of the same input still drives the loop (presence row). |
+  | 6 | feature-interactions · Warning | The type-error message blames the first declared `??` operand, not the winner (`template_resolution._declared_input_read`) | **Fixed**: judged by the winning operand via `lookup` (a literal winner → not declared). Three-row test (upstream wins / literal wins / declared wins), both mutants killed. |
+  | S1 | impact · Suggestion | Add regressions for JSON-mode `-o` and prewarm setup | **Done** (rows 1, 2). |
+
+  Mechanism for 3–5 (one rule, three consumers): `templates.declared_text_misses(resolution, ctx)` (data only) +
+  `exceptions.DeclaredInputTextError(PflowError)` (`retriable = False`; `raise_for(resolution, ctx, where=, node_id=)`)
+  + `exceptions.declared_text_reason(...)` — the ONE home of the §1.14 reason text, now also used by the W5 renderer
+  (`diagnostic_render._format_unparsed_text`). Message, e.g. `Node 'step' loop condition reads ${d.payload.again}:
+  'd.payload' is text ('…') — a declared input is never JSON-parsed, so there is no field 'again' to read.` + the fix as
+  the suggestion.
+- Verified: `make check` green; `make test` **11340 passed, 0 failed**. Mutation (fixed harness, counted): each fix's
+  guard removed → 1 failed each (loop raise, batch raise, chunk raise, `-o` guard, engine except-restore, engine install
+  moved after the build, planner install moved after the build, the blame's `lookup` and literal-winner branches). |
+  Assumed: the prewarm scenario's token thresholds (pinned through the build's store view, not a real prewarm token
+  count).
+- Deviations/surprises: a NEW exception class (`DeclaredInputTextError`) is my call (importance 2: reversible, one rule,
+  narrow trigger); the alternative — reusing `LoopConditionError` for loops and vanilla `ValueError`s at the batch and
+  chunk sites — splits one rule across three error shapes and adds vanilla exceptions. **Not widened (pre-existing class,
+  follow-up for the orchestrator):** those three consumers still read ANY other miss on a PRESENT root (a typo like
+  `${d.nope}` in `loop.while`, inline items or a chunk) as absent — silent before this task too; PE's validator covers
+  the statically certain shapes only.
+- Self-checks: fully-happy: clean — the one judgment call is above. test-reflect: not separately directed for the review
+  fixes; every new row is mutation-verified, each with its presence half.
+- Next: hand back (no commits); then PB.
+
+## [2026-10-11 16:35] task-orchestrator — mid-task review #1 dispositions accepted; rotate to I2 for PB → PD
+- Did: read [16:20]; accepted all six dispositions. Ruled I1's `DeclaredInputTextError(PflowError)` (2/5, reversible):
+  ACCEPTED — one rule, one structured error (root CLAUDE.md "raise PflowError subclasses"); the completion gate's
+  simplicity lens re-judges where `declared_text_reason` lives.
+- Follow-up recorded for the task-review (pre-existing, NOT widened, not built): `loop.while`, inline `batch.items` and
+  `## Cache` chunks read ANY other miss on a PRESENT root (`${d.nope}` typo) as absent — silent before this task.
+- Rotation: I1 at ~557k tokens → fresh Opus · high I2 for PB → PD, briefed from plan + this log + I1's successor list
+  (recorded below so it survives I1).
+- I1's successor brief (beyond `<run-id>`, the "(here ${item} resolved to 'x')" clause, `context.py:52`): child inputs
+  arrive as TEXT at run time until PD (parent stopped parsing; child compile types item 0 only, `exec` seeds raw values
+  over it); default errors are labelled `argument` until PB's placeholder change; thread `step`/`sub_workflow_path`
+  into `prepare_inputs` as kwargs rather than rebuilding diagnostics; `compile_workflow(ir, reg, {})` does not mutate an
+  empty caller dict (PB-10 needs non-empty params); mutation testing: `PYTHONDONTWRITEBYTECODE=1` + purge `.pyc`; fixture
+  traps: a declared `## Outputs` name equal to a step id overwrites `shared[step]`, the LLM mock's text response is JSON
+  text; zsh does not word-split unquoted `$VAR`.
+- Next: commit review fixes; launch I2.

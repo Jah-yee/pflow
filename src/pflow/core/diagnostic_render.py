@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from pflow.core.diagnostic import (
@@ -13,8 +12,9 @@ from pflow.core.diagnostic import (
     Diagnostic,
     Severity,
 )
+from pflow.core.exceptions import declared_text_reason
 from pflow.core.security_utils import is_sensitive_parameter
-from pflow.core.templates import Field, parse_path
+from pflow.core.templates import parse_path
 
 _CACHE_CATEGORIES: frozenset[str] = frozenset({CACHE_FAILURE_CATEGORY, CACHE_WARNING_CATEGORY, CACHE_ADVISORY_CATEGORY})
 
@@ -606,20 +606,8 @@ def _format_path_error_reference(header: str, ref: dict[str, Any], root: str, va
 
 def _format_unparsed_text(text_path: str, text: str, var: str) -> list[str]:
     """The miss is the declared-input rule, not a typo: name the text and the two remedies."""
-    rest = parse_path(f"x{var[len(text_path) :]}")
-    first = rest.path[0] if rest is not None and rest.path else None
-    missing = f"field '{first.name}'" if isinstance(first, Field) else "index"
-    holder = text_path.rsplit(".", 1)[-1] if "." in text_path and not text_path.endswith("]") else None
-    try:
-        nested = json.dumps({holder: json.loads(text)}) if holder else None
-    except ValueError:  # truncated or masked
-        nested = None
-    nest = f"Nest the object in the input (`{nested}`)" if nested else "Nest the object in the input"
-    return [
-        f"      → '{text_path}' is text ({_truncate_error_text(repr(text), 80)}) — a declared input is never"
-        f" JSON-parsed, so there is no {missing} to read.",
-        f"        {nest}, or parse the text in a code step (`json.loads({holder or 'text'})`).",
-    ]
+    what, fix = declared_text_reason(var, text_path, text)
+    return [f"      → {what}", f"        {fix}"]
 
 
 def _render_failure_data_block(category: str, data: dict[str, Any]) -> list[str]:

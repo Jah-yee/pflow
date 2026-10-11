@@ -63,6 +63,9 @@ at the resolver layer; strict/permissive handling is the engine's
 (`engine/CLAUDE.md` → **Parameters, reuse, and templates**). Every runtime consumer
 — strict check, Optional-input `None` injection, loop carry, declared outputs,
 batch items, the prewarm `system`, cache chunks — reads the `Resolution` channels.
+A consumer that reads "unresolved" as "absent" (a loop condition, batch items, a
+cache chunk) first calls `DeclaredInputTextError.raise_for`: a reference stopped at
+a declared input's JSON text is an author error, never an absent value.
 
 Carried loop inputs must affect both resolution and cache hashing. Their shared
 entry is `engine/plan_node.py::plan_node`, using

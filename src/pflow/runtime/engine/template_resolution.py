@@ -21,6 +21,7 @@ from pflow.core.templates import (
     Reference,
     Resolution,
     TemplateResolver,
+    lookup,
     parse,
     resolve,
 )
@@ -232,14 +233,17 @@ def validate_resolved_type(
 
 
 def _declared_input_read(template: Any, context: dict[str, Any]) -> tuple[str, str] | None:
-    """``(name, declared type)`` of the first declared non-``any`` input a simple template reads."""
+    """``(name, declared type)`` when a simple template's value came from a declared non-``any``
+    input — judged by the operand that supplied it, as resolution judges it."""
     declared: Mapping[str, str] = context.get(DECLARED_INPUT_TYPES_KEY) or {}
-    if not isinstance(template, str) or not declared:
+    if not isinstance(template, str) or not declared or not (expressions := parse(template).expressions):
         return None
-    for expression in parse(template).expressions:
-        for operand in expression.operands:
-            if isinstance(operand, Reference) and declared.get(operand.root, "any") != "any":
-                return operand.root, declared[operand.root]
+    for operand in expressions[0].operands:
+        if not isinstance(operand, Reference):
+            return None  # a literal won
+        if lookup(operand, context)[0]:
+            kind = declared.get(operand.root, "any")
+            return (operand.root, kind) if kind != "any" else None
     return None
 
 

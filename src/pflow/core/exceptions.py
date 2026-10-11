@@ -13,6 +13,7 @@ from pflow.core.diagnostic import LLM_FAILURE_CATEGORY, LLM_VALIDATION_CATEGORY,
 from pflow.core.gate import GATE_KIND_APPROVAL, GateRequest
 from pflow.core.llm_providers import detect_provider, extract_provider_prefix
 from pflow.core.security_utils import is_sensitive_parameter
+from pflow.core.templates import Field, Resolution, declared_text_misses, parse_path
 from pflow.core.types import TypeSpec
 
 if TYPE_CHECKING:
@@ -350,6 +351,62 @@ def _fix_example(spec: TypeSpec, received: Any) -> str:
     if spec.name == "string" and isinstance(received, (dict, list)):
         return _json_text(received)
     return spec.example_text
+
+
+def declared_text_reason(reference: str, text_path: str, text: str) -> tuple[str, str]:
+    """``(what happened, what to do)`` when ``${reference}`` walked into ``text`` at ``text_path``
+    — JSON text inside a declared input, which is never re-parsed (diagnostics-checkpoint §1.14).
+    ``text`` is shown as given (pass it masked) and cut at 80 characters."""
+    rest = parse_path(f"x{reference[len(text_path) :]}")
+    first = rest.path[0] if rest is not None and rest.path else None
+    missing = f"field '{first.name}'" if isinstance(first, Field) else "index"
+    shown = repr(text) if len(text) <= _RECEIVED_LIMIT else repr(text[:_RECEIVED_LIMIT]) + "…"
+    holder = text_path.rsplit(".", 1)[-1] if "." in text_path and not text_path.endswith("]") else None
+    try:
+        nested = json.dumps({holder: json.loads(text)}) if holder else None
+    except ValueError:  # masked
+        nested = None
+    nest = f"Nest the object in the input (`{nested}`)" if nested else "Nest the object in the input"
+    return (
+        f"'{text_path}' is text ({shown}) — a declared input is never JSON-parsed, so there is no {missing} to read.",
+        f"{nest}, or parse the text in a code step (`json.loads({holder or 'text'})`).",
+    )
+
+
+class DeclaredInputTextError(PflowError):
+    """A reference walked into JSON text inside a declared input, which is never re-parsed
+    (ADR-0017). Raised by a consumer that would otherwise read the miss as an absent value —
+    a loop condition, batch items, a ``## Cache`` chunk — so it never passes silently."""
+
+    retriable = False
+
+    def __init__(self, *, where: str, reference: str, text_path: str, text: str, node_id: str | None = None) -> None:
+        self.reference = reference
+        self.text_path = text_path
+        self.node_id = node_id
+        ref = parse_path(reference)
+        shown = "<REDACTED>" if ref is not None and is_sensitive_parameter(ref.root) else text
+        what, self.fix = declared_text_reason(reference, text_path, shown)
+        super().__init__(f"{where} reads ${{{reference}}}: {what}")
+
+    @classmethod
+    def raise_for(cls, resolution: Resolution, context: Any, *, where: str, node_id: str | None = None) -> None:
+        """Raise for the first declared-text miss in ``resolution``; return when there is none."""
+        for reference, text_path, text in declared_text_misses(resolution, context):
+            raise cls(where=where, reference=reference, text_path=text_path, text=text, node_id=node_id)
+
+    def to_diagnostics(self) -> list[Diagnostic]:
+        return [
+            Diagnostic(
+                severity=Severity.ERROR,
+                message=str(self),
+                title="Template Resolution Failed",
+                suggestions=[self.fix],
+                node_id=self.node_id,
+                source="runtime",
+                context={"category": "execution_failure", "text_not_parsed": self.text_path},
+            )
+        ]
 
 
 class UnsupportedCacheTTLError(PflowError):

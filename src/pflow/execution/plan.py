@@ -597,8 +597,9 @@ def create_planner_shared(
     initialize_execution_state(shared)
     if parent_workflow_file:
         shared["_pflow_workflow_file"] = parent_workflow_file
+    # As WorkflowEngine.run: declarations first — the prompt-cache builder resolves the model.
+    shared[DECLARED_INPUT_TYPES_KEY] = MappingProxyType(compiled.input_types)
     shared["__pflow_prompt_cache__"] = MappingProxyType(build_prompt_cache_dict(compiled, shared))
-    shared[DECLARED_INPUT_TYPES_KEY] = MappingProxyType(compiled.input_types)  # as WorkflowEngine.run
     # issue #445: mirror the engine's _PROPAGATED_KEYS["__loop_active__"]
     # (WorkflowExecutor._create_child_storage). When this child plan is a looped
     # sub-workflow body, the active loop depth must cross the boundary so the
