@@ -1166,3 +1166,15 @@ resume path for any successor.
   `origin/main`, `make check` + `make test-all-local`, verify.sh, `capture.py --check` vs P0's 5; (4) spec Status done +
   Completed; `create-task-review`; `create-pr` closing #686, #687, #188 (Refs #297, #742, #743 — not closing PRs);
   check `closingIssuesReferences`.
+
+## [2026-10-12 01:40] task-orchestrator — H1/W1/#790 RULED; main merged; plan addendum §10 (PG)
+- Ruling (user via main orchestrator, 2026-10-11, recommendations accepted): **H1 → B**; **W1 → A in this task** (plan
+  addendum + targeted re-review on the W1 diff; one-line ADR-0017 amendment text goes in my completion hand-back);
+  **#790 → fold** (PR closes it, stated as pre-existing). Closing keywords: #686, #687, #188, #790; #297/#742/#743 Refs.
+- Did: merged `origin/main` (#787 `714df226` one printed Diagnostic form, #780 anyio, #779 MCP discovery) → `dfd47816`.
+  Conflict only in `.claude/agents/review-agent-ux.md` (+ codex sync): the rerun-display row (module deleted here) dropped,
+  main's Security-utils wording kept. Gates on the merge: `make check` rc 0, `make test` 11478 passed (4 third-party
+  starlette warnings). Wrote plan §10 (D15 W1 binding provenance, D16 H1, D17 #790) — `ed8d637b`.
+- Pending coordination: lane #783 re-records `12/04-guide-auto-detect` + fixes `verify.sh`; if it lands before my next
+  merge, re-run `regenerate.sh` on that case after merging so this branch's guide re-record wins.
+- Next: fresh Opus · high I5 for PG (+ its targeted re-review as gate-runner).
