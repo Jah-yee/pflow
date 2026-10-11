@@ -39,11 +39,13 @@ Check `examples/CLAUDE.md` and references to a committed fixture before changing
 
 ## Autouse fixtures and isolation
 
+**Tests never touch the developer's real home.** `tests/shared/real_home_guard.py` (registered by `tests/conftest.py`) points `HOME`/`USERPROFILE` at a throwaway session home before any other conftest, fixture or test runs, and fails the test that opens anything under pflow's directories in the real home (`~/.pflow`, the personal skill dirs) or spawns a child whose env lacks its home variable. The per-test fixture below narrows the home further, but only for function scope: a module-, class- or session-scoped fixture that needs pflow state takes an explicit path from `tmp_path_factory`.
+
 `tests/conftest.py` supplies these automatically:
 
 | Fixture | Non-obvious boundary |
 |---------|----------------------|
-| `isolate_pflow_config` | Redirects both `Path.home()` and `HOME`, manager paths, registry, and memoization cache. Yields isolated config paths; `DEBUG_TEST_PATHS=1` prints them. |
+| `isolate_pflow_config` | Redirects `Path.home()`, `HOME` and `USERPROFILE`, manager paths, registry, and memoization cache. Yields isolated config paths; `DEBUG_TEST_PATHS=1` prints them. |
 | `mock_llm_client` | Patches `pflow.core.llm_client.complete` and imported consumer bindings; yields `MockLLMClient`. |
 | `_inject_fake_llm_api_keys` | Supplies absent canonical-provider keys so validation reaches mocked calls. `no_fake_llm_keys` instead clears ANTHROPIC/OPENAI/GEMINI/GOOGLE key variables, including the Gemini alias. |
 | `_block_upstream_cost_map_fetch` | Blocks runtime and validator catalog fetches using separate latches. Fetch-path tests must reset the relevant latch; see `test_core/test_litellm_runtime.py`. |
@@ -70,7 +72,7 @@ Exact targets and markers live in `Makefile` and `pyproject.toml`:
 - Pass `encoding="utf-8"` for text file and subprocess I/O, including Python snippets embedded in workflows. Make test targets enable `PYTHONWARNDEFAULTENCODING=1`; pytest treats `EncodingWarning` as an error. Bare pytest does not itself enable that interpreter flag. Binary I/O and deliberate byte-semantics tests are exempt.
 - Tests needing serialized trace files must use `trace_files`; runtime event assertions can use `result.trace.events`.
 
-For subprocesses, use `uv_exe` and `prepared_subprocess_env` from `tests/conftest.py`. The latter writes a registry and isolates the child home; copy its dict before per-test changes. For custom environments, `set_isolated_home` sets both `HOME` and Windows `USERPROFILE`. A parent-process `Path.home` patch does not change the child.
+For subprocesses, use `uv_exe` and `prepared_subprocess_env` from `tests/conftest.py`. The latter writes a registry and isolates the child home; copy its dict before per-test changes. For custom environments, `set_isolated_home` sets both `HOME` and Windows `USERPROFILE`; the guard fails a spawn whose env lacks the variable the child's platform reads. A parent-process `Path.home` patch does not change the child.
 
 `PYTEST_CURRENT_TEST` suppresses settings→environment injection in `src/pflow/core/llm_config.py::inject_settings_env_vars` and MCP startup, and skips `src/pflow/cli/logging_config.py::configure_logging`. Real subprocess logging tests must remove it from the child environment; see `test_cli/test_progress_streaming_subprocess.py`.
 
