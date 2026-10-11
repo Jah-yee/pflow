@@ -21,6 +21,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 ROOT_DISTRIBUTION = "pflow-cli"
+_TEST_DIRS = {"test", "tests"}
 
 
 def _requirements(dist: Distribution, extras: set[str]) -> list[Requirement]:
@@ -62,7 +63,9 @@ def _compile_warnings(dist: Distribution) -> list[str]:
     assert dist.files is not None, f"{dist.name} has no file inventory (RECORD); cannot scan it"
     found: list[str] = []
     for file in dist.files:
-        if file.suffix != ".py":
+        # A dependency's own test suite is never imported by pflow, so it cannot reach stderr
+        # (pywin32 ships one with a 3.14 SyntaxWarning).
+        if file.suffix != ".py" or _TEST_DIRS & set(file.parts[:-1]):
             continue
         path = Path(str(dist.locate_file(file)))
         source = path.read_bytes()
