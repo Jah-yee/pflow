@@ -175,7 +175,8 @@ merged PR. Squash subjects can name issues too (`fix: … (#628) (#649)`),
 and a direct-to-main commit can end in an issue number; neither may
 become a PR link. A number missing from the 200 most recent merged PRs
 costs one `gh api` lookup; a lookup that fails for any reason other
-than "no such number" fails the step rather than drop a real PR.
+than "no such number" (404, or 410 for a deleted issue) fails the step
+rather than drop a real PR.
 
 Timeout is raised above the 30s default because `gh pr list` over 200
 merged PRs can be slow on active repos.
@@ -221,12 +222,14 @@ for line in file_log.strip().split('\n'):
     elif line.strip() and current_hash:
         file_changes.setdefault(current_hash, []).append(line.strip())
 
-pr_out = subprocess.run(
+pr_list = subprocess.run(
     ['gh', 'pr', 'list', '--state', 'merged', '--limit', '200',
      '--json', 'number,title,body'],
-    capture_output=True, encoding='utf-8', check=True
-).stdout
-prs = json.loads(pr_out) if pr_out.strip() else []
+    capture_output=True, encoding='utf-8'
+)
+if pr_list.returncode != 0:
+    raise RuntimeError(f'gh pr list failed: {pr_list.stderr.strip()}')
+prs = json.loads(pr_list.stdout) if pr_list.stdout.strip() else []
 pr_by_num = {pr['number']: pr for pr in prs}
 
 def merged_pr(num):
@@ -235,7 +238,8 @@ def merged_pr(num):
             ['gh', 'api', f'repos/{repo}/issues/{num}'],
             capture_output=True, encoding='utf-8'
         )
-        if found.returncode != 0 and 'HTTP 404' not in found.stderr:
+        gone = 'HTTP 404' in found.stderr or 'HTTP 410' in found.stderr
+        if found.returncode != 0 and not gone:
             raise RuntimeError(
                 f'Cannot check whether #{num} is a merged PR: {found.stderr.strip()}'
                 ' — re-run once gh can reach GitHub'
@@ -1013,6 +1017,7 @@ changelog_path: str
 mintlify_path: str
 context_path: str
 
+linked = sum(1 for e in entries if e['context']['pr_link'])
 lines = []
 
 if warnings:
@@ -1027,7 +1032,7 @@ lines.extend([
     f'Date: {date_iso}\n',
     'Created files:',
     f'  {changelog_path}',
-    f'    {len(entries)} entries with PR links',
+    f'    {len(entries)} entries, {linked} with PR links',
 ])
 
 if mintlify_path:

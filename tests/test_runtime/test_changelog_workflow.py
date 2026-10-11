@@ -33,17 +33,22 @@ RECENT_PRS = [
     {"number": 12, "title": "Add retries", "body": "Implements Task 57."},
     {"number": 559, "title": "Task 164 decisions", "body": ""},
 ]
-# Older numbers, as `gh api repos/{repo}/issues/N` returns them (the endpoint answers for issues and PRs alike).
+# `gh api repos/{repo}/issues/N` answers (exit code, stdout, stderr) — the endpoint serves issues and PRs alike.
 OLDER_ITEMS = {
     30: {"number": 30, "title": "Old feature", "body": "", "pull_request": {"merged_at": "2026-01-02T00:00:00Z"}},
     31: {"number": 31, "title": "Closed without merging", "body": "", "pull_request": {"merged_at": None}},
     656: {"number": 656, "title": "Web UI: approve all remaining", "body": "An issue."},
 }
+API_ANSWERS = {n: (0, json.dumps(item), "") for n, item in OLDER_ITEMS.items()} | {
+    9998: (1, "", "gh: This issue was deleted (HTTP 410)")
+}
+NOT_FOUND = (1, '{"message":"Not Found"}', "gh: Not Found (HTTP 404)")
 FIXTURE_MESSAGES = [
     "fix(validation): require a source on every declared output (#628) (#649)",
     "docs(task-183): approval gates in loops (#656); spec refreshed by an architecture-fit read",
     "docs: spec for approve-all (#656)",
     "docs: spec for a typo'd reference (#9999)",
+    "docs: note on a since-deleted issue (#9998)",
     "Merge pull request #12 from someone/retries\n\nAdd retries",
     "feat: old feature (#30)",
     "chore: closed attempt (#31)",
@@ -88,12 +93,10 @@ def gather(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, api_error: str = 
         if argv[1:3] == ["pr", "list"]:
             return subprocess.CompletedProcess(argv, 0, json.dumps(RECENT_PRS), "")
         if argv[1] == "api" and argv[2].startswith("repos/owner/repo/issues/"):
-            if api_error:
-                return subprocess.CompletedProcess(argv, 1, "", api_error)
-            item = OLDER_ITEMS.get(int(argv[2].rsplit("/", 1)[1]))
-            if item is None:
-                return subprocess.CompletedProcess(argv, 1, '{"message":"Not Found"}', "gh: Not Found (HTTP 404)")
-            return subprocess.CompletedProcess(argv, 0, json.dumps(item), "")
+            code, out, err = (
+                (1, "", api_error) if api_error else API_ANSWERS.get(int(argv[2].rsplit("/", 1)[1]), NOT_FOUND)
+            )
+            return subprocess.CompletedProcess(argv, code, out, err)
         raise AssertionError(f"unexpected gh call: {argv}")
 
     monkeypatch.setattr(subprocess, "run", fake_gh)
@@ -125,10 +128,11 @@ def test_squash_commit_links_its_pr_not_the_issue_it_names(commits_by_subject: d
         "docs(task-183): approval gates in loops (#656); spec refreshed by an architecture-fit read",
         "docs: spec for approve-all (#656)",
         "docs: spec for a typo'd reference (#9999)",
+        "docs: note on a since-deleted issue (#9998)",
         "chore: closed attempt (#31)",
         "docs: post-merge reconcile for Task 164",
     ],
-    ids=["issue-mid-subject", "issue-trailing", "no-such-number", "unmerged-pr", "pr-in-body-only"],
+    ids=["issue-mid-subject", "issue-trailing", "no-such-number", "deleted-issue", "unmerged-pr", "pr-in-body-only"],
 )
 def test_commit_without_a_merged_pr_gets_no_pr_link(
     commits_by_subject: dict[str, dict[str, Any]], subject: str
@@ -172,7 +176,8 @@ def test_release_summary_names_what_the_task_review_count_counts() -> None:
     action, shared = run_step(
         "create-summary",
         {
-            "entries": [{}] * 25,
+            "entries": [{"context": {"pr_link": "https://github.com/o/r/pull/1"}}] * 16
+            + [{"context": {"pr_link": ""}}] * 9,
             "skipped": [{}] * 31,
             "task_reviews": {"118": "review", "181": "review", "183": "review"},
             "next_version": "v0.16.0",
@@ -186,4 +191,5 @@ def test_release_summary_names_what_the_task_review_count_counts() -> None:
     )
 
     assert action == "default"
+    assert "25 entries, 16 with PR links" in shared["result"]
     assert "31 skipped changes, 3 task reviews included — review before committing" in shared["result"]
