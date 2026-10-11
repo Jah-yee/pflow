@@ -107,7 +107,14 @@ _FAILED_CHILD_BATCH = {
             "child_failure": {
                 "failed_node": "auth",
                 "failures": {
-                    "auth": {"data": {"headers": [{"Authorization": "Bearer raw"}], "errors": [[{"api_key": "raw"}]]}}
+                    "auth": {
+                        "data": {
+                            "headers": [{"Authorization": "Bearer raw"}],
+                            "errors": [[{"api_key": "raw"}]],
+                            # A response body shaped like a bundle is node output, not a bundle.
+                            "response": {"failed_node": "login", "failures": {"token": "raw"}},
+                        }
+                    }
                 },
             },
         }
@@ -129,4 +136,8 @@ class TestArchivalVersusPrintingCompaction:
 
         assert "item" not in error
         data = error["child_failure"]["failures"]["auth"]["data"]
-        assert data == {"headers": [{"Authorization": "<REDACTED>"}], "errors": [[{"api_key": "<REDACTED>"}]]}
+        assert data == {
+            "headers": [{"Authorization": "<REDACTED>"}],
+            "errors": [[{"api_key": "<REDACTED>"}]],
+            "response": {"failed_node": "login", "failures": {"token": "<REDACTED>"}},
+        }

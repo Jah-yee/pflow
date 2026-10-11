@@ -88,28 +88,33 @@ def compact_batch_error_detail(error_detail: Mapping[str, Any]) -> dict[str, Any
     return compact
 
 
-def _redact_child_failure(value: Any) -> Any:
+# The keys a child-failure bundle sits under: a batch error record's field, and a failed
+# child workflow step's output (``WorkflowExecutor``) inside an enclosing bundle.
+_BUNDLE_KEYS = frozenset({"child_failure", "_pflow_child_failure"})
+
+
+def _redact_child_failure(value: Any, *, is_bundle: bool = True) -> Any:
     """``redact_sensitive``, except the keys of a child bundle's ``failures`` map stay.
 
     Those keys are child node IDs — names the author chose, not parameter names: a step
     called ``auth`` keeps its failure record (the reconstructor reads it), and redaction
-    applies inside the record. A bundle is any mapping carrying ``failed_node`` and
-    ``failures`` (``WorkflowExecutor._extract_child_failure``), however deep it nests —
-    under a child batch's ``errors[].child_failure`` or a child workflow's own bundle.
+    applies inside the record. A value is a bundle by position (the root, or under a
+    ``_BUNDLE_KEYS`` key), never by shape, so node output shaped like one is redacted in full.
     """
     if isinstance(value, list):
-        return [_redact_child_failure(item) for item in value]
+        return [_redact_child_failure(item, is_bundle=False) for item in value]
     if not isinstance(value, Mapping):
         return value
-    is_bundle = "failed_node" in value and isinstance(value.get("failures"), Mapping)
     redacted: dict[Any, Any] = {}
     for key, item in value.items():
-        if is_bundle and key == "failures":
-            redacted[key] = {node_id: _redact_child_failure(record) for node_id, record in item.items()}
+        if is_bundle and key == "failures" and isinstance(item, Mapping):
+            redacted[key] = {
+                node_id: _redact_child_failure(record, is_bundle=False) for node_id, record in item.items()
+            }
         elif isinstance(key, str) and is_sensitive_parameter(key):
             redacted[key] = "<REDACTED>"
         else:
-            redacted[key] = _redact_child_failure(item)
+            redacted[key] = _redact_child_failure(item, is_bundle=key in _BUNDLE_KEYS)
     return redacted
 
 
