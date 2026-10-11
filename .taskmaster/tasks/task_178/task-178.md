@@ -36,8 +36,9 @@ Measured on SDK 2.2.0 (research below), eight sites go silently wrong:
 
 - `nodes/mcp/node.py:742` — structured tool results ignored (`hasattr(r, "structuredContent")` is False);
 - `nodes/mcp/node.py:747` — **tool errors read as success** (`isError`), node returns `default`;
-- `mcp/discovery.py:176`, `:250` — every discovered tool gets an empty input/output schema
-  (flows into the registry, validation, `describe`);
+- `mcp/discovery.py:_tool_definition` — no longer silent (#756): it reads `tool.inputSchema` /
+  `tool.outputSchema` directly, so on v2 discovery fails (prior tools kept) and mypy flags
+  `attr-defined`, instead of registering every tool without parameters; port to `input_schema`;
 - `mcp/errors.py:44` — 401/403/429/5xx diagnostics dead: v2 raises
   `MCPError(-32603, 'Server returned an error response')` with the status code gone;
 - `mcp/pool.py:31` — no reconnect after a stdio server dies (`MCPError(-32000)` is not an

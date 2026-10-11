@@ -44,7 +44,7 @@ server = Server("schema-fixture")
 async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(name="click", description="Click", inputSchema={CLICK_SCHEMA!r}, outputSchema={RESULT_SCHEMA!r}),
-        types.Tool(name="close", description="Close", inputSchema={ZERO_ARG_SCHEMA!r}),
+        types.Tool(name="close", description="Close", inputSchema={ZERO_ARG_SCHEMA!r}, outputSchema={{}}),
         types.Tool(name="anything", inputSchema={{}}),
     ]
 
@@ -82,15 +82,25 @@ def test_discovery_records_schemas_exactly_as_the_server_sent_them(server_config
     assert tools["click"]["inputSchema"] == CLICK_SCHEMA
     assert tools["click"]["outputSchema"] == RESULT_SCHEMA
     assert tools["close"]["inputSchema"] == ZERO_ARG_SCHEMA
-    assert "outputSchema" not in tools["close"]
-    # An empty schema is stored as sent, not replaced by a substitute object schema.
+    # Empty schemas are stored as sent: not replaced by a substitute, not dropped.
+    assert tools["close"]["outputSchema"] == {}
     assert tools["anything"]["inputSchema"] == {}
+    assert "outputSchema" not in tools["anything"]
     assert tools["anything"]["description"] == "MCP tool from fixture"
 
 
-@pytest.mark.usefixtures("sdk2_shaped_tools")
-def test_unreadable_tool_schema_fails_discovery(server_config: dict[str, Any]) -> None:
-    with pytest.raises(RuntimeError, match="Tool discovery failed for fixture"):
+def test_unreadable_output_schema_fails_discovery(
+    server_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A readable input schema does not excuse an output schema the SDK spells differently."""
+
+    async def list_tools(self: ClientSession, *args: Any, **kwargs: Any) -> SimpleNamespace:
+        tool = SimpleNamespace(name="click", description="Click", inputSchema=CLICK_SCHEMA, output_schema=RESULT_SCHEMA)
+        return SimpleNamespace(tools=[tool])
+
+    monkeypatch.setattr(ClientSession, "list_tools", list_tools)
+
+    with pytest.raises(RuntimeError, match="has no attribute 'outputSchema'"):
         MCPDiscovery().discover_tools("fixture", server_config=server_config)
 
 
