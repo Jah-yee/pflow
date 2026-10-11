@@ -595,17 +595,28 @@ def unparsed_declared_text(ref: Reference, context: Mapping[str, Any]) -> tuple[
     return None
 
 
+def declared_text_stop(ref: Reference, context: Mapping[str, Any]) -> tuple[str, str, str] | None:
+    """``(reference, text path, text)`` when the walk of ``ref`` — or of a dynamic index's
+    reference inside it, at any depth (``${items[${cfg.payload.i}]}``) — stopped at a declared
+    input's JSON text (``unparsed_declared_text``); ``None`` otherwise. Such a miss is never an
+    absent value, always an author error: ``??`` does not fall past it (``_evaluate``)."""
+    for inner in ref.index_sources:
+        if inner_hit := declared_text_stop(inner, context):
+            return inner_hit
+    if text := unparsed_declared_text(ref, context):
+        return (ref.raw, *text)
+    return None
+
+
 def declared_text_misses(resolution: Resolution, context: Mapping[str, Any]) -> list[tuple[str, str, str]]:
-    """``(reference, text path, text)`` for every operand of ``resolution``'s unresolved
-    expressions that stopped at a declared input's JSON text (``unparsed_declared_text``).
-    A consumer that treats "unresolved" as "absent" reads this first: such a miss is never
-    an absent value, always an author error."""
+    """``declared_text_stop`` of every operand of ``resolution``'s unresolved expressions.
+    A consumer that treats "unresolved" as "absent" reads this first."""
     misses: list[tuple[str, str, str]] = []
     for raw in sorted(resolution.unresolved):
         for expression in parse("${" + raw + "}").expressions:
             for operand in expression.operands:
-                if isinstance(operand, Reference) and (hit := unparsed_declared_text(operand, context)):
-                    misses.append((operand.raw, *hit))
+                if isinstance(operand, Reference) and (hit := declared_text_stop(operand, context)):
+                    misses.append(hit)
     return misses
 
 
@@ -629,7 +640,9 @@ def _evaluate(expression: Expression, context: Mapping[str, Any]) -> tuple[bool,
 
     ``??`` falls through whenever the left side "isn't there" — the node did not
     run OR the field is missing (like ``??`` in JS/C#). A found ``None`` ends
-    the chain. (Declared outputs use a stricter all-absent rule in
+    the chain, and so does a walk into a declared input's JSON text
+    (``declared_text_stop``): the expression stays unresolved, never the fallback.
+    (Declared outputs use a stricter all-absent rule in
     ``output_resolver._is_all_absent_coalesce``.)
     """
     for operand in expression.operands:
@@ -638,6 +651,8 @@ def _evaluate(expression: Expression, context: Mapping[str, Any]) -> tuple[bool,
         found, value = lookup(operand, context)
         if found:
             return True, value, operand
+        if declared_text_stop(operand, context):
+            break
     return False, None, None
 
 

@@ -200,6 +200,7 @@ def analyze(
     ctx = AnalysisContext.build(
         workflow_ir=workflow_ir,
         parameters=parameters or {},
+        input_sources=input_sources,
         memo_cache=memo_cache,
         trace_data=trace_data,
         trace_outputs_by_key=trace_index.outputs_by_key,
@@ -427,6 +428,7 @@ def _recompute_after_trace_misalignment(
     new_ctx = AnalysisContext.build(
         workflow_ir=ctx.workflow_ir,
         parameters=dict(ctx.parameters),
+        input_sources=ctx.input_sources,
         memo_cache=ctx.memo_cache,
         trace_data=trace_data,
         trace_outputs_by_key=trace_index.outputs_by_key,

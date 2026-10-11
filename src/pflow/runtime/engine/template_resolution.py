@@ -181,7 +181,7 @@ def validate_resolved_type(
     expected_types: dict[str, str],
     resolution_mode: str,
     *,
-    declared_input: tuple[str, str] | None = None,
+    declared_input: tuple[Reference, str] | None = None,
 ) -> str | None:
     """Validate that resolved value type matches expected parameter type.
 
@@ -197,7 +197,7 @@ def validate_resolved_type(
         template_str: Original template string (for error message)
         expected_types: param_key -> expected type mapping
         resolution_mode: "strict" or "permissive"
-        declared_input: ``(name, declared type)`` when the template reads a declared input —
+        declared_input: ``(reference, declared type)`` when the template reads a declared input —
             its text was never parsed, and the message says so
 
     Returns:
@@ -225,7 +225,9 @@ def validate_resolved_type(
     # dict/list parameters receiving strings — a declared input's text, or a failed JSON parse
     if isinstance(resolved_value, str):
         if declared_input is not None:
-            return build_declared_text_error_message(param_key, template_str, expected_type, *declared_input)
+            return build_declared_text_error_message(
+                param_key, template_str, expected_type, declared_input, resolved_value
+            )
         trimmed = resolved_value.strip()
         if trimmed and trimmed[0] in ("{", "["):
             return build_json_parse_error_message(param_key, resolved_value, template_str, expected_type, trimmed)
@@ -233,9 +235,9 @@ def validate_resolved_type(
     return None
 
 
-def _declared_input_read(template: Any, context: dict[str, Any]) -> tuple[str, str] | None:
-    """``(name, declared type)`` when a simple template's value came from a declared non-``any``
-    input — judged by the operand that supplied it, as resolution judges it."""
+def _declared_input_read(template: Any, context: dict[str, Any]) -> tuple[Reference, str] | None:
+    """``(reference, declared type)`` when a simple template's value came from a declared
+    non-``any`` input — judged by the operand that supplied it, as resolution judges it."""
     declared: Mapping[str, str] = context.get(DECLARED_INPUT_TYPES_KEY) or {}
     if not isinstance(template, str) or not declared or not (expressions := parse(template).expressions):
         return None
@@ -244,7 +246,7 @@ def _declared_input_read(template: Any, context: dict[str, Any]) -> tuple[str, s
             return None  # a literal won
         if lookup(operand, context)[0]:
             kind = declared.get(operand.root, "any")
-            return (operand.root, kind) if kind != "any" else None
+            return (operand, kind) if kind != "any" else None
     return None
 
 

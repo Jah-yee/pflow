@@ -243,6 +243,18 @@ class TestLiteralChildInputs:
             ir["edges"] = [{"from": "up", "to": "call"}]
         assert _validate_parent(tmp_path, ir) == []
 
+    def test_a_null_literal_is_not_a_value_for_a_required_input(self, tmp_path: Path) -> None:
+        """The child's boundary reads a passed ``null`` as not provided, so validation does too — before, it passed
+        validation and the run failed at the call."""
+        ir = _parent(tmp_path, {"s": "hello", "n": None})
+        (error,) = _validate_parent(tmp_path, ir)
+        assert (
+            error.message == "Step 'call': sub-workflow './child.pflow.md' requires input 'n' but it is not provided."
+        )
+        run = WorkflowRunner().run(str(tmp_path / "parent.pflow.md"), {}, RunnerConfig(trace_enabled=False))
+        assert not run.success
+        assert any("requires input 'n'" in d.message for d in run.diagnostics)
+
     def test_an_inline_batch_item_is_an_authored_literal(self, tmp_path: Path) -> None:
         """Inline ``items: ["7", "x", "9"]`` are written by the author: ``x`` is refused before anything runs."""
         batch = {"items": ["7", "x", "9"], "error_handling": "continue"}
@@ -323,6 +335,7 @@ class TestAnInputNamedLikeABatchAlias:
         [
             pytest.param("item", {"items": ["a"]}, "set `as: entry`", id="default-alias"),
             pytest.param("entry", {"items": ["a"], "as": "entry"}, "set `as: entry_item`", id="explicit-as"),
+            pytest.param("item", {"items": ["a"]}, "set `as: item_item2`", id="every-short-name-taken"),
         ],
     )
     def test_is_an_error_naming_as(self, alias: str, batch: dict[str, Any], fix: str) -> None:
@@ -332,6 +345,10 @@ class TestAnInputNamedLikeABatchAlias:
             _shell("other", f"${{{alias}}}"),
             name=alias,
         )
+        if fix.endswith("item2`"):  # `entry`, `item_item` and `item_entry` are inputs too
+            for taken in ("entry", "item_item", "item_entry"):
+                ir["inputs"][taken] = {"type": "string", "required": False, "description": "Taken."}
+                ir["nodes"].append(_shell(f"use-{taken.replace('_', '-')}", f"${{{taken}}}"))
         (error,) = _errors(ir)
         assert error.message == (
             f"Input '{alias}' has the same name as the batch alias of step 'show' — inside that step "
@@ -452,5 +469,36 @@ class TestEnumerationKeepsWhatItCannotKnow:
 
         literal = _parent(tmp_path, {"s": "hello", "n": "${item}"}, batch={"items": ["bad"]})  # presence half
         assert [e.context["path"] for e in _validate_parent(tmp_path, literal) if e.context] == [
+            "nodes[id=call].params.inputs.n"
+        ]
+
+    def test_a_whole_map_fallback_after_an_unknown_root_is_not_typed_statically(self, tmp_path: Path) -> None:
+        """``inputs: ${bindings ?? item}``: the run passes ``bindings``; the item's ``bad`` is never typed."""
+        ir = _parent(tmp_path, "${bindings ?? item}", batch={"items": [{"s": "a", "n": "bad"}]})
+        ir["inputs"] = {"bindings": {"type": "object", "required": True, "description": "Child inputs."}}
+        assert _validate_parent(tmp_path, ir) == []
+        run = WorkflowRunner().run(
+            str(tmp_path / "parent.pflow.md"), {"bindings": {"s": "a", "n": 7}}, RunnerConfig(trace_enabled=False)
+        )
+        assert run.success, run.diagnostics
+
+        whole = _parent(tmp_path, "${item}", batch={"items": [{"s": "a", "n": "bad"}]})  # presence half
+        assert [e.context["path"] for e in _validate_parent(tmp_path, whole) if e.context] == [
+            "nodes[id=call].batch.items[0].inputs.n"
+        ]
+
+    def test_a_fallback_past_an_item_the_run_resolves_is_not_typed_statically(self, tmp_path: Path) -> None:
+        """An inline item ``"${payload}"`` is resolved by the run before ``${item.n ?? "bad"}`` reads it; here the
+        walk into the template misses, so the fallback is a guess. An item written as a map is the author's."""
+        ir = _parent(tmp_path, {"s": "a", "n": '${item.n ?? "bad"}'}, batch={"items": ["${payload}"]})
+        ir["inputs"] = {"payload": {"type": "object", "required": True, "description": "One item."}}
+        assert _validate_parent(tmp_path, ir) == []
+        run = WorkflowRunner().run(
+            str(tmp_path / "parent.pflow.md"), {"payload": {"n": 7}}, RunnerConfig(trace_enabled=False)
+        )
+        assert run.success, run.diagnostics
+
+        written = _parent(tmp_path, {"s": "a", "n": '${item.n ?? "bad"}'}, batch={"items": [{"m": 1}]})
+        assert [e.context["path"] for e in _validate_parent(tmp_path, written) if e.context] == [
             "nodes[id=call].params.inputs.n"
         ]

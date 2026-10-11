@@ -14,6 +14,7 @@ template validator's container rule (Passes 6 and 9) reads it as well.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from itertools import chain, count
 from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
@@ -197,7 +198,8 @@ def _inputs_named_like_batch_aliases(workflow_ir: dict[str, Any]) -> list[Diagno
         alias = batch.get("as") if isinstance(batch.get("as"), str) and batch.get("as") else "item"
         if alias not in inputs:
             continue
-        rename = next(n for n in ("entry", f"{alias}_item", f"{alias}_entry") if n not in inputs)
+        candidates = chain(("entry", f"{alias}_item", f"{alias}_entry"), (f"{alias}_item{n}" for n in count(2)))
+        rename = next(n for n in candidates if n not in inputs)
         step = node.get("id")
         diagnostics.append(
             Diagnostic(

@@ -961,3 +961,102 @@ resume path for any successor.
   `06-checkbox-after.png`; measured checkbox left 481→477px = label left 477px (I4 [14:40]); I viewed 06.
 - Tooling postmortem issue filed: **#778** (form-fill workflow, scroll_to, locale).
 - Next: commit; merge `origin/main`; gates; assumption audit; completion gate.
+
+## [2026-10-11 15:26] G1 (Opus, fresh review-evaluator) — completion gate: code-mode deep-review on `origin/main...986dad54`
+- Did: one pflow fan-out (codex, cross-model), launched from the worktree root, backgrounded to
+  `scratchpads/task-120/gate/report.md` (exit 0, 711 s; per-lens raw extracted from the run's trace to
+  `gate/raw.json`); read in full; verified every finding against code (file:line read or executed under an isolated
+  HOME); fixed 15, disputed 1, 4 handed back (below). Assumption audit (a)–(e) executed.
+- **Lens partition** (targets: `gate/lenses.json`; every target named the 3-dot diff, the settled set — ADR-0006/0016/0017,
+  DECIDED ledger, rulings (i)–(iii), the ruled checkpoint, the [23:30] rulings — and "silence is a gap"). Cross-cutting,
+  WHOLE diff: `impact-completeness` (deleted helpers, `__pflow_input_types__` consumers, bundle key, string→typed sites,
+  entry labels, signature changes), `feature-interactions` (batch seq/parallel × nested × loops × routing × dry-run × memo
+  × `## Cache` × MCP × resume × web), `simplicity` (candidates (a)–(h) named), `spec-conformance` (spec + plan + log;
+  Requirement Inventory mandated). Dimension, scoped: `silent-failures` → param_coercion, templates, exceptions,
+  ir_preparation, engine/{template_resolution,batch_executor,loop_control,engine}, workflow_executor, prompt_cache,
+  execution/{plan,runner}, prompt_cache_analysis/*; `validation-consistency` → validator, declared_inputs, data_flow,
+  template_validation/* vs templates, template_resolution, type_child_inputs, prepare_inputs/check_supplied_inputs
+  (incl. validate-only with values); `agent-ux` → every message site + guide/** + both MCP copies + docs/architecture
+  pages; `test-fidelity` → the diff's test files; `concurrency-safety` → per-item child typing, engine install/restore,
+  batch store copies, `is_settings_injected`, planner install.
+- **Coverage: 9/9 lenses received, 0 failed.** Several lenses self-declared partial file reading (spec-conformance
+  most): the falsifier gets the inventory. Requirement Inventory saved verbatim:
+  `scratchpads/task-120/gate/requirement-inventory.md` (full lens output: `gate/spec-conformance-full.md`).
+- **Dispositions** (every "fixed" names the class it closes; tests mutation-checked with the fixed harness
+  `gate/mutate.py`: content restore, `PYTHONDONTWRITEBYTECODE=1`, all `__pycache__` purged before/after, counted):
+
+  | # | Lens(es) · sev | Finding (verified at) | Disposition |
+  |---|---|---|---|
+  | F1 | impact+FI+silent · W | Re-entry into the boundary loses labels: prediction compiles `analyze()`'s typed params as `argument`, so an MCP `any` `"true"` is re-inferred `True` → false `key_mismatch` (`predict.py:479`); dry-run nudge `analyze()` unlabelled (`runner.py:639`) | **Fixed — class: every internal re-entry carries the labels the values entered with.** Enumerated ALL boundary callers (`compile_workflow`/`prepare_inputs`/`check_supplied_inputs`/`analyze`): the two unlabelled re-entries were these. `AnalysisContext.input_sources` travels with `parameters` (both `build` sites in `analyze`); prediction re-compiles the root with them and a child as `parent` (as the runtime does) — covers `diagnose.py`'s fallback too; `plan()` passes its labels to the nudge. Test `test_prediction_types_a_call_value_as_the_run_did` (real run → engine key → analyze: no `key_mismatch` for `call`; presence: `argument` labels DO mismatch for `"true"`, not for `"02134"`). M4/M5 killed; **M6 (nudge) and M15 (trace-misalignment ctx rebuild) survive — unobservable today** (the nudge loads no trace, the rebuild never re-predicts); kept as correct-by-construction, unpinned. |
+  | F2 | FI+silent · C | `declared_text_misses` ignores dynamic-index refs: `loop.while: ${d.flags[${d.payload.index}]}` stopped "normally", inline item kept literal (executed: loop `success=True`) | **Fixed — class: every consumer that reads "unresolved" as "absent" sees a declared-text miss at ANY depth.** `templates.declared_text_stop` (recursive over `index_sources`) is the one home; `declared_text_misses` (loop, inline batch, cache chunk) and `_evaluate` read it. Tests: loop rows, inline-batch row with resolving-index presence half. M2 killed (2). |
+  | F3 | silent · C | `${d.payload.again ?? false}` resolves to the fallback — loop stops, output emits null, param gets the fallback (`templates.py:635`; executed) | **Fixed — class: `??` never falls past a declared-text miss, for every consumer** (one site, `_evaluate`: the chain ends unresolved, so node params render the W5 reason, loop/batch/chunk raise `DeclaredInputTextError`, outputs fail). Real absence still falls through; the text itself is still found (presence rows). Same class, adjacent site: output failures offered "write `${… ?? null}`" for a declared-text miss — a fix that cannot work — now excluded (`user_errors._optional_field_suggestions`; plain missing field keeps it, presence row). M1 (3), M3 (2) killed. |
+  | F4 | FI+VC · W | Static enumeration guesses: whole-map `inputs: ${bindings ?? item}` and `${item.n ?? "bad"}` over an item `"${payload}"` resolve to fallbacks, then (e) rejects a run-valid workflow (`validator.py:1823`) | **Fixed — class: enumeration types only values whose every dependency is known** (`_known_here`: reads only the alias, and a `??` never falls past a template the item holds), dict-form AND whole-map. Tests: both shapes validate clean AND run successfully; presence: the written-literal twins still error. M7, M8 killed. |
+  | F5 | VC · C | (i) literal `inputs: {n: null}` passes validation, run fails "requires input"; (ii) a required child input supplied only by env/settings is refused statically but accepted at run time | (i) **Fixed — class: the static presence check uses the boundary's rule "a null is no value"** (`_check_required_inputs` `supplied_keys`); test pins validate AND run verdicts. M9 killed. (ii) **HANDED BACK (H1)** — executed: static child + `n` exported → validation error; run-time-chosen child + `n` exported → runs, child gets `7`; `origin/main`'s `_validate_child_params` refused both. Plan D5/D10 decision. |
+  | F6a | impact · W | JSON AUTO output re-parses a declared input's text (`text=true` → `true`, `{"a":1}` → dict; executed) | **Fixed — class: an output surface that selects a declared input's own value never re-parses it** (explicit `-o` was fixed at mid-review #1; AUTO now: root hit + `reads_declared_input`, identity-checked against the namespace fallback). Test with presence half (a step's JSON stdout still parsed). M10 killed. DECLARED outputs sourced from an input are #743's boundary (H3 note). |
+  | F6b | silent · W | `-o d.payload.a --output-format json` → empty `result`, success | **HANDED BACK (H2)** — pre-existing class (executed: `-o d.nope` identical); the diff routes more paths into it. |
+  | F7a | conformance · W | guide + both MCP copies: "`default` (only when required: false …)" — D5 makes a default satisfy a required input | **Fixed** (3 files, identical text); claim executed (`prepare_inputs` on `{n: integer, default: 3}` → `n=3`, no error). |
+  | F7b | agent-ux · W | "Surrounding whitespace is ignored for every type but `string`" — `any` keeps ` 42` | **Fixed** (3 files); executed `' 42'` any→`' 42'`, integer→42, string→`' 42'`. |
+  | C1 | test-fidelity · C | `test_the_workflow_input_is_still_protected_in_another_step` never resolved the shadowing step | **Fixed (deepened)**: both steps resolve against ONE store (`get` asserts its local parse, `show` the input's text). M14 (`context = shared`) killed — it survived the old test. |
+  | W1 | VC · W | Alias rule's rename `next(...)` over 3 fixed names → `StopIteration` (executed: validate-only "Type: StopIteration") | **Fixed — class: the free-name search is unbounded** (`chain(…, count(2))`; the only fixed-candidate `next(` in `src/` — grep). Row: all short names taken → `as: item_item2`. M11 killed. |
+  | W2 | agent-ux · W | `headers: ${d.payload}` on a declared object → "Fix: declare `- type: object` for 'd'" (already is; executed) | **Fixed — class: the declared-text param error names the remedy for text INSIDE an input** (nest / `json.loads`), keeping the whole-input text (PC dev 1, accepted). Remedy split to one home `exceptions.declared_text_fix` (W5 renderer, `DeclaredInputTextError`, this message). Sensitive roots masked (row). M12 (2), M13 killed. |
+  | W3 | agent-ux · W | sub-workflows guide: a bad value "fails only that item" — authored inline literals fail validation | **Fixed** (literal vs run-produced split). |
+  | W4 | test-fidelity · W | `TestASettingsValueIsLabelledSettings` spawns real CLIs without `e2e` (tests/CLAUDE.md:30) | **Fixed** (`@pytest.mark.e2e`; `-m e2e` 3 passed incl. both, `-m "not e2e"` excludes them). |
+  | S1 | simplicity · S | `execute_json_workflow`'s `stdin_data` unused | **Disputed**: read at `cli/commands/run.py:378` (`_cleanup_temp_files(stdin_data, …)`, the binary-stdin temp file). |
+  | S2 | simplicity · S | Fold the workflow-type set copies onto `WORKFLOW_NODE_TYPES` | **Handed back as a follow-up (H4)** — the copies in the diff's reach agree; grep found three pre-existing single-spelling checks outside this task (`guide/__init__.py:301`, `prompt_cache_analysis/sub_workflow_walker.py:268`, `core/workflow/validator.py:946`) — the real class, not this task's diff. |
+  | S3 | impact · S | parity tests for auto-output + prediction | **Done** (F1, F6a tests). |
+  | S4 | conformance · S | final-head PZ evidence | This entry: gates below. |
+  | Gap | conformance (inventory) | UNPINNED: MCP JSON text → declared `string`; container-union annotation | **Pinned** (regression guards — would pass pre-gate): `TestMcpCallsPassTypedJson::test_json_text_for_a_declared_string_reaches_the_step_as_text` (presence: `any` parsed), `test_a_union_with_a_container_or_any_is_not_text`. M16, M17 killed. Not pinned: per-binding execution of the fifteen in-tree text→child-`string` bindings (LLM-backed; the mechanism `("workflow","inputs")` is mutation-pinned and PE's 186-file scan found 0 hits). |
+  | Clean | concurrency-safety; simplicity (a)–(h) otherwise | — | Recorded clean by the lenses (report "Verified clean"). |
+
+- Changed: `core/{templates,exceptions,user_errors}.py`, `core/prompt_cache_analysis/{analyze,context}.py`,
+  `.../stages/discrepancy/predict.py`, `core/workflow/{validator,declared_inputs}.py`,
+  `execution/{runner,formatters/success_formatter}.py`, `runtime/engine/{template_errors,template_resolution}.py`,
+  `guide/{core.md,features/sub-workflows.md}`, both MCP instruction copies, Task-159 case
+  `12-real-world-lyrics-generator/04-guide-auto-detect/expected-stdout.txt` (re-recorded: ONLY that case drifted, ONLY
+  from the W3 sentence); tests in `test_declared_input_resolution.py`, `test_workflow_validator_declared_inputs.py`,
+  `test_declared_input_entry_points.py`, `test_cache_analysis_per_id_emission.py`.
+- **Assumption audit** (drivers in `scratchpads/task-120/gate/audit/`, isolated HOME):
+  - (a) MCP `workflow_validate` inherits the declared-default and declared-read rules — **VERIFIED (executed)** via
+    `ExecutionService.validate_workflow`: bad default → the §1.2 default block at `inputs.n.default`; `${v.a}`/`${v.b ??
+    "fallback"}` on a declared string → both §1.6 errors (R3 sentence on the `??` one); alias → §1.9; object path valid.
+  - (b) MCP `workflow_plan` inherits per-item typing and the map — **VERIFIED (executed)**: batch child over `["7","x","9"]`
+    → item-1 WARNING with full context (`batch_item_index: 1`, path, source `parent`); execute then plan a cached code step
+    reading a declared `string` holding JSON text → step got `str`, plan `cached`/`hash_match`.
+  - (c) MCP `workflow_validate` takes no parameters — **VERIFIED (read)**: `mcp_server/tools/execution_tools.py:121-127`
+    (only `workflow`), `services/execution_service.py:364` `runner.validate(workflow, {})`; doc `docs/reference/cli/index.mdx:154`.
+  - (d) prewarm thresholds — **VERIFIED, with a correction to the framing**: model resolution reads the store after the map
+    is installed (`engine.py:895-900`, pinned by `test_prompt_cache_setup_sees_the_declarations`); the token-threshold
+    pre-flight builds `AnalysisContext(workflow_ir={})` (`engine.py:378`), so its declared map is `{}` — AND
+    `resolve_ref_value` never resolves a workflow-input root there (`context.py:269-279`). Executed: `${d.payload.a}`,
+    `${d.k}` (plain field) under `object` and `any` all come back unresolved, prewarm never disabled. The empty map is
+    therefore unobservable. Pre-existing limitation (not this task's): the prewarm pre-flight never measures an input's value.
+  - (e) other open items: bundle-key readers — **VERIFIED** one reader, `executor_service.build_subworkflow_diagnostics`
+    (`:149-151` legacy fallback), used by `batch_errors.py:124`; no web reader (grep). PB's "web spawn via test client only"
+    — closed by PF's real-form run (log [14:18]). Plan §8's accepted cost "`--dry-run` does not run the per-item child
+    check" is stale — PD built it and (b) executed it.
+- Verified: baseline before edits `make test` 11439 passed / 0 failed. After: `make check` rc 0; `make test` **11456
+  passed** (+17 new rows, −2 moved to e2e, C1 replaced in place); `make test-e2e` 56 passed / 2 skipped; `make
+  test-all-local` **11512 passed / 2 skipped**; Task-159 `verify.sh` **87 passed / 0 drifted / 0 errors** after the one
+  permitted re-record. Mutation ledger: 15 killed / 2 survived-and-explained (M6, M15) + gap pins M16, M17 killed. Real
+  CLI (isolated HOME): `??` and dynamic-index loop conditions → `Node 'step' loop condition reads ${d.payload.…}: 'd.payload'
+  is text…`; alias with all short names taken → `as: item_item2`; JSON auto output `text=true` → `"true"`; headers on a
+  descendant → nest / `json.loads` fix.  |  Assumed: nothing new. **Real-HOME note:** the fan-out (as at both mid-reviews)
+  wrote its own trace `~/.pflow/debug/workflow-trace-9dbaf964-run-review-lenses-20261011-144317-944570.json`; every
+  probe ran under an isolated HOME. `~/.pflow/registry.json` was rewritten at 15:11 with MAIN-checkout paths, by
+  another session.
+- Deviations/surprises: (1) F3 changes `??` semantics in the resolver for one case (a walk into a declared input's JSON
+  text ends the chain unresolved). It applies the principle accepted at mid-review #1 (a declared-text miss is "never an
+  absent value") to the fallback operator. Without it, ruling (i) opens a silent fallback the spec forbids ("otherwise
+  `${v.a ?? "x"}` becomes a new silent fallback"). Importance 2, reversible, one site. The falsifier should attack it.
+  (2) `declared_text_fix` split out of `declared_text_reason`: same text, now with one more caller. (3) F4's first cut
+  (refuse any item holding a template) would have dropped the static key checks for items with templated leaves.
+  Narrowed to `??` chains, the only shape where a static miss turns into a false literal.
+- Self-checks: fully-happy: (a) M6/M15 survive: unobservable today, stated rather than padded with a contrived test.
+  (b) The two gap pins are regression guards (pass on the pre-gate code), labelled as such. (c) The output `?? null`
+  suggestion fix was not a lens finding: I found it while verifying F3 on the real surface (same class). test-reflect:
+  not separately directed; every new row was mutation-checked with a presence half.
+- Next: hand back. H1 (child required input from env/settings), H2 (JSON `-o` miss), H3 (#743 note), H4 (workflow-type
+  spelling follow-up) need the orchestrator; then the falsifier with `gate/requirement-inventory.md`.
+  - Addendum (H3 evidence, executed): a declared output `source: ${text}` over `text: string` = `true` → `--output-format
+    json` emits `"out": true` (`success_formatter.collect_declared_outputs` → `parse_json_or_original`); text mode prints
+    the text. Same class as F6a, but the reader is a declared OUTPUT's — #743's boundary by ruling; not changed.

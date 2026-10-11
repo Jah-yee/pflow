@@ -5437,6 +5437,74 @@ def test_discrepancy_key_mismatch_via_real_planner_consumption(
     assert diag.context["actual_cache_key"] == actual_engine_key
 
 
+@pytest.mark.parametrize("flag", ["true", "02134"])
+def test_prediction_types_a_call_value_as_the_run_did(
+    tmp_path: Path,
+    isolate_pflow_config: dict[str, Any],
+    mock_llm_client: Any,
+    flag: str,
+) -> None:
+    """An `any` input entered through MCP keeps the text it was sent (`"true"` stays text), and
+    the analyzer's prediction re-compiles the same values with the same labels — so it computes
+    the run's cache key, not the key of a re-inferred `True` (a false `key_mismatch`)."""
+    import sqlite3
+
+    from pflow.core.prompt_cache_analysis.analyze import analyze as _analyze
+    from pflow.execution.result import RunnerConfig
+    from pflow.execution.runner import WorkflowRunner
+    from pflow.runtime.cache import MemoizationCache
+
+    workflow_path = tmp_path / "wf.pflow.md"
+    workflow_path.write_text(
+        "# Any flag\n\nAn LLM step reading an untyped input.\n\n"
+        "## Inputs\n\n### flag\n\nAnything.\n\n- type: any\n\n"
+        "## Steps\n\n### gen\n\nSay the flag.\n\n- type: llm\n- model: anthropic/claude-sonnet-4-5\n\n"
+        "```prompt\nSay ${flag}.\n```\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig(trace_enabled=False, cache_enabled=True)
+    run = WorkflowRunner().run(str(workflow_path), {"flag": flag}, config, input_sources={"flag": "call"})
+    assert run.success, run.diagnostics
+    cache_db = isolate_pflow_config["pflow_dir"] / "cache" / "cache.db"
+    with sqlite3.connect(cache_db) as conn:
+        (engine_key,) = conn.execute("SELECT cache_key FROM cache_entries WHERE node_id = 'gen'").fetchone()
+
+    trace_path = tmp_path / "trace.json"
+    llm_call = {
+        "model": "anthropic/claude-sonnet-4-5",
+        "cache_key": engine_key,
+        "cache_creation_input_tokens": 100,
+        "cache_read_input_tokens": 0,
+        "cache_age_sec": 5,
+        "cache_chunks_skipped": [],
+    }
+    write_trace_jsonl(
+        trace_path,
+        {
+            "format_version": "2.1.0",
+            "workflow_path": str(workflow_path.resolve()),
+            "nodes": [{"node_id": "gen", "llm_call": llm_call}],
+        },
+    )
+
+    def predicted(sources: dict[str, Any]) -> Any:
+        analysis = _analyze(
+            parse_markdown(workflow_path.read_text(encoding="utf-8")).ir,
+            parameters={"flag": flag},
+            input_sources=sources,
+            workflow_path=str(workflow_path.resolve()),
+            trace_path=trace_path,
+            auto_load_trace=False,
+            memo_cache=MemoizationCache(db_path=cache_db, read_enabled=True),
+        )
+        return [d.context.get("root_cause") for d in analysis.warnings if d.id == "cache.discrepancy" and d.context]
+
+    assert "key_mismatch" not in predicted({"flag": "call"})
+    # Presence: the same text typed as a command-line argument is `True` for "true" — a different
+    # key; "02134" reads back as itself and stays text either way.
+    assert ("key_mismatch" in predicted({})) is (flag == "true")
+
+
 # ---------------------------------------------------------------------------
 # Bug 5 fix — decoupled prediction covers sub-workflow nodes
 # ---------------------------------------------------------------------------

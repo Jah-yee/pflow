@@ -1820,19 +1820,30 @@ class WorkflowValidator:
             # Not JSON-parsed, as the engine hands a workflow step's `inputs:` on: literal child
             # values reach `_check_required_inputs` as written.
             effective_params = resolve(params, context).value
-            if isinstance(raw_inputs, dict) and isinstance(effective_params.get("inputs"), dict):
-                # A value that reads anything but the item stays a template: here `${count ?? "x"}`
-                # would resolve to its fallback — a guess, not the value the run passes.
+            # An `inputs:` value is resolved here only when it reads nothing but the item; any other
+            # stays its template and is typed per item at run time. Here `${count ?? "x"}` would
+            # resolve to its fallback — a guess, not the value the run passes.
+            if isinstance(raw_inputs, str) and not WorkflowValidator._known_here(raw_inputs, alias, item):
+                effective_params["inputs"] = raw_inputs
+            elif isinstance(raw_inputs, dict) and isinstance(effective_params.get("inputs"), dict):
                 effective_params["inputs"] = {
-                    key: value if WorkflowValidator._reads_only(raw_inputs[key], alias) else raw_inputs[key]
+                    key: value if WorkflowValidator._known_here(raw_inputs[key], alias, item) else raw_inputs[key]
                     for key, value in effective_params["inputs"].items()
                 }
             yield effective_params, idx, inputs_from_item
 
     @staticmethod
-    def _reads_only(value: Any, alias: str) -> bool:
-        """Whether every reference in ``value`` (a string; containers are judged by shape) is the alias."""
-        return not isinstance(value, str) or all(ref.root == alias for ref in parse(value).references)
+    def _known_here(value: Any, alias: str, item: Any) -> bool:
+        """Whether ``value`` (a string; containers are judged by shape) resolves here to what the
+        run passes: it reads only the batch alias, and a ``??`` in it never falls back past a
+        template the item holds (the run resolves an item's ``"${payload}"`` first; here a walk
+        into it misses). Without ``??`` a miss stays a template, which no static check reads."""
+        if not isinstance(value, str):
+            return True
+        template = parse(value)
+        if any(ref.root != alias for ref in template.references):
+            return False
+        return all(len(e.operands) == 1 for e in template.expressions) or not TemplateResolver.has_templates(item)
 
     @staticmethod
     def _params_reference_alias(value: Any, alias: str) -> bool:
@@ -1930,13 +1941,16 @@ class WorkflowValidator:
             )
             return diagnostics
 
-        parent_keys: set[str] = set(inputs_value.keys()) if isinstance(inputs_value, dict) else set()
+        passed: dict[str, Any] = inputs_value if isinstance(inputs_value, dict) else {}
+        parent_keys = set(passed)
+        # A null is no value — the child's boundary reads it as not provided (`prepare_inputs`).
+        supplied_keys = {key for key, value in passed.items() if value is not None}
 
         # Missing-required direction.
         for input_name, input_spec in child_inputs.items():
             is_required = input_spec.get("required", True)
             has_default = "default" in input_spec
-            if is_required and not has_default and input_name not in parent_keys:
+            if is_required and not has_default and input_name not in supplied_keys:
                 sorted_inputs = sorted(child_inputs.keys())
                 diagnostics.append(
                     Diagnostic(

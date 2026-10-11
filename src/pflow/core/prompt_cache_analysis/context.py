@@ -33,11 +33,14 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from pflow.core.ir_schema import declared_input_types
 from pflow.core.templates import DECLARED_INPUT_TYPES_KEY, TemplateResolver
 from pflow.core.trace_tree import TraceTree
+
+if TYPE_CHECKING:
+    from pflow.core.param_coercion import InputSource
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +54,13 @@ class AnalysisContext:
 
     Parameters reach this object typed by their declarations (``analyze`` runs the
     input boundary on the supplied values first): an ``integer`` input given ``"3"``
-    on the command line is ``3`` here.
+    on the command line is ``3`` here. ``input_sources`` says where each entered, so a
+    re-compile of them (cache-key prediction) types an ``any`` value as the run did.
     """
 
     workflow_ir: Mapping[str, Any]
     parameters: Mapping[str, Any] = field(default_factory=dict)
+    input_sources: Mapping[str, InputSource] = field(default_factory=dict)
     memo_cache: Any | None = None
     trace_data: Mapping[str, Any] | None = None
     trace: TraceTree | None = None
@@ -78,6 +83,7 @@ class AnalysisContext:
         *,
         workflow_ir: Mapping[str, Any],
         parameters: Mapping[str, Any] | None = None,
+        input_sources: Mapping[str, InputSource] | None = None,
         memo_cache: Any | None = None,
         trace_data: Mapping[str, Any] | None = None,
         workflow_path: str | None = None,
@@ -109,6 +115,7 @@ class AnalysisContext:
         return cls(
             workflow_ir=workflow_ir,
             parameters=parameters or {},
+            input_sources=input_sources or {},
             memo_cache=memo_cache,
             trace_data=trace_data,
             trace=trace,

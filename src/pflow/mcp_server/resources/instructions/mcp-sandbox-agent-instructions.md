@@ -981,7 +981,7 @@ What this output contains.
 - source: ${final_node.output}
 `````
 
-**Input fields**: `type` (string|number|integer|boolean|array|object|any — omitted means `any`), `required` (true|false), `default` (only when required: false; must fit `type`), `stdin` (true|false -- only one input can have this), description as prose.
+**Input fields**: `type` (string|number|integer|boolean|array|object|any — omitted means `any`), `required` (true|false), `default` (fills in when no value arrives, so a defaulted input is never missing; must fit `type`), `stdin` (true|false -- only one input can have this), description as prose.
 
 **Output fields**: `source` (required -- template expression like `${node.key}`), `type` (optional hint), `stdout` (true|false -- at most one output may set this; marks the output that streams to stdout in text mode). Single-output workflows don't need a marker. Multi-output workflows without a marker stream the first declared output and emit a stderr warning.
 
@@ -1262,7 +1262,7 @@ Workflow `## Inputs` / `## Outputs` use canonical JSON-Schema-style names. Pytho
 | `object` | `dict` | JSON object text; dict only, not wildcard |
 | `any` | `Any` | Not checked. A command-line value is typed only when it reads back unchanged (`42`, `true`, `[1]`; `02134`, `1.10`, `[1, 2]` stay text); MCP values arrive as sent. `Any` is auto-injected in code blocks |
 
-A workflow input's value is typed once, where it enters (command line, stdin, environment, settings, `default:`, MCP, a parent workflow, a resumed run), and a value that does not fit fails with `Invalid input value`, naming where the value came from — before any step runs (a sub-workflow input: at the step that calls it, routable like any step error). Surrounding whitespace is ignored for every type but `string`. A typed MCP value must fit too: a `string` takes any scalar (`3` → `"3"`), `integer` rejects `3.0` and `true`. An input without `type:` is `any`.
+A workflow input's value is typed once, where it enters (command line, stdin, environment, settings, `default:`, MCP, a parent workflow, a resumed run), and a value that does not fit fails with `Invalid input value`, naming where the value came from — before any step runs (a sub-workflow input: at the step that calls it, routable like any step error). Surrounding whitespace is ignored when text is read as `integer`, `number`, `boolean`, `array` or `object`; a `string` keeps it, and so does an `any` value (` 42` stays text). A typed MCP value must fit too: a `string` takes any scalar (`3` → `"3"`), `integer` rejects `3.0` and `true`. An input without `type:` is `any`.
 
 Code blocks follow modern Python syntax — use lowercase generics (`list[T]`, `dict[K, V]`) and pipe unions (`int | str`), not `List[T]` / `Union[A, B]`. See `pflow guide code` for the full type annotation syntax table.
 

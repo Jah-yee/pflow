@@ -253,7 +253,11 @@ def _collect_outputs(
         # Auto-detect output for full runs without declared outputs.
         key_found, value = find_auto_output(shared_storage)
         if key_found:
-            result[key_found] = compact_batch_output_value(parse_json_or_original(value))
+            # A root hit can be a declared input, whose text is never re-parsed (as for `-o` above).
+            from_input = shared_storage.get(key_found) is value and TemplateResolver.reads_declared_input(
+                key_found, shared_storage
+            )
+            result[key_found] = compact_batch_output_value(value if from_input else parse_json_or_original(value))
 
     return result
 

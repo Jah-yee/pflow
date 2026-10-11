@@ -17,7 +17,7 @@ import pytest
 
 from pflow.cli.main import main
 from pflow.core.diagnostic_render import format_diagnostic
-from pflow.core.templates import DECLARED_INPUT_TYPES_KEY
+from pflow.core.templates import DECLARED_INPUT_TYPES_KEY, resolve
 from pflow.execution.result import RunnerConfig
 from pflow.execution.runner import WorkflowRunner
 from pflow.registry import Registry
@@ -74,6 +74,12 @@ class TestConsumerAndSourceRules:
         ir = _ir([_code("show", {"t": "${up.stdout}"}, f"from typing import Optional\nt: {annotation}")])
         assert _resolve_step(ir, "show", UPSTREAM)["inputs"] == {"t": JSON_TEXT}
 
+    @pytest.mark.parametrize("annotation", ["str | dict", "Any"])
+    def test_a_union_with_a_container_or_any_is_not_text(self, annotation: str) -> None:
+        """Only an annotation that reads as `str` asks for text; `str | dict` and `Any` keep upstream parsing."""
+        ir = _ir([_code("show", {"t": "${up.stdout}"}, f"from typing import Any\nt: {annotation}")])
+        assert _resolve_step(ir, "show", UPSTREAM)["inputs"] == {"t": {"a": 1}}
+
     def test_agent_inputs_keep_upstream_parsing(self) -> None:
         ir = _ir([{"id": "ask", "type": "agent", "params": {"prompt": "go", "inputs": {"t": "${up.stdout}"}}}])
         assert _resolve_step(ir, "ask", UPSTREAM)["inputs"] == {"t": {"a": 1}}
@@ -119,12 +125,19 @@ class TestShadowing:
         assert merged["params"] == {"q": 2}
 
     def test_the_workflow_input_is_still_protected_in_another_step(self) -> None:
-        nodes = [
-            {"id": "get", "type": "http", "params": {"inputs": {"data": "${up.stdout}"}, "url": "https://example.com"}},
-            _code("show", {"t": "${data}"}, "from typing import Any\nt: Any"),
-        ]
-        merged = _resolve_step(_ir(nodes, self.INPUTS), "show", UPSTREAM, {"data": JSON_TEXT})
-        assert merged["inputs"] == {"t": JSON_TEXT}
+        """`get` binds a local `data` (upstream JSON, parsed for its own params); `show`, resolved next against
+        the SAME store, still reads the workflow input — as text."""
+        get = self._get({"data": "${up.stdout}"}, "${data.a}")
+        nodes = [get, _code("show", {"t": "${data}"}, "from typing import Any\nt: Any")]
+        compiled = compile_workflow(_ir(nodes, self.INPUTS), Registry(), {"data": '{"in": 2}'})
+        shared = {"data": '{"in": 2}', **UPSTREAM, DECLARED_INPUT_TYPES_KEY: MappingProxyType(compiled.input_types)}
+        get_config, show_config = (compiled.node_configs[step].template_config for step in ("get", "show"))
+        assert get_config is not None and show_config is not None
+
+        got, _, errors = resolve_templates(get_config, shared, "get")
+        assert (got["params"], errors) == ({"q": 1}, [])  # the local binding: upstream JSON, walked as before
+        shown, _, errors = resolve_templates(show_config, shared, "show")
+        assert (shown["inputs"], errors) == ({"t": '{"in": 2}'}, [])
 
     def test_a_same_named_input_value_resolves_against_the_workflow_input(self) -> None:
         """`inputs: {data: ${data}}` with `data: Any`: the value still reads the declared input."""
@@ -155,6 +168,26 @@ class TestStructuredParams:
         with pytest.raises(ValueError, match=r"reads input 'v', declared `- type: string`") as exc_info:
             resolve_templates(config, shared, "ask")
         assert "declare `- type: object` for 'v'" in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        ("root", "fix"),
+        [
+            ("d", 'Fix: Nest the object in the input (`{"payload": {"a": 1}}`), or parse the text in a code step'),
+            ("token", "Fix: Nest the object in the input, or parse the text in a code step"),  # never echoes a secret
+        ],
+    )
+    def test_text_inside_a_declared_object_names_the_text_not_the_declaration(self, root: str, fix: str) -> None:
+        """`${d.payload}` is text inside an `object` input: `d`'s declaration is already right, so the fix is to
+        nest the value or parse it — never "declare `- type: object` for 'd'"."""
+        node = {"id": "ask", "type": "agent", "params": {"prompt": "go", "output_schema": f"${{{root}.payload}}"}}
+        compiled = compile_workflow(_ir([node], {root: {"type": "object"}}), Registry(), {root: {"payload": JSON_TEXT}})
+        config = compiled.node_configs["ask"].template_config
+        assert config is not None
+        shared = {root: {"payload": JSON_TEXT}, DECLARED_INPUT_TYPES_KEY: MappingProxyType(compiled.input_types)}
+        with pytest.raises(ValueError, match=rf"is text inside input '{root}' \(declared `- type: object`\)") as info:
+            resolve_templates(config, shared, "ask")
+        assert fix in str(info.value)
+        assert "declare `- type: object`" not in str(info.value)
 
     @pytest.mark.parametrize(
         ("template", "blamed"),
@@ -533,6 +566,54 @@ class TestUnreadTextIsNeverAbsent:
         assert skipped == []
         assert render_cache_chunks(ctx("gone.x"), shared) == ([], ["rules"])  # an absent branch: skipped, as before
 
+    def test_a_coalesce_never_falls_past_unread_text(self) -> None:
+        """`??` falls past an absent value — never past a walk into a declared input's text,
+        which would turn the author error into the fallback (a loop stopping, an output's null)."""
+        shared = {"d": NESTED, DECLARED_INPUT_TYPES_KEY: MappingProxyType({"d": "object"})}
+        assert resolve("${d.payload.again ?? false}", shared).unresolved == {"d.payload.again ?? false"}
+        assert resolve("${d.nope ?? false}", shared).value is False  # a real absence still falls through
+        assert resolve("${d.payload ?? false}", shared).value == NESTED["payload"]  # the text itself is a value
+
+    @pytest.mark.parametrize("cond", ["${d.payload.again ?? false}", "${d.flags[${d.payload.index}]}"])
+    def test_a_loop_condition_fails_behind_a_fallback_or_inside_an_index(self, tmp_path: Path, cond: str) -> None:
+        wf = _write(tmp_path / "loop.pflow.md", LOOP_ON_INPUT.replace("@COND@", cond))
+        d = {"flags": [True], "payload": json.dumps({"again": True, "index": 0})}
+        result = WorkflowRunner().run(str(wf), {"d": d}, RunnerConfig(trace_enabled=False))
+        assert not result.success
+        (message,) = [diag.message for diag in result.diagnostics if "loop condition" in diag.message]
+        reference = "d.payload.again" if "again" in cond else "d.payload.index"
+        assert message.startswith(f"Node 'step' loop condition reads ${{{reference}}}: 'd.payload' is text")
+
+    def test_inline_batch_items_fail_for_unread_text_inside_an_index(self) -> None:
+        from pflow.core.exceptions import DeclaredInputTextError
+
+        d = {"flags": [True], "i": 0, "payload": json.dumps({"index": 0})}
+        shared = {"d": d, DECLARED_INPUT_TYPES_KEY: MappingProxyType({"d": "object"})}
+        with pytest.raises(
+            DeclaredInputTextError, match=r"Batch items reads \$\{d.payload.index\}: 'd.payload' is text"
+        ):
+            resolve_batch_items(["${d.flags[${d.payload.index}]}"], shared)
+        assert resolve_batch_items(["${d.flags[${d.i}]}"], shared) == [True]  # an index that resolves still works
+
+    @pytest.mark.parametrize(
+        ("source", "offers_fallback"),
+        [("${d.payload.b ?? null}", False), ("${d.payload.b}", False), ("${d.nope}", True)],
+    )
+    def test_an_output_source_fails_and_offers_no_fallback_for_unread_text(
+        self, tmp_path: Path, source: str, offers_fallback: bool
+    ) -> None:
+        """An output reading into the text fails — and is never told to add the `?? null`
+        that `??` would not fall past; a plain missing field keeps that opt-out."""
+        outputs = f"\n## Outputs\n\n### out\n\nOut.\n\n- source: {source}\n"
+        wf = _write(tmp_path / "wf.pflow.md", OBJECT_INPUT.replace("${d.payload.a}", "${d.payload}") + outputs)
+        result = WorkflowRunner().run(str(wf), {"d": NESTED}, RunnerConfig(trace_enabled=False))
+        assert not result.success
+        (diagnostic,) = [d for d in result.diagnostics if (d.context or {}).get("is_output_resolution")]
+        fallback = [s for s in diagnostic.suggestions or [] if "?? null}" in s]
+        assert bool(fallback) is offers_fallback
+        refs = diagnostic.context["unresolved_references"]  # type: ignore[index]
+        assert [ref.get("text_not_parsed") for ref in refs] == [None if offers_fallback else "d.payload"]
+
     def test_json_output_of_a_declared_input_path_is_its_text(self, tmp_path: Path) -> None:
         wf = _write(tmp_path / "wf.pflow.md", OBJECT_INPUT.replace("${d.payload.a}", "${d.payload}"))
 
@@ -548,6 +629,50 @@ class TestUnreadTextIsNeverAbsent:
 
         assert selected("object") == "1.10"
         assert selected("any") == 1.1  # an undeclared root keeps the JSON envelope's parse
+
+
+AUTO_OUTPUT = """# Auto output
+
+No declared outputs: the JSON result auto-selects a key.
+
+## Inputs
+
+### text
+
+Some text.
+
+- type: string
+
+## Steps
+
+### echo
+
+Print JSON.
+
+- type: shell
+- env:
+    T: ${text}
+
+```shell command
+printf '{"b":2}'
+```
+"""
+
+
+def test_json_auto_output_of_a_declared_input_is_its_text(tmp_path: Path) -> None:
+    """Auto-selection picks the root `text` input before the step's `stdout`: its text is never re-parsed;
+    a step's JSON output auto-selected the same way still is."""
+    wf = _write(tmp_path / "wf.pflow.md", AUTO_OUTPUT)
+
+    def auto(*args: str) -> Any:
+        result = click.testing.CliRunner().invoke(main, ["--no-trace", "--output-format", "json", *args])
+        assert result.exit_code == 0, result.output
+        return json.loads(result.output[result.output.index("{") :])["result"]
+
+    assert auto(str(wf), "text=true") == {"text": "true"}
+    assert auto(str(wf), 'text={"a":1}') == {"text": '{"a":1}'}
+    _write(wf, AUTO_OUTPUT.replace("### text", "### words").replace("${text}", "${words}"))
+    assert auto(str(wf), "words=x") == {"stdout": {"b": 2}}  # a step's JSON text: parsed as before
 
 
 def test_prompt_cache_setup_sees_the_declarations(monkeypatch: pytest.MonkeyPatch) -> None:

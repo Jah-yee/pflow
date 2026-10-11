@@ -383,16 +383,22 @@ def declared_text_reason(reference: str, text_path: str, text: str) -> tuple[str
     first = rest.path[0] if rest is not None and rest.path else None
     missing = f"field '{first.name}'" if isinstance(first, Field) else "index"
     shown = repr(text) if len(text) <= _RECEIVED_LIMIT else repr(text[:_RECEIVED_LIMIT]) + "…"
+    return (
+        f"'{text_path}' is text ({shown}) — a declared input is never JSON-parsed, so there is no {missing} to read.",
+        declared_text_fix(text_path, text),
+    )
+
+
+def declared_text_fix(text_path: str, text: str) -> str:
+    """The two remedies for JSON ``text`` held at ``text_path`` inside a declared input: nest the
+    value in the input, or parse the text in a code step. ``text`` as given (pass it masked)."""
     holder = text_path.rsplit(".", 1)[-1] if "." in text_path and not text_path.endswith("]") else None
     try:
         nested = json.dumps({holder: json.loads(text)}) if holder else None
     except ValueError:  # masked
         nested = None
     nest = f"Nest the object in the input (`{nested}`)" if nested else "Nest the object in the input"
-    return (
-        f"'{text_path}' is text ({shown}) — a declared input is never JSON-parsed, so there is no {missing} to read.",
-        f"{nest}, or parse the text in a code step (`json.loads({holder or 'text'})`).",
-    )
+    return f"{nest}, or parse the text in a code step (`json.loads({holder or 'text'})`)."
 
 
 class DeclaredInputTextError(PflowError):

@@ -578,7 +578,7 @@ class WorkflowRunner:
         # Task 159 F3.3: append the dry-run cache nudge when actionable
         # opportunities exist (silent on optimal plans). Per DD#36, --dry-run
         # runs the FULL analytical pass — same analysis as `pflow analyze-cache`.
-        cache_nudge = self._build_cache_nudge(resolved, params, workflow_name)
+        cache_nudge = self._build_cache_nudge(resolved, params, workflow_name, input_sources)
         if cache_nudge is not None:
             plan = replace(plan, diagnostics=[*plan.diagnostics, cache_nudge])
 
@@ -623,6 +623,7 @@ class WorkflowRunner:
         resolved: ResolvedWorkflow,
         params: dict[str, Any],
         workflow_name: str,
+        input_sources: "Mapping[str, InputSource] | None",
     ) -> Diagnostic | None:
         """Run analyze() + summarize() to produce the dry-run cache nudge.
 
@@ -639,6 +640,7 @@ class WorkflowRunner:
             analysis = analyze(
                 resolved.ir,
                 parameters=params,
+                input_sources=input_sources,
                 workflow_path=resolved.file_path or workflow_name,
                 base_path=base_path,
                 # Don't auto-load traces in --dry-run path — keeps latency

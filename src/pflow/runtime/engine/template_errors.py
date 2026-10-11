@@ -19,6 +19,7 @@ from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.diagnostic_render import written_reference
+from pflow.core.exceptions import declared_text_fix
 from pflow.core.security_utils import is_sensitive_parameter
 from pflow.core.templates import (
     LIST_TYPES,
@@ -95,14 +96,26 @@ def build_shape_error_message(param_key: str, resolved_value: Any, template_str:
 
 
 def build_declared_text_error_message(
-    param_key: str, template_str: str, expected_type: str, input_name: str, declared_type: str
+    param_key: str, template_str: str, expected_type: str, read: tuple[Reference, str], text: str
 ) -> str:
-    """A structured param received a declared input's text, which is never JSON-parsed."""
+    """A structured param received a declared input's text, which is never JSON-parsed.
+
+    ``read`` is the reference that supplied it and its root's declared type. The whole input
+    (``${v}``) is fixed by its declaration; text INSIDE an input (``${d.payload}``) is not —
+    its declaration already admits the container — so the fix names nesting or parsing."""
+    reference, declared_type = read
+    if reference.path:
+        shown = "<REDACTED>" if is_sensitive_parameter(reference.root) else text
+        return (
+            f"Parameter '{param_key}' expects {expected_type} but {template_str} is text inside input "
+            f"'{reference.root}' (declared `- type: {declared_type}`) — a declared input is never JSON-parsed.\n\n"
+            f"Fix: {declared_text_fix(reference.raw, shown)}"
+        )
     wanted = "array" if expected_type in LIST_TYPES else "object"
     return (
-        f"Parameter '{param_key}' expects {expected_type} but {template_str} reads input '{input_name}', "
+        f"Parameter '{param_key}' expects {expected_type} but {template_str} reads input '{reference.root}', "
         f"declared `- type: {declared_type}` — a declared input is never JSON-parsed.\n\n"
-        f"Fix: declare `- type: {wanted}` for '{input_name}' if it holds JSON."
+        f"Fix: declare `- type: {wanted}` for '{reference.root}' if it holds JSON."
     )
 
 

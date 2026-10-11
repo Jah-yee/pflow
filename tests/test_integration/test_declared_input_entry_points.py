@@ -483,6 +483,7 @@ class TestEnvironmentAndDefaults:
         assert argument.stdout.rstrip("\n") == "1"
 
 
+@pytest.mark.e2e
 class TestASettingsValueIsLabelledSettings:
     """`pflow run` copies settings.env into the process environment at startup (`inject_settings_env_vars`), so
     the boundary must still name settings — not "the environment variable" — for a value that lives there.
@@ -658,6 +659,14 @@ class TestMcpCallsPassTypedJson:
         workflow = str(_write(tmp_path, "any", ANY_WF))
         ran = ExecutionService.execute_workflow(workflow, {"data": "42", "opt": None})
         assert "str:'42' None" in ran  # the CLI would infer 42 (presence half: TestTheCliPassesText…)
+
+    def test_json_text_for_a_declared_string_reaches_the_step_as_text(self, tmp_path: Path) -> None:
+        """#686 through MCP `workflow_execute`: a declared `string` holding JSON text is never parsed on the way
+        to a step; the same text for an `any` input is (the presence half — the resolver's parse still exists)."""
+        as_string = str(_write(tmp_path, "s", ANY_WF.replace("- type: any", "- type: string")))
+        assert "str:'{\"a\":1}' None" in ExecutionService.execute_workflow(as_string, {"data": '{"a":1}'})
+        as_any = str(_write(tmp_path, "a", ANY_WF))
+        assert "dict:{'a': 1} None" in ExecutionService.execute_workflow(as_any, {"data": '{"a":1}'})
 
 
 class TestAnalysisTypesTheSuppliedValuesFirst:
