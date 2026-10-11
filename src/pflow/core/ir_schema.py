@@ -261,6 +261,11 @@ FLOW_IR_SCHEMA: dict[str, Any] = {
                         "description": "Maps param names to source file paths (injected by file resolver)",
                         "additionalProperties": {"type": "string"},
                     },
+                    "_resolved_files": {
+                        "type": "object",
+                        "description": "Maps the same keys as _source_files to absolute resolved paths (injected by file resolver)",
+                        "additionalProperties": {"type": "string"},
+                    },
                     "cache": {
                         "type": "boolean",
                         "description": "Whether to cache this node's output across runs. Default: true for `llm` nodes only; false for all other node types (which side-effect or read external state).",
