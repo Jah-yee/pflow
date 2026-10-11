@@ -69,3 +69,228 @@ resume path for any successor.
 - Deviations/surprises: the planner's `__pflow_input_types__` carrier deviation was accepted by the main orchestrator (2/5,
   reversible); ADR-0017's carrier wording and Task 112's top block were amended on MAIN (uncommitted) — not on this branch.
 - Next: build launches (Opus task-orchestrator, implement-from-plan) after Task 181 merges; P0 re-verifies 181's shapes.
+
+## [2026-10-11 11:10] task-orchestrator (Opus) — bootstrap (implement-from-plan)
+- Did: read packet `scratchpads/session-14/packet-task-120.md`, ORCHESTRATION.md, spec, plan, checkpoint (RULED), this log,
+  Task 181 + Task 118 task-reviews; merged `origin/main` `752b7ebc` → `f6a789ed` (no conflict); `make install` clean.
+- Verified: 181's integration note — `embedded` is a bool kwarg on `resolve`/`_resolve_string`/`has_templates`, decided by
+  `param_mode(...) == "embedded"` at `split_params`/`resolve_templates`. Plan D8 adds NO kwarg (declared types ride the
+  store), so "one carrier, never a second flag" holds: `auto_parse`/`embedded` stay consumer-side, declarations are
+  source-side data. Read `workflow_executor.py:166-181,376-388,484-497`: the host catches `_PREP_RECOVERABLE` itself into a
+  `_prep_error` marker and routes it via `post`'s `error_action` — a node-internal path, unlike #768's shell prep raise
+  (engine-level). Packet claim 1 is EXECUTED at P0 by I1 (a child with a bad input under `error_action`), not assumed.
+- Deviations/surprises: packet says the verify.sh drift set is 12–13 today (plan §0 said 11, #680 re-record lane live) —
+  compare SETS at P0 vs PZ.
+- Next: launch I1 (Opus · high) with P0 → PA → PC.
+
+## [2026-10-11 11:45] I1 (Opus) — P0 baseline + re-verify (nothing edited)
+- Did: plan §0 items 1–7 against merged `f6a789ed`; baselines; §0 greps; `dict(shared)` key read; checkpoint §0 BEFORE probes
+  re-executed (isolated HOME `scratchpads/task-120/probes/home`); orchestrator claim 1 EXECUTED.
+- Changed: nothing in tree. Scratch (gitignored): `scratchpads/task-120/{baseline-make-test.txt, baseline-verify.txt,
+  baseline-capture.txt, probes/}`.
+- Verified:
+  - §0.1 `resolve(value, context, *, auto_parse=False, embedded=False)` and `_resolve_string(template, context, auto_parse,
+    embedded)` exact (`core/templates.py:653,694`). Shape delta: the simple-template leaf is its own function
+    `_resolve_simple(template, context, auto_parse)` (`:681-691`) — the typed-root check goes THERE (the only auto-parse leaf).
+    §0.2 181's D4 arm (`segment.as_json and not embedded`, `:709`) is in `_resolve_string`'s complex loop, disjoint from the
+    simple leaf (an insert is never `is_simple`). §0.3 `resolve_templates`: `inputs:` branch `:279`
+    (`resolve(v, context, auto_parse=True)`), embedded branch `:281-285`, dict/list `:287-293`, simple-into-container
+    `:296-302`; static `inputs:` merge `:258-261`, resolved merge `:391-392`; locals (`resolution`, `resolved_value`,
+    `is_simple_template`) are per-branch assignments, nothing 181-specific shared. §0.4 `has_templates(value, *,
+    embedded=False)` `:803`. §0.5 `split_params` still `mode != "body" and has_templates(...)` (`template_resolution.py`
+    split_params loop). §0.6 `execution/plan.py:1587` unchanged (`resolve(raw_inputs_template, per_item_context,
+    auto_parse=True)`). §0.7 parity `SURFACES` has `embedded_code` (`test_template_parity.py:633`).
+  - Greps: `format_param_value` callers `ui/run_node.py:94`, `cli/rerun_display.py:63` (+ the unrelated
+    `node_output_formatter.format_param_value` used by `_probe_impl.py:195`) — as planned. `binds_as_text|parses_leaves`:
+    definition `template_surfaces.py:85`, `template_resolution.py:19,90,96,292`, `core/workflow/CLAUDE.md:14`,
+    `runtime/engine/CLAUDE.md:82`, plus a comment in `runtime/engine/types.py:23`. `\.accepts(` in src: zero.
+  - `dict(shared)` keeps a `__*__` key: engine passes the raw store to `resolve_templates` (`engine.py:1748`, proxy built
+    after at `:1755`); for a `NamespacedSharedStore`, `__iter__` yields parent keys (`namespaced_store.py:141-143`) and
+    `__getitem__` reads `__*__` at root (`:83-86`) — the new key survives either way (read, not executed).
+  - Baselines: `make test` 10955 passed / 0 failed (no failing list). `verify.sh` **74 pass / 13 drift / 0 errors** — set in
+    `baseline-verify.txt` (02/03, 02/05, 03/05–09 incl. 07-json-error-envelope, 04/03, 04/09d, 04/09e, 10/03, 12/04).
+    `capture.py --check`: **29 examples, 5 differing at baseline** (all `examples/error-handling/`: coalesce-mixed-absent-
+    failed, failed-node-direct-reference, source-line-heavy-offsets, source-line-multi-output, typo-on-failed-node — the
+    `result: {}`/output-failure shape, i.e. #757's declared-output change, pre-existing).
+  - Checkpoint §0 BEFOREs all reproduce: typed `topics=tea` validate-only ✓ valid then code-node "expects list" + resume
+    line; `count=3.0` → "expects int but received float"; `count=abc` → `WARNING: Cannot coerce`; a-string `{"a":1}` → dict
+    error, `02134` → `str:'2134'`, `true` → `str:'True'`; container → `1 fallback`; bad-default ✓ valid, run `n=abc` exit 0;
+    envdef `port=abc`/`port=9090` → `port=8080` both; anyin `02134`→int, `1.10`→float, `[1, 2]`→list; parent → child `s`
+    gets a dict; parent-batch (`error_handling: continue`) → all 3 items fail incl. `"7"`, `RuntimeError`; parent-inline
+    validate-only ✓ valid, run all fail. No drift vs the checkpoint.
+  - **Claim 1 (executed, child `child-req` with required `s`,`n`; parent passes `inputs: ${mk.result}` = `{"s":"hello"}` so
+    `_validate_child_params` raises in prep): IT ROUTES.** `on-error: rescue` → `call ✗ Failed`, `rescue ✓`, DEGRADED,
+    warning `Node 'call' failed — on-error → 'rescue'`. Batch `error_handling: continue` over `[{s,n},{s},{s,n}]` → items 0/2
+    succeed, item 1 one error record ("Child workflow … is missing required inputs:"), run DEGRADED. Default routing → run
+    fails with the child-input message, exit 1. `error_action: continue` (non-batch) → the host returns action `continue`;
+    with no `continue` edge the engine fails "no successor edge matches" — routing by action string works as designed (and
+    the progress line shows `call ✓` for that case — pre-existing display quirk, not this task's). The host's own
+    `_prep_error` marker path is NOT #768's engine-level prep bypass.
+  | Assumed: nothing for P0.
+- Deviations/surprises: verify drift is 13 (plan said 11) and capture has 5 pre-existing diffs — PZ compares SETS against
+  these files. `_resolve_simple` split (above) is the only 181 shape delta; plan §0.1's adaptation rule covers it.
+- Self-checks: n/a (no code). test-reflect: n/a.
+- Next: PA.
+
+## [2026-10-11 12:40] I1 (Opus) — PA (grammar, coercer, error, prepare_inputs)
+- Did: D1 `TypeSpec.parse_text` + `accepted_noun`/`accepted_text`/`example_text`; D2 `coerce_declared_input` +
+  `InputSource` + `_infer_lossless` (lenient `coerce_workflow_input`, `_COERCION_DISPATCH` and the six `_coerce_to_*`
+  deleted); D3 `InputTypeError` (one Diagnostic, checkpoint §1 text per source); D5 `prepare_inputs` → `list[Diagnostic]`,
+  new order supplied → env → settings → default → required, `input_sources` kwarg; `compile_workflow(...,
+  input_sources=)`; `_raise_input_validation_errors` (the collapse) deleted — compile raises one
+  `WorkflowValidationError` carrying N diagnostics.
+- Changed: `core/{types,param_coercion,exceptions}.py`, `runtime/compilation/{ir_preparation,compile_validation,
+  compiler}.py`, `core/CLAUDE.md` (Types/coercion), `runtime/compilation/CLAUDE.md` (input boundary paragraph; the
+  child-limitation sentence left for PD). Tests: `test_core/test_param_coercion.py` (coerce_workflow_input section
+  replaced by the PA-1…6/10 tables + error tests), `test_runtime/test_prepare_inputs_coercion.py` (`:163` flipped to a
+  diagnostic; new `TestResolutionOrder`, `TestEverySourceIsLabelled`, `TestEachProblemIsItsOwnDiagnostic`),
+  `test_prepare_inputs_extras.py` + `test_settings_env_integration.py` (tuple → Diagnostic access, no semantic change),
+  `test_compiler_interfaces.py` (`SchemaValidationError` → `WorkflowValidationError`; the two debug-log assertions
+  "Applying default value…" replaced by `resolved_defaults` assertions — the log line is gone), `test_plan_drift.py`
+  `missing-input` row → `WorkflowValidationError` + an added diagnostics-equality assertion (str() of both paths is now
+  the same summary, so the old `str` equality alone proved nothing).
+- Verified: `make check` green. `make test`: 11267 passed, **2 failed** — `test_cache_analysis_per_id_emission.py::
+  {test_predict_cache_keys_includes_sub_workflow_nodes, test_analyze_cache_emits_discrepancy_for_sub_workflow_node_via_
+  subprocess}` (see deviations; resolved by PC — re-checked there). Mutation ledger (apply/run/restore, PA tests): drop
+  the strip → red; lossless returns any parse → red; string accepts containers → red; drop the `<REDACTED>` mask → red;
+  fix line built from a sensitive value → red; default only for optional (old order) → red; settings before env → red;
+  number accepts `1e999`→inf → red; placeholder not passed through → red; supplied `None` not treated as absent → red.
+  Through `compile_workflow`: two bad inputs → one `WorkflowValidationError`, two diagnostics; supplied `"3"`/`"yes"`
+  typed in place in `initial_params` + `resolved_defaults`.  |  Assumed: CLI/runner rendering of the new error (PB
+  exercises the real surface; the runner still pre-fills defaults and the CLI still infers until PB).
+- Deviations/surprises:
+  1. **PA alone is not green**: the child's compile-time `prepare_inputs` (item 0 values, `_compile_sub_workflow`) became
+     strict here, and today the parent JSON-parses a workflow step's `inputs:` — so a parent `${draft.response}` holding
+     JSON text reaches a child `draft: string` as a dict → container-into-string error. The plan's ordering note foresaw
+     this for PD-before-PC; PA triggers it too. PC's D9 (parent stops parsing) fixes it; no change to PC's instructions.
+  2. `InputTypeError(name=…)` not `input=…` (no builtin shadowing); `path` derived from source/step instead of a kwarg
+     (default → `inputs.<n>.default`, parent+step → `nodes[id=…].params.inputs.<n>`, else `inputs.<n>`) — one rule, no
+     caller can pass a contradictory path.
+  3. Checkpoint conflict §1.1 vs §1.4: §1.1's stated per-type rule (`→ Pass <accepted_text>: <name>=<example>`) is
+     implemented, so §1.4's JSON suggestion reads `Pass a whole number (e.g. 3): count=3`, not `Pass a whole number:
+     count=3`. The `call` row keeps its ruled form (`Pass a whole number: "count": 3`). Strings only (importance 1).
+  4. `recorded` fix line says `pflow resume <run-id> count=3` — the coercer cannot know the run id. **PB must supply it**
+     (resume.py knows it): a small kwarg/threading, or a post-fix of that suggestion; flagged, not decided here.
+  5. `parent` sentence: implemented with `step`/`sub_workflow_path` kwargs (checkpoint §1.5 text); the "(here ${item}
+     resolved to 'x')" clause needs the parent's template text, which only PD's call site has — PD adds it. Without a
+     step the parent source falls back to "…received 'x' from the calling workflow."
+  6. Lossless inference (D2.1) is stricter than the plan's sketch in three places: a JSON-string token (`"x"` with quotes)
+     stays the text (the plan's comparison would strip the quotes); `-Infinity` stays text (`allow_nan=False`); and the
+     comparison uses `ensure_ascii=False` so `["é"]` types (the plan's `json.dumps` default would keep it text).
+  7. An unknown/empty declared type (only reachable by bypassing the schema) behaves as `any`, like untyped; `object`/
+     `array` text rejects `NaN`/`Infinity` (not JSON); `number` rejects `1e999` (overflows to inf); whitespace stripped is
+     ASCII only (decision (b) "strict ASCII").
+  8. One unexplained red during the mutation batch (an unmutated run reported `1 failed`); 9 clean re-runs since —
+     treated as a host-load flake, noted.
+- Self-checks: fully-happy + test-reflect (directed): resolved in the [15:10] self-checks entry (PA ledger re-run clean; no PA test deleted).
+- Next: PC.
+
+## [2026-10-11 14:05] I1 (Opus) — PC (resolver rule + engine sites) · ENGINE CONTACT
+- Did: D8 — `templates.DECLARED_INPUT_TYPES_KEY` + `_declared_typed`; the `auto_parse` leaf (`_resolve_simple`) skips a
+  declared root, judged by the winning `??` operand (`_evaluate` now returns it); `_walk` rebuilt on one `_step` and
+  skips mid-path parsing under a declared root (root-wide); `unparsed_declared_text` (W5 reason); `ir_schema.
+  declared_input_types`; `CompiledWorkflow.input_types` filled by the compiler and installed/restored by
+  `WorkflowEngine.run` (beside the prompt-cache map), `create_planner_shared`, and the runner's root store. D9 —
+  `parses_leaves(cfg, key, subkey)` + `_CONSUMER_TYPES_LEAVES` (`shell.env`, `http.headers`, `workflow.inputs`) +
+  `TemplateConfig.text_input_keys` (code keys whose annotation reads `string` via `extract_code_annotation_type`);
+  `binds_as_text`/`_BINDS_AS_TEXT` deleted; `_bind_locally` at the two context merge points; the
+  simple-into-container parse folded into the one `resolve` call; `resolve_batch_items` on the one rule (separate
+  `try_parse_json` deleted); `validator._enumerate_child_calls` resolves without auto-parse; W5 —
+  `classify_unresolved_references` path_error gains `text_not_parsed`/`unparsed_text`, rendered with the §1.14 reason.
+- Changed: `core/{templates,ir_schema,diagnostic_render}.py`, `core/workflow/{template_surfaces,validator}.py`,
+  `runtime/engine/{engine,types,template_resolution,template_errors,batch_executor}.py`, `runtime/compilation/
+  compiler.py`, `execution/{runner,plan}.py`; CLAUDE.mds: `core` (Template language bullet), `core/workflow` (row
+  removed), `runtime/engine` (parses_leaves paragraph), `runtime` (reserved-key row + traversal sentence). Tests: new
+  `tests/test_core/test_templates_declared_inputs.py` (PC-1/2 + W5 helper), new `tests/test_runtime/
+  test_declared_input_resolution.py` (PC-4/5/6/7/9/10/12/13), `test_plan_drift.py::
+  test_plan_and_engine_hand_a_batched_child_the_same_text_inputs` (PC-8); flipped `test_batch_node.py::
+  test_json_object_fails_with_type_error` ("got str" → "got dict": JSON-object text is now parsed like any simple
+  template's, then fails the shape check) and `test_node_wrapper_json_parsing.py::test_wrong_json_type_raises_error`
+  (see deviation 1).
+- Verified: `make check` green; `make test` **11317 passed, 0 failed** (PA's two reds now green, as predicted).
+  `capture.py --check` 29 / 5 differing — the same 5 as P0. `verify.sh` (pre-#680 base) drift SET identical to P0's 13.
+  **P0's verify.sh numbers are pre-#680 base, superseded** (orchestrator: main is 87/87 after `5a93929d`; PZ compares
+  against the green base). Mutation ledger (PC tests): `_walk` parses under a declared root → red; leaf parses a
+  declared root → red; engine.run install dropped → red (the nested child `t: string` row); runner root-store install
+  dropped → red (`-o` row); `_bind_locally` at the resolved merge → red; at the static merge → red; `("workflow",
+  "inputs")` / `("http", "headers")` removed → red each; `text_input_keys` ignored → red; planner per-item
+  `auto_parse=True` → red; W5 reason dropped → red; declared-input message dropped → red; shape error dropped → red.
+  Real surface (`uv run`-equivalent `.venv/bin/pflow`, isolated HOME): `parent-int` (emit `{"a":1}` → child `s: string`,
+  `n: 7`) → child receives `str:'{"a":1}' int:7` (BEFORE: a dict); `a-string text=' {"a":1}'` → `str:' {"a":1}'`;
+  `obj-miss` → the §1.14 reason (output below); in-tree `examples/nested/document-processor.pflow.md` (parent→child
+  `string` binding) runs (`HELLO`); `examples/core/stateful-loop-tournament.pflow.md` (looped child, carried array)
+  runs (`Winner: ada`). `-o d.payload.a` on a declared object → "output key 'd.payload.a' not found. 'd.payload' is a
+  string…"; `-o d.payload` → the text.  |  Assumed: MCP paths inherit through the runner (not driven here — PB).
+- Deviations/surprises:
+  1. **Silent-failure fix beyond the plan**: folding the simple-into-container parse made a well-formed JSON array into a
+     dict param (or the reverse) reach `validate_resolved_type`, which returned None for a wrong-shape container — the
+     plan's "still an error, now the accurate one" was false. Added `build_shape_error_message` (wrong container shape)
+     and `build_declared_text_error_message` ("reads input 'v', declared `- type: string` — a declared input is never
+     JSON-parsed … declare `- type: object`", PC-6's "names the declared input"); the old wording called well-formed
+     JSON "malformed".
+  2. **Mid-build CLI state (until PB):** the CLI still infers, so `pflow wf text='{"a":1}'` on a declared `string` now
+     fails at the boundary ("received {"a": 1} from the command line") — before, it was stringified (re-spaced). PB's raw
+     parser fixes it; one PR, so main never sees it. Same for the checkpoint probes `a-string`/`container`: they hit
+     the boundary error, not the AFTER text, until PB.
+  3. `execution/plan.py` per-item inputs: took the plan's logged-fallback form `resolve(raw, ctx)` (auto_parse off), not
+     a `resolve_templates(...)["inputs"]` reuse — `resolve_templates` raises in strict mode on an unresolved item, while
+     this function reports a per-item WARNING; reusing it would need a try/except around a second error shape. PD types
+     each item through `prepare_inputs`. (The plan put `:1584-1595` under PD but PC-8 needs the parse rule; I changed
+     only the parse flag.)
+  4. W5 placement: `text_not_parsed` lives on the `unresolved_references[]` entry (not the diagnostic's top context),
+     with `unparsed_text` (the text, `<REDACTED>` for a sensitive root) so the renderer can build the nest example from
+     the real value. Rendered:
+     `→ 'd.payload' is text ('{"a":1}') — a declared input is never JSON-parsed, so there is no field 'a' to read.`
+     `  Nest the object in the input (`{"payload": {"a": 1}}`), or parse the text in a code step (`json.loads(payload)`).`
+  5. PC-6's third row tests the array-into-dict direction (same code path as dict-into-list).
+- Self-checks: fully-happy + test-reflect (directed): resolved in the [15:10] self-checks entry (2 deleted, 1 replaced, 1 added).
+- Next: mid-task review #1 (engine contact) on PA+PC; then PB → PD. Open items handed to PB: the `recorded` fix line's
+  `<run-id>` (PA deviation 4); `prompt_cache_analysis/context.py:52` still names the deleted `coerce_workflow_input`
+  (PB rewords it per D6). To PD: the parent fix-line clause "(here ${item} resolved to 'x')" (PA deviation 5).
+
+## [2026-10-11 15:10] I1 (Opus) — PA + PC self-checks (directed: fully-happy + test-reflect)
+- Did: reviewed the PA+PC diff for loose ends; applied `.claude/commands/test-reflect.md` to every PA/PC test written or
+  flipped; re-ran both mutation ledgers on a fixed harness.
+- Changed: tests only — `test_core/test_templates_declared_inputs.py`, `test_runtime/test_declared_input_resolution.py`,
+  `test_execution/test_plan_drift.py` (one test added). No `src/` change.
+- Verified: `make check` green; `make test` 11319 passed, 0 failed. **The mutation harness had a real flaw**: it restored
+  the file with `mv`, so a same-second, same-size restore (the env/settings swap mutant) left the MUTANT's `.pyc` valid.
+  Later "kills" in the same batch could have been that stale mutant, which also explains PA's unexplained red (PA
+  deviation 8, now RESOLVED: not a flake). Fixed the harness (`PYTHONDONTWRITEBYTECODE=1`, purge the module's `.pyc`
+  before and after, no `-x`, counted results), purged every `__pycache__` in `src/` and `tests/`, and re-ran both
+  ledgers. **PA: 16/16 killed** (counts 1–14 failed each), adding three new mutants: a quoted JSON string is typed;
+  `any` is inferred from every source; a failed coercion passes its value through. **PC: 23/23 killed**, adding: a `??`
+  chain judged by any operand rather than the winner; the engine restore dropped; `inputs:` leaves always parsed; the
+  container fold dropped; inline batch items not parsed; complex-template batch text re-parsed; the per-item store
+  dropping the key (sequential AND parallel); the compiler not filling `input_types`; the planner install dropped.
+- Self-checks: fully-happy — doubts raised and resolved:
+  (a) **The planner's `create_planner_shared` install had NO test** (its mutant survived, 108 passed). Added
+  `test_plan_cache_key_reads_a_declared_input_as_the_run_does`: run once with a cached code step reading a declared
+  `string` that holds JSON text, then plan → `cached`. Without the install, the planner hashes a dict and predicts a
+  re-execution. Mutant now killed.
+  (b) The wrong-shape error (PC deviation 1) now also fires for a real dict/list VALUE (not only parsed text) going into a
+  param declared with the other container type — before, it passed silently. Surveyed the node interfaces:
+  `http.body` is `dict|str` (a union, never checked), and the other container params would fail inside the node anyway.
+  Kept.
+  (c) `validator._enumerate_child_calls` no longer parses: an inline batch item holding JSON TEXT under a whole-map
+  `inputs: ${item}` is now reported as a shape error statically. The runtime already rejected it ("resolved to str,
+  expected dict"), so validator and runtime now agree. No test pins this yet; it is PE's literal-child-values area
+  (PE-5), flagged for PE.
+  (d) `TemplateResolver.resolve_nested` has no remaining `src/` caller (the facade stays, by `core/CLAUDE.md`'s
+  "permanent facade" rule). Noted, not removed.
+  test-reflect (directed):
+  - deleted `TestTheLeaf::test_complex_templates_are_text_either_way` (pre-existing behaviour with no key; duplicates
+    the template suite).
+  - deleted `TestConsumerAndSourceRules::test_shell_env_stays_text` (Task 118's `test_shell_env_binding` already pins
+    `env:` as text, mutation-verified).
+  - replaced `test_loop_carry_keeps_upstream_parsing`: a carried value's root is the producing step, never the declared
+    input, so the map could not affect the test. The carry lands on the same resolved-`inputs:` merge point that
+    `TestShadowing::test_a_steps_resolved_inputs_key_is_local_for_its_siblings` kills.
+  - added in its place `test_every_batch_item_store_carries_the_declarations` (sequential × parallel × `string`/`any`
+    presence pair, real run) — the per-item `dict(shared)` copies are where protection would silently drop, and both
+    copy sites are mutation-killed.
+  - deepened two shadowing rows (the first version could not see `_bind_locally` — the local value was already a dict,
+    so the mid-path parse never ran). Now the local holds JSON text one level down; both merge points are killed.
+  - kept unchanged and mutation-verified: the grammar / typed-value / lossless / idempotence / placeholder / error tables
+    (PA) and the leaf, walk, W5, consumer, structured-param, install/restore, `-o` and parity rows (PC).
+- Next: hand back; mid-task review #1, then PB.

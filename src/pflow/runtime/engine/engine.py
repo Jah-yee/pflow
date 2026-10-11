@@ -31,7 +31,7 @@ from pflow.core.exceptions import (
 from pflow.core.gate import GATE_KIND_APPROVAL
 from pflow.core.llm_capabilities import get_min_cache_tokens
 from pflow.core.prompt_cache import CacheRenderContext
-from pflow.core.templates import Field, Reference, TemplateResolver, parse, resolve
+from pflow.core.templates import DECLARED_INPUT_TYPES_KEY, Field, Reference, TemplateResolver, parse, resolve
 from pflow.core.validation_utils import VALIDATION_PLACEHOLDER
 from pflow.runtime.node_state import (
     FAILURE_CATEGORY_EXCEPTION,
@@ -128,6 +128,7 @@ def _gate_pausable(request: Any, config: NodeConfig, node: Any, action: Any) -> 
 # child engine.run completes when the parent had no value installed. Module
 # level so deeply-nested sub-workflow restores don't allocate per call.
 _EMPTY_PROMPT_CACHE: Mapping[str, CacheRenderContext] = MappingProxyType({})
+_EMPTY_INPUT_TYPES: Mapping[str, str] = MappingProxyType({})
 
 
 def _diagnose_carry_ref(template: str, node_id: str, latest: Any) -> tuple[str, list[str], str] | None:
@@ -857,9 +858,10 @@ class WorkflowEngine:
     def run(self, workflow: CompiledWorkflow, shared: dict[str, Any]) -> str:
         """Execute a compiled workflow. Returns action string.
 
-        Installs ``self.trace`` into ``shared["__trace_collector__"]`` and a
+        Installs ``self.trace`` into ``shared["__trace_collector__"]``, a
         per-workflow ``CacheRenderContext`` map into
-        ``shared["__pflow_prompt_cache__"]`` for the duration of the run.
+        ``shared["__pflow_prompt_cache__"]`` and the workflow's declared input
+        types into ``shared[DECLARED_INPUT_TYPES_KEY]`` for the duration of the run.
         The save/restore pattern correctly handles nested sub-workflow runs
         (parent's values reinstated after a child engine.run completes).
         """
@@ -890,6 +892,9 @@ class WorkflowEngine:
         saved_trace = shared.get("__trace_collector__")
         saved_prompt_cache = shared.get("__pflow_prompt_cache__")
         new_prompt_cache = MappingProxyType(build_prompt_cache_dict(workflow, shared))
+        # The declared-input map rides the same save/install/restore: a child engine masks its
+        # parent's declarations with its own and reinstates the parent's on exit.
+        saved_input_types = shared.get(DECLARED_INPUT_TYPES_KEY)
         if self.trace is not None:
             shared["__trace_collector__"] = self.trace
             # 2.4.0: stamp the run's ``--only`` target (None for a full run) so the saved trace excludes
@@ -905,12 +910,16 @@ class WorkflowEngine:
                 # MCP/--no-trace and under the pytest trace_files gate).
                 self.trace.start_streaming()
         shared["__pflow_prompt_cache__"] = new_prompt_cache
+        shared[DECLARED_INPUT_TYPES_KEY] = MappingProxyType(workflow.input_types)
         try:
             return self._run_inner(workflow, shared)
         finally:
             shared["__trace_collector__"] = saved_trace
             shared["__pflow_prompt_cache__"] = (
                 saved_prompt_cache if saved_prompt_cache is not None else _EMPTY_PROMPT_CACHE
+            )
+            shared[DECLARED_INPUT_TYPES_KEY] = (
+                saved_input_types if saved_input_types is not None else _EMPTY_INPUT_TYPES
             )
 
     def _run_inner(self, workflow: CompiledWorkflow, shared: dict[str, Any]) -> str:

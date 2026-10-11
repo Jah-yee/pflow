@@ -10,16 +10,27 @@ single source of runtime data.
 """
 
 import logging
+from collections.abc import Iterable, Mapping
 from typing import Any
 
-from pflow.core.json_utils import try_parse_json
 from pflow.core.param_coercion import coerce_param_for_node
-from pflow.core.templates import CONTAINER_TYPES, LIST_TYPES, Reference, Resolution, TemplateResolver, parse, resolve
+from pflow.core.templates import (
+    CONTAINER_TYPES,
+    DECLARED_INPUT_TYPES_KEY,
+    LIST_TYPES,
+    Reference,
+    Resolution,
+    TemplateResolver,
+    parse,
+    resolve,
+)
 from pflow.core.types import outer_base_type
-from pflow.core.workflow.template_surfaces import binds_as_text, param_mode
+from pflow.core.workflow.template_surfaces import param_mode
 
 from .template_errors import (
+    build_declared_text_error_message,
     build_json_parse_error_message,
+    build_shape_error_message,
     build_template_error_diagnostic,
     build_type_error_message,
 )
@@ -87,13 +98,37 @@ def build_type_cache(interface_metadata: dict[str, Any] | None) -> dict[str, str
     return types
 
 
-def parses_leaves(template_config: TemplateConfig, key: str) -> bool:
-    """Whether a dict/list param's string leaves are JSON-parsed on resolution.
+# (node type, param) whose leaves the resolver hands on as text — the consumer types them:
+# shell.env binds environment text (ADR-0016); an HTTP header value is text by protocol; a
+# workflow step's inputs: are typed by the child's own ## Inputs (ADR-0017).
+_CONSUMER_TYPES_LEAVES: frozenset[tuple[str, str]] = frozenset({
+    ("shell", "env"),
+    ("http", "headers"),
+    ("workflow", "inputs"),
+})
 
-    Consumer-keyed today (an ``env:`` value binds as text); Task 120 adds the
-    source-keyed rule (#686) here.
+
+def parses_leaves(template_config: TemplateConfig, key: str, subkey: str | None = None) -> bool:
+    """Whether a structured param's string leaves are JSON-parsed on resolution.
+
+    The consumer-side half of the parse decision (the source-side half — a declared input
+    is never re-parsed — rides the store, ``core/templates.DECLARED_INPUT_TYPES_KEY``): no
+    for a ``_CONSUMER_TYPES_LEAVES`` param, and for a code step's ``inputs:`` key annotated
+    text (``subkey`` in ``text_input_keys``); yes otherwise. Keyed on ``(node type, param)``,
+    never on the param name alone.
     """
-    return not binds_as_text(template_config.node_type, key)
+    if (template_config.node_type, key) in _CONSUMER_TYPES_LEAVES:
+        return False
+    return subkey is None or subkey not in template_config.text_input_keys
+
+
+def _bind_locally(context: dict[str, Any], names: Iterable[str]) -> None:
+    """A step's own ``inputs:`` keys enter ``context`` as local bindings: a same-named
+    declared input no longer owns those roots, so they leave the declared-type map."""
+    declared: Mapping[str, str] = context.get(DECLARED_INPUT_TYPES_KEY) or {}
+    shadowed = declared.keys() & set(names)
+    if shadowed:
+        context[DECLARED_INPUT_TYPES_KEY] = {k: v for k, v in declared.items() if k not in shadowed}
 
 
 def split_params(
@@ -143,6 +178,8 @@ def validate_resolved_type(
     template_str: str,
     expected_types: dict[str, str],
     resolution_mode: str,
+    *,
+    declared_input: tuple[str, str] | None = None,
 ) -> str | None:
     """Validate that resolved value type matches expected parameter type.
 
@@ -158,6 +195,8 @@ def validate_resolved_type(
         template_str: Original template string (for error message)
         expected_types: param_key -> expected type mapping
         resolution_mode: "strict" or "permissive"
+        declared_input: ``(name, declared type)`` when the template reads a declared input —
+            its text was never parsed, and the message says so
 
     Returns:
         Error message string if type mismatch detected, None otherwise
@@ -177,12 +216,30 @@ def validate_resolved_type(
     if isinstance(resolved_value, list if expected_type in LIST_TYPES else dict):
         return None
 
-    # dict/list parameters receiving strings — likely failed JSON parse
+    # The other container shape — well-formed JSON of the wrong kind
+    if isinstance(resolved_value, (dict, list)):
+        return build_shape_error_message(param_key, resolved_value, template_str, expected_type)
+
+    # dict/list parameters receiving strings — a declared input's text, or a failed JSON parse
     if isinstance(resolved_value, str):
+        if declared_input is not None:
+            return build_declared_text_error_message(param_key, template_str, expected_type, *declared_input)
         trimmed = resolved_value.strip()
         if trimmed and trimmed[0] in ("{", "["):
             return build_json_parse_error_message(param_key, resolved_value, template_str, expected_type, trimmed)
 
+    return None
+
+
+def _declared_input_read(template: Any, context: dict[str, Any]) -> tuple[str, str] | None:
+    """``(name, declared type)`` of the first declared non-``any`` input a simple template reads."""
+    declared: Mapping[str, str] = context.get(DECLARED_INPUT_TYPES_KEY) or {}
+    if not isinstance(template, str) or not declared:
+        return None
+    for expression in parse(template).expressions:
+        for operand in expression.operands:
+            if isinstance(operand, Reference) and declared.get(operand.root, "any") != "any":
+                return operand.root, declared[operand.root]
     return None
 
 
@@ -258,6 +315,7 @@ def resolve_templates(  # noqa: C901
     # Enrich context with static inputs so other params can reference them
     static_inputs = template_config.static_params.get("inputs")
     if isinstance(static_inputs, dict):
+        _bind_locally(context, static_inputs)
         context.update(static_inputs)
 
     # Process 'inputs' before other params
@@ -276,7 +334,9 @@ def resolve_templates(  # noqa: C901
         # drops its own channel without hiding a sibling that shares its text.
         inputs_by_key: dict[str, Resolution] | None = None
         if key == "inputs" and isinstance(template, dict):
-            inputs_by_key = {k: resolve(v, context, auto_parse=True) for k, v in template.items()}
+            inputs_by_key = {
+                k: resolve(v, context, auto_parse=parses_leaves(template_config, key, k)) for k, v in template.items()
+            }
             resolved_value: Any = {k: r.value for k, r in inputs_by_key.items()}
             is_simple_template = False
         elif param_mode(template_config.node_type, key) == "embedded":
@@ -285,22 +345,17 @@ def resolve_templates(  # noqa: C901
             resolved_value = resolution.value
             is_simple_template = False
         else:
-            # A nested dict/list auto-parses JSON-string leaves; a simple string keeps its value's type.
+            # A nested dict/list parses JSON-text leaves, and a simple template's JSON text is parsed
+            # for a structured param; a simple string otherwise keeps its value's type. Text from a
+            # declared input is never parsed (the resolver's own rule).
+            is_simple_template = isinstance(template, str) and parse(template).is_simple
             resolution = resolve(
                 template,
                 context,
-                auto_parse=isinstance(template, (dict, list)) and parses_leaves(template_config, key),
+                auto_parse=(isinstance(template, (dict, list)) and parses_leaves(template_config, key))
+                or (is_simple_template and template_config.expected_types.get(key) in CONTAINER_TYPES),
             )
             resolved_value = resolution.value
-            is_simple_template = isinstance(template, str) and parse(template).is_simple
-
-        # Auto-parse JSON strings for structured parameters (only simple templates)
-        if is_simple_template and isinstance(resolved_value, str):
-            expected_type = template_config.expected_types.get(key)
-            if expected_type in CONTAINER_TYPES:
-                success, parsed = try_parse_json(resolved_value)
-                if success and isinstance(parsed, list if expected_type in LIST_TYPES else dict):
-                    resolved_value = parsed
 
         # Reverse: serialize dict/list -> str when expected type is str
         if isinstance(resolved_value, (dict, list)):
@@ -315,6 +370,7 @@ def resolve_templates(  # noqa: C901
                 str(template),
                 template_config.expected_types,
                 template_config.resolution_mode,
+                declared_input=_declared_input_read(template, context),
             )
             if type_error:
                 if template_config.resolution_mode == "strict":
@@ -407,6 +463,7 @@ def resolve_templates(  # noqa: C901
 
         # After resolving 'inputs', enrich context for subsequent params
         if key == "inputs" and isinstance(resolved_value, dict):
+            _bind_locally(context, resolved_value)
             context.update(resolved_value)
 
     # Build final resolutions for trace capture

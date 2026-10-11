@@ -1,177 +1,79 @@
 """IR structure validation and input preparation for the compilation pipeline.
 
-Validates the basic shape of workflow IR dicts (nodes/edges arrays) and
-prepares inputs by resolving values from CLI args, environment variables,
-settings.env, and workflow defaults — with type coercion.
-
-Key functions:
-- validate_ir_structure: Validates basic IR structure (nodes, edges arrays)
-- prepare_inputs: Validates inputs and returns resolved/coerced updates
+- validate_ir_structure: the basic shape of workflow IR (nodes, edges arrays)
+- prepare_inputs: the workflow input boundary — resolve, type, report
 """
 
 import logging
 import os
+from collections.abc import Mapping
 from typing import Any
 
-from pflow.core.exceptions import CompilationError
-from pflow.core.param_coercion import coerce_workflow_input
+from pflow.core.diagnostic import Diagnostic, Severity
+from pflow.core.exceptions import CompilationError, InputTypeError
+from pflow.core.param_coercion import InputSource, coerce_declared_input
 from pflow.core.validation_utils import get_parameter_validation_error, is_valid_parameter_name
 
 logger = logging.getLogger(__name__)
 
 
-def _resolve_missing_input(
-    input_name: str,
-    input_spec: dict[str, Any],
-    settings_env: dict[str, str],
-) -> tuple[Any | None, str | None, bool]:
-    """Resolve value for a missing input from fallback sources.
-
-    Checks in order: os.environ → settings_env → workflow default → None.
-
-    Args:
-        input_name: Name of the input parameter
-        input_spec: Input specification with type, required, default, etc.
-        settings_env: Environment variables from settings.json
-
-    Returns:
-        tuple: (resolved_value, source, is_from_settings_env) where:
-            - resolved_value: The value to use, or None if required and missing
-            - source: Description of where value came from, or None if missing required
-            - is_from_settings_env: True if value came from settings_env
-    """
-    # Check shell environment variables first (transient session values)
-    if input_name in os.environ:
-        logger.debug(
-            f"Using shell environment variable for input '{input_name}'",
-            extra={"phase": "input_validation", "input": input_name},
-        )
-        return os.environ[input_name], "os.environ", False
-
-    # Check settings.env (persistent configuration)
-    if input_name in settings_env:
-        logger.debug(
-            f"Using value from settings.env for input '{input_name}'",
-            extra={"phase": "input_validation", "input": input_name},
-        )
-        return settings_env[input_name], "settings_env", True
-
-    # No environment fallback - check if required or has default
-    is_required = input_spec.get("required", True)
-    if is_required:
-        return None, None, False  # Signal: missing required input
-
-    # Optional input - use default or None
-    if "default" in input_spec:
-        default_value = input_spec.get("default")
-        logger.debug(
-            f"Applying default value for optional input '{input_name}'",
-            extra={"phase": "input_validation", "input": input_name, "default": default_value},
-        )
-        return default_value, "default", False
-
-    # Optional without default → None
-    logger.debug(
-        f"Optional input '{input_name}' not provided, using None as default",
-        extra={"phase": "input_validation", "input": input_name},
+def _input_error(message: str, path: str, suggestion: str = "") -> Diagnostic:
+    """An input-boundary error that is not a type mismatch (missing, empty, undeclared, misnamed)."""
+    return Diagnostic(
+        severity=Severity.ERROR,
+        message=message,
+        title="Validation Error",
+        suggestions=[suggestion] if suggestion else None,
+        source="validation",
+        context={"category": "validation", "path": path},
     )
-    return None, "implicit_none", False
 
 
-def _is_empty_required_string(input_spec: dict[str, Any], value: Any) -> bool:
-    """Check if a required input has been resolved to an empty string."""
-    is_required = input_spec.get("required", True)
-    return is_required and isinstance(value, str) and value == ""
+def _fallback_value(
+    input_name: str, input_spec: dict[str, Any], settings_env: Mapping[str, str]
+) -> tuple[Any, InputSource | None]:
+    """A value for an input nobody supplied: shell environment → settings.env → declared default.
+
+    ``(None, None)`` when none has one (a ``default: null`` is no value).
+    """
+    if input_name in os.environ:
+        return os.environ[input_name], "env"
+    if input_name in settings_env:
+        return settings_env[input_name], "settings"
+    if input_spec.get("default") is not None:
+        return input_spec["default"], "default"
+    return None, None
 
 
-def _resolve_and_validate_missing_input(
+def _resolve_input(
     input_name: str,
     input_spec: dict[str, Any],
-    settings_env: dict[str, str],
-    errors: list[tuple[str, str, str]],
-    defaults: dict[str, Any],
-    env_param_names: set[str],
-) -> None:
-    """Resolve a missing input from fallback sources and validate the result.
-
-    Mutates errors, defaults, and env_param_names in place.
-    """
-    resolved_value, source, is_from_settings = _resolve_missing_input(input_name, input_spec, settings_env)
+    supplied: Any,
+    supplied_source: InputSource,
+    settings_env: Mapping[str, str],
+) -> tuple[Diagnostic | None, Any, InputSource | None]:
+    """One declared input: ``(problem, typed value, source)``; ``source`` is ``None`` when no value exists."""
+    value, source = (
+        (supplied, supplied_source) if supplied is not None else _fallback_value(input_name, input_spec, settings_env)
+    )
     description = input_spec.get("description", "No description provided")
-
+    is_required = input_spec.get("required", True)
     if source is None:
-        errors.append((
-            f"Workflow requires input '{input_name}': {description}",
-            f"inputs.{input_name}",
-            "",
-        ))
-    elif _is_empty_required_string(input_spec, resolved_value):
-        errors.append((
-            f"Required input '{input_name}' is empty (resolved from {source}): {description}",
-            f"inputs.{input_name}",
-            "Provide a non-empty value",
-        ))
-    else:
-        coerced_value, _ = _coerce_provided_input(input_name, input_spec, resolved_value)
-        defaults[input_name] = coerced_value
-        if is_from_settings:
-            env_param_names.add(input_name)
-
-
-def _coerce_provided_input(
-    input_name: str,
-    input_spec: dict[str, Any],
-    provided_value: Any,
-) -> tuple[Any, bool]:
-    """Coerce a provided input value to its declared type if needed.
-
-    Args:
-        input_name: Name of the input parameter
-        input_spec: Input specification containing type declaration
-        provided_value: The value provided by the user
-
-    Returns:
-        tuple: (coerced_value, was_coerced) where:
-            - coerced_value: The value after coercion (or original if no coercion)
-            - was_coerced: True if the value was actually coerced to a different type
-    """
-    declared_type = input_spec.get("type")
-    if not declared_type:
-        logger.debug(
-            f"Input '{input_name}' provided (no type declared)",
-            extra={"phase": "input_validation", "input": input_name},
-        )
-        return provided_value, False
-
-    # Don't coerce None values - they represent "no value" and should be preserved
-    # (e.g., optional inputs without defaults resolve to None)
-    if provided_value is None:
-        logger.debug(
-            f"Input '{input_name}' is None (preserving)",
-            extra={"phase": "input_validation", "input": input_name},
-        )
-        return None, False
-
-    coerced_value = coerce_workflow_input(provided_value, declared_type, input_name=input_name)
-
-    # Explicit coercion check - don't rely on identity which is fragile
-    # (e.g., string normalization could create new objects even when type matches)
-    was_coerced = coerced_value is not provided_value
-    if was_coerced:
-        logger.debug(
-            f"Input '{input_name}' coerced from {type(provided_value).__name__} to {type(coerced_value).__name__}",
-            extra={
-                "phase": "input_validation",
-                "input": input_name,
-                "declared_type": declared_type,
-            },
-        )
-    else:
-        logger.debug(
-            f"Input '{input_name}' provided (type matches)",
-            extra={"phase": "input_validation", "input": input_name},
-        )
-    return coerced_value, was_coerced
+        if is_required:
+            return (
+                _input_error(f"Workflow requires input '{input_name}': {description}", f"inputs.{input_name}"),
+                None,
+                None,
+            )
+        return None, None, None
+    if is_required and value == "":
+        origin = "" if supplied is not None else f" (resolved from {source})"
+        message = f"Required input '{input_name}' is empty{origin}: {description}"
+        return _input_error(message, f"inputs.{input_name}", "Provide a non-empty value"), None, source
+    try:
+        return None, coerce_declared_input(input_name, input_spec.get("type"), value, source=source), source
+    except InputTypeError as e:
+        return e.to_diagnostics()[0], None, source
 
 
 def _is_framework_param_key(key: str) -> bool:
@@ -195,15 +97,14 @@ def _is_framework_param_key(key: str) -> bool:
     return key.startswith("_pflow_") or (key.startswith("__") and key.endswith("__"))
 
 
-def _check_undeclared_extras(declared_names: set[str], provided_params: dict[str, Any]) -> list[tuple[str, str, str]]:
+def _check_undeclared_extras(declared_names: set[str], provided_params: Mapping[str, Any]) -> list[Diagnostic]:
     """Detect keys in ``provided_params`` that are not declared as workflow inputs.
 
     Framework-internal keys are filtered via :func:`_is_framework_param_key`.
     Symmetric with the sub-workflow check in
     ``WorkflowValidator._check_required_inputs`` (GH #288 / task 153).
 
-    Returns a list of ``(message, path, suggestion)`` tuples consumed by
-    ``_raise_input_validation_errors``.
+    Returns one Diagnostic per undeclared key.
     """
     user_provided = [k for k in provided_params if not _is_framework_param_key(k)]
     extras = sorted(set(user_provided) - declared_names)
@@ -212,7 +113,7 @@ def _check_undeclared_extras(declared_names: set[str], provided_params: dict[str
 
     from pflow.core.suggestion_utils import find_similar_items
 
-    errors: list[tuple[str, str, str]] = []
+    errors: list[Diagnostic] = []
     sorted_declared = sorted(declared_names)
     for extra in extras:
         if sorted_declared:
@@ -224,7 +125,7 @@ def _check_undeclared_extras(declared_names: set[str], provided_params: dict[str
         else:
             message = f"Unknown input '{extra}' — this workflow declares no inputs."
             suggestion = "Remove the parameter, or declare it in ## Inputs."
-        errors.append((message, f"inputs.{extra}", suggestion))
+        errors.append(_input_error(message, f"inputs.{extra}", suggestion))
     return errors
 
 
@@ -278,100 +179,69 @@ def validate_ir_structure(ir_dict: dict[str, Any]) -> None:
 
 
 def prepare_inputs(
-    workflow_ir: dict[str, Any], provided_params: dict[str, Any], settings_env: dict[str, str] | None = None
-) -> tuple[list[tuple[str, str, str]], dict[str, Any], set[str]]:
-    """Validate workflow inputs and return resolved/coerced updates to apply.
+    workflow_ir: dict[str, Any],
+    provided_params: Mapping[str, Any],
+    settings_env: Mapping[str, str] | None = None,
+    *,
+    input_sources: Mapping[str, InputSource] | None = None,
+) -> tuple[list[Diagnostic], dict[str, Any], set[str]]:
+    """The workflow input boundary: resolve each declared input, type it, report what is wrong.
 
-    Resolves missing inputs from environment/settings/defaults, coerces values to
-    declared types, and validates names with is_valid_parameter_name. Does not mutate
-    provided_params; the returned mapping supplies missing values and replaces supplied
-    values when coercion changes them.
-
-    Args:
-        workflow_ir: The workflow IR dictionary containing input declarations
-        provided_params: Parameters provided for workflow execution (NOT modified)
-        settings_env: Environment variables from settings.env (optional)
+    Per declared input, the first value found wins: supplied (a supplied ``None`` is no
+    value) → shell environment → settings.env → declared default; with none, a required
+    input (``required`` defaults to true) is an error and an optional one is ``None``.
+    Every value found is typed by ``coerce_declared_input`` with its source — supplied
+    values take theirs from ``input_sources`` (absent key: ``"argument"``). Does not mutate
+    ``provided_params``.
 
     Returns:
-        tuple: (errors, defaults_to_apply, env_param_names) where:
-            - errors: List of (message, path, suggestion) tuples for SchemaValidationError
-            - defaults_to_apply: Resolved fallback values and coerced replacements for supplied inputs
-            - env_param_names: Set of parameter names that came from settings.env
-
-    Precedence order:
-        1. provided_params (CLI arguments) - highest priority
-        2. Shell environment variables (os.environ)
-        3. settings_env (from settings.json)
-        4. workflow input defaults (from IR)
-        5. Error if required and not provided
-
-    Note:
-        This function was renamed from _validate_inputs to prepare_inputs to better
-        reflect its dual purpose of validation and input preparation.
+        ``(errors, updates, settings_names)``: one Diagnostic per problem (type mismatch,
+        missing or empty required input, undeclared key, invalid name, several ``stdin: true``
+        inputs); the values to apply over ``provided_params`` — every input resolved by a
+        fallback and every supplied value the coercer changed; the names whose value came
+        from settings.env.
     """
-    errors: list[tuple[str, str, str]] = []
-    defaults: dict[str, Any] = {}
-    env_param_names: set[str] = set()
+    errors: list[Diagnostic] = []
+    updates: dict[str, Any] = {}
+    settings_names: set[str] = set()
     settings_env = settings_env or {}
+    input_sources = input_sources or {}
+    inputs: dict[str, Any] = workflow_ir.get("inputs") or {}
 
-    # Extract input declarations (backward compatible with workflows without inputs)
-    inputs = workflow_ir.get("inputs", {})
-
-    # Reject undeclared extras (GH #288, symmetric with sub-workflow check in
+    # Reject undeclared extras (GH #288, symmetric with the sub-workflow check in
     # WorkflowValidator._check_required_inputs).
-    errors.extend(_check_undeclared_extras(set(inputs.keys()), provided_params))
+    errors.extend(_check_undeclared_extras(set(inputs), provided_params))
 
-    # If no inputs declared, nothing else to validate
-    if not inputs:
-        logger.debug("No inputs declared for workflow", extra={"phase": "input_validation"})
-        return errors, defaults, env_param_names
-
-    # Check for multiple stdin: true inputs (only one allowed)
     stdin_inputs = [name for name, spec in inputs.items() if spec.get("stdin") is True]
     if len(stdin_inputs) > 1:
-        errors.append((
-            f'Multiple inputs marked with "stdin": true: {", ".join(stdin_inputs)}',
-            "inputs",
-            "Only one input can receive piped stdin",
-        ))
+        errors.append(
+            _input_error(
+                f'Multiple inputs marked with "stdin": true: {", ".join(stdin_inputs)}',
+                "inputs",
+                "Only one input can receive piped stdin",
+            )
+        )
 
-    logger.debug(
-        "Validating workflow inputs", extra={"phase": "input_validation", "declared_inputs": list(inputs.keys())}
-    )
-
-    # Validate each declared input
     for input_name, input_spec in inputs.items():
-        # Validate the input name (now more permissive than Python identifiers)
         if not is_valid_parameter_name(input_name):
-            error_msg = get_parameter_validation_error(input_name, "input")
-            errors.append((
-                error_msg,
-                f"inputs.{input_name}",
-                "Avoid shell special characters like $, |, >, <, &, ;",
-            ))
-            continue
-
-        # Check if input is provided
-        if input_name not in provided_params:
-            _resolve_and_validate_missing_input(input_name, input_spec, settings_env, errors, defaults, env_param_names)
-        else:
-            provided_value = provided_params[input_name]
-            if _is_empty_required_string(input_spec, provided_value):
-                description = input_spec.get("description", "No description provided")
-                errors.append((
-                    f"Required input '{input_name}' is empty: {description}",
+            errors.append(
+                _input_error(
+                    get_parameter_validation_error(input_name, "input"),
                     f"inputs.{input_name}",
-                    "Provide a non-empty value",
-                ))
-                continue
+                    "Avoid shell special characters like $, |, >, <, &, ;",
+                )
+            )
+            continue
+        supplied = provided_params.get(input_name)
+        problem, value, source = _resolve_input(
+            input_name, input_spec, supplied, input_sources.get(input_name, "argument"), settings_env
+        )
+        if problem is not None:
+            errors.append(problem)
+            continue
+        if input_name not in provided_params or value is not supplied:
+            updates[input_name] = value
+        if source == "settings":
+            settings_names.add(input_name)
 
-            # Coerce to declared type if needed
-            coerced_value, was_coerced = _coerce_provided_input(input_name, input_spec, provided_value)
-            if was_coerced:
-                defaults[input_name] = coerced_value
-
-    logger.debug(
-        "Input validation complete", extra={"phase": "input_validation", "final_params": list(provided_params.keys())}
-    )
-
-    return errors, defaults, env_param_names
+    return errors, updates, settings_names

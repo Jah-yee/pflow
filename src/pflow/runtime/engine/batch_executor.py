@@ -20,13 +20,12 @@ from typing import TYPE_CHECKING, Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.exceptions import CompilationError
-from pflow.core.json_utils import try_parse_json
 from pflow.core.node_type_display import is_model_node_type
 
 if TYPE_CHECKING:
     from pflow.core.prompt_cache import CacheRenderContext
 
-from pflow.core.templates import TemplateResolver, resolve
+from pflow.core.templates import resolve
 
 from .batch_item_summary import summarize_batch_item
 from .types import BatchConfig, NodeConfig
@@ -116,20 +115,11 @@ def resolve_batch_items(items_template: Any, shared: dict[str, Any]) -> Any:
         Resolved value (list on success, None if unresolved).
     """
     if isinstance(items_template, list):
-        return TemplateResolver.resolve_nested(items_template, shared)
+        return resolve(items_template, shared, auto_parse=True).value
 
-    resolution = resolve(items_template.strip(), shared)
-    if not resolution.ok:
-        return None
-    resolved = resolution.value
-
-    # Auto-parse JSON strings (enables shell -> batch patterns)
-    if isinstance(resolved, str):
-        success, parsed = try_parse_json(resolved)
-        if success and isinstance(parsed, list):
-            return parsed
-
-    return resolved
+    # A whole `${…}` holding JSON text is parsed (shell → batch), unless it is a declared input's.
+    resolution = resolve(items_template.strip(), shared, auto_parse=True)
+    return resolution.value if resolution.ok else None
 
 
 def _resolve_and_validate_items(batch_config: BatchConfig, shared: dict[str, Any], node_id: str) -> list[Any]:

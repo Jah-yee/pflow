@@ -6,10 +6,12 @@ validation. Called once from compile_workflow() as a single orchestration point.
 """
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
-from pflow.core.exceptions import CompilationError, SchemaValidationError
+from pflow.core.exceptions import CompilationError, SchemaValidationError, WorkflowValidationError
 from pflow.core.ir_schema import missing_output_source_suggestion
+from pflow.core.param_coercion import InputSource
 from pflow.core.validation_utils import get_parameter_validation_error, is_valid_parameter_name
 
 from .ir_preparation import prepare_inputs, validate_ir_structure
@@ -34,35 +36,6 @@ def _load_settings_env() -> dict[str, str]:
     except Exception as e:
         logger.warning(f"Failed to load settings.env: {e}")
         return {}
-
-
-def _raise_input_validation_errors(errors: list[tuple[str, str, str]]) -> None:
-    """Raise SchemaValidationError with formatted input error messages.
-
-    Args:
-        errors: List of (message, path, suggestion) tuples from prepare_inputs
-
-    Raises:
-        SchemaValidationError: Always raises with formatted error message
-    """
-    if len(errors) == 1:
-        # Single error - keep current behavior for backward compatibility
-        message, path, suggestion = errors[0]
-        raise SchemaValidationError(message, path=path, suggestion=suggestion)
-
-    # Multiple errors - aggregate them for better UX
-    error_lines = []
-    for msg, path, _ in errors:  # Ignore individual suggestions
-        # Extract just the input name from path like "inputs.api_key"
-        input_name = path.split(".")[-1] if "." in path else path
-        error_lines.append(f"  \u2022 '{input_name}' - {msg}")
-
-    combined_message = f"Found {len(errors)} input validation errors:\n" + "\n".join(error_lines)
-    raise SchemaValidationError(
-        message=combined_message,
-        path="inputs",
-        suggestion="Fix all validation errors above before compiling the workflow",
-    )
 
 
 def _get_template_resolution_mode(ir_dict: dict[str, Any]) -> str:
@@ -143,6 +116,7 @@ def _validate_data_flow_at_compile_time(ir_dict: dict[str, Any], workflow_path: 
 def _prepare_compilation(
     ir_dict: dict[str, Any],
     initial_params: dict[str, Any],
+    input_sources: Mapping[str, InputSource] | None = None,
 ) -> tuple[dict[str, Any], list[Any], dict[str, Any], set[str]]:
     """Prepare IR for compilation: validate structure, check data flow, resolve inputs.
 
@@ -182,23 +156,16 @@ def _prepare_compilation(
         extra={"phase": "validation", "mode": template_resolution_mode},
     )
 
-    # Input validation and preparation (5-tier resolution plus coerced replacements in initial_params)
-    resolved_defaults: dict[str, Any] = {}
-    resolved_env_param_names: set[str] = set()
-    try:
-        settings_env = _load_settings_env()
-        errors, defaults, env_param_names = prepare_inputs(ir_dict, initial_params, settings_env=settings_env)
-        if errors:
-            _raise_input_validation_errors(errors)
-        initial_params.update(defaults)
-        resolved_defaults = defaults
-        resolved_env_param_names = env_param_names
-
-        if env_param_names:
-            initial_params["__env_param_names__"] = list(env_param_names)
-    except SchemaValidationError:
-        logger.debug("Input validation failed", extra={"phase": "input_validation"}, exc_info=True)
-        raise
+    # The input boundary: resolve and type every declared input, then apply the updates in place.
+    errors, resolved_defaults, resolved_env_param_names = prepare_inputs(
+        ir_dict, initial_params, settings_env=_load_settings_env(), input_sources=input_sources
+    )
+    if errors:
+        # One diagnostic per problem, each with its own path and fix.
+        raise WorkflowValidationError("Workflow input validation failed", validation_errors=errors)
+    initial_params.update(resolved_defaults)
+    if resolved_env_param_names:
+        initial_params["__env_param_names__"] = list(resolved_env_param_names)
 
     # Output validation (valid names, every output names a source)
     try:

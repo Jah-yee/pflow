@@ -112,6 +112,12 @@ so a grammar change edits it in the same step.
   literal and coerced values use `types.TypeSpec.accepts`. `to_string` is complex
   interpolation's stringification; `prompt_cache.deterministic_serialize` differs on
   purpose (canonical bytes for cache keys).
+- **A declared input is never re-parsed** (ADR-0017): when the context carries
+  `DECLARED_INPUT_TYPES_KEY`, a reference whose root is a declared non-`any` input
+  is not JSON-parsed at the `auto_parse` leaf (judged by the `??` operand that
+  supplied the value) nor mid-path (root-wide); `unparsed_declared_text` names the
+  text such a walk stopped at. Without the key, behaviour is unchanged — callers
+  that resolve against a store get it from the store's installers.
 - The validator walks declared structure over the same parse and rules, not the
   runtime walk (ADR-0006): `runtime/template_validation/CLAUDE.md`.
 
@@ -202,8 +208,11 @@ compatibility checks. See `architecture/core-concepts/data-type-coercion.md`;
 template-flow compatibility is under **Template language** above.
 
 `coerce_param_for_node()` only converts dict/list to JSON for expected `str`.
-`coerce_workflow_input()` handles declared workflow types and warns rather than
-raising on failed coercion. Do not interchange these pipeline stages.
+`coerce_declared_input()` types a workflow input by its declared type, once, where
+it enters, and raises `InputTypeError` (never warns): text through
+`TypeSpec.parse_text` (decision (b)'s grammar), typed values through
+`TypeSpec.accepts`, `any` text from a CLI argument by lossless inference. It needs
+the value's `InputSource` — the error names it. Do not interchange these pipeline stages.
 
 `is_valid_parameter_name()` checks names, including reserved `__*__` keys;
 template-reference grammar lives in `core/templates.py`. Neither check

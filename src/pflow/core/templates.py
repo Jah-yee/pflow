@@ -499,6 +499,18 @@ def near_miss_insert(source: str, issue: Issue) -> tuple[str, str] | None:
 
 _MISS: tuple[bool, Any] = (False, None)
 
+# The running workflow's declared ``## Inputs`` types (``{name: canonical type}``), carried in
+# the shared store beside ``__pflow_prompt_cache__`` and installed by the same owners (the
+# engine per workflow, the dry-run planner, the runner's root store). A reference whose root
+# is a declared non-``any`` input is never JSON-parsed — at the leaf or mid-path (ADR-0017).
+DECLARED_INPUT_TYPES_KEY = "__pflow_input_types__"
+
+
+def _declared_typed(context: Mapping[str, Any], root: str) -> bool:
+    """Whether ``root`` is a declared non-``any`` input of the workflow ``context`` belongs to."""
+    types: Mapping[str, str] = context.get(DECLARED_INPUT_TYPES_KEY) or {}
+    return types.get(root, "any") != "any"
+
 
 def _json_container(value: Any) -> Any:
     """A JSON-object/array string parsed for traversal; anything else unchanged.
@@ -515,18 +527,6 @@ def _json_container(value: Any) -> Any:
     return value
 
 
-def _get_key(value: Any, key: str) -> tuple[bool, Any]:
-    """``(found, value[key])`` for any ``Mapping`` (``NamespacedSharedStore`` and
-    ``MappingProxyType`` included), auto-parsing a JSON-object string first."""
-    if isinstance(value, Mapping) and key in value:
-        return True, value[key]
-    if isinstance(value, str):
-        parsed = _json_container(value)
-        if isinstance(parsed, Mapping) and key in parsed:
-            return True, parsed[key]
-    return _MISS
-
-
 def lookup(ref: Reference, context: Mapping[str, Any]) -> tuple[bool, Any]:
     """Walk ``ref`` through ``context``: ``(found, value)``; see ``_walk``."""
     return _walk(ref.root, ref.path, context)
@@ -536,30 +536,63 @@ def _walk(root: str, path: Iterable[Segment], context: Mapping[str, Any]) -> tup
     """The one path walk.
 
     Found means the walk reached a value — possibly ``None`` (a found ``None`` is
-    not "missing"). A name reads a Mapping, auto-parsing a JSON-container string
-    first; an index needs a list (a JSON-array string is parsed first) and
-    ``0 <= N < len``. A dynamic index must resolve to an ``int`` (``bool``
-    excluded). Anything else — including walking on through ``None`` — is a miss.
+    not "missing"). A name reads a Mapping (``NamespacedSharedStore`` and
+    ``MappingProxyType`` included); an index needs a list and ``0 <= N < len``; a
+    JSON-container string is parsed before either — unless the root is a declared
+    input (``_declared_typed``). A dynamic index must resolve to an ``int``
+    (``bool`` excluded). Anything else — including walking on through ``None`` —
+    is a miss.
     """
-    found, current = _get_key(context, root)
-    if not found:
+    if root not in context:
         return _MISS
+    current = context[root]
+    parse_text = not _declared_typed(context, root)
     for segment in path:
+        found, current = _step(current, segment, context, parse_text=parse_text)
+        if not found:
+            return _MISS
+    return True, current
+
+
+def _step(current: Any, segment: Segment, context: Mapping[str, Any], *, parse_text: bool) -> tuple[bool, Any]:
+    """One segment of the walk from ``current``."""
+    if parse_text:
+        current = _json_container(current)
+    match segment:
+        case Field(name):
+            return (True, current[name]) if isinstance(current, Mapping) and name in current else _MISS
+        case Index(value):
+            index: int | None = value
+        case DynamicIndex(inner):
+            index = _dynamic_index(inner, context)
+    if index is None or not isinstance(current, list) or not 0 <= index < len(current):
+        return _MISS
+    return True, current[index]
+
+
+def unparsed_declared_text(ref: Reference, context: Mapping[str, Any]) -> tuple[str, str] | None:
+    """Why a reference rooted in a declared input missed, when the reason is its rule.
+
+    ``(path, text)`` of the JSON-container TEXT the walk stopped at (``("data.payload",
+    '{"a":1}')`` for ``${data.payload.a}``) — text a declared input never re-parses.
+    ``None`` when the root is not a declared input or the miss has another cause.
+    """
+    if ref.root not in context or not _declared_typed(context, ref.root):
+        return None
+    current, shown = context[ref.root], ref.root
+    for segment in ref.path:
+        found, following = _step(current, segment, context, parse_text=False)
+        if not found:
+            return (shown, current) if isinstance(current, str) and _json_container(current) is not current else None
+        current = following
         match segment:
             case Field(name):
-                found, current = _get_key(current, name)
-                if not found:
-                    return _MISS
-                continue
+                shown += f".{name}"
             case Index(value):
-                index: int | None = value
+                shown += f"[{value}]"
             case DynamicIndex(inner):
-                index = _dynamic_index(inner, context)
-        current = _json_container(current)
-        if index is None or not isinstance(current, list) or not 0 <= index < len(current):
-            return _MISS
-        current = current[index]
-    return True, current
+                shown += f"[${{{inner.raw}}}]"
+    return None
 
 
 def _dynamic_index(inner: Reference, context: Mapping[str, Any]) -> int | None:
@@ -576,8 +609,9 @@ def _dynamic_index(inner: Reference, context: Mapping[str, Any]) -> int | None:
     return int(value)
 
 
-def _evaluate(expression: Expression, context: Mapping[str, Any]) -> tuple[bool, Any]:
-    """The first operand that resolves: a Literal always does; a Reference iff found.
+def _evaluate(expression: Expression, context: Mapping[str, Any]) -> tuple[bool, Any, Operand | None]:
+    """The first operand that resolves: ``(found, value, that operand)``. A Literal
+    always resolves; a Reference iff found.
 
     ``??`` falls through whenever the left side "isn't there" — the node did not
     run OR the field is missing (like ``??`` in JS/C#). A found ``None`` ends
@@ -586,11 +620,11 @@ def _evaluate(expression: Expression, context: Mapping[str, Any]) -> tuple[bool,
     """
     for operand in expression.operands:
         if isinstance(operand, Literal):
-            return True, operand.value
+            return True, operand.value, operand
         found, value = lookup(operand, context)
         if found:
-            return True, value
-    return _MISS
+            return True, value, operand
+    return False, None, None
 
 
 # Raw-path lexer for USER-TYPED paths (`-o result.@type`, `read-fields result.dc:title`):
@@ -679,12 +713,14 @@ def resolve(value: Any, context: Mapping[str, Any], *, auto_parse: bool = False,
 
 def _resolve_simple(template: Template, context: Mapping[str, Any], auto_parse: bool) -> Resolution:
     expression = template.expressions[0]
-    found, value = _evaluate(expression, context)
+    found, value, operand = _evaluate(expression, context)
     if not found:
         logger.debug(f"Template '{template.source}' could not be resolved", extra={"var_name": expression.raw})
         return Resolution(template.source, unresolved=frozenset({expression.raw}))
-    # resolve_nested's leaf rule; numeric strings stay strings (Discord snowflake IDs).
-    if auto_parse and isinstance(value, str):
+    # resolve_nested's leaf rule; numeric strings stay strings (Discord snowflake IDs), and a
+    # declared input's text is never re-parsed — judged by the operand that supplied the value.
+    declared = isinstance(operand, Reference) and _declared_typed(context, operand.root)
+    if auto_parse and isinstance(value, str) and not declared:
         success, parsed = try_parse_json(value)
         if success and isinstance(parsed, (dict, list)):
             return Resolution(parsed)
@@ -710,7 +746,7 @@ def _resolve_string(template: Template, context: Mapping[str, Any], auto_parse: 
                     issues.add(written)
                     parts.append(written)
                     continue
-                found, value = _evaluate(segment, context)
+                found, value, _ = _evaluate(segment, context)
                 if found:
                     parts.append(to_json(value) if segment.as_json else to_string(value))
                 else:
@@ -900,7 +936,7 @@ class TemplateResolver:
         also when ``expr`` is not in the expression grammar."""
         expression = _expression_at("${" + expr + "}", 0)
         if expression is not None and expression.raw == expr:
-            found, value = _evaluate(expression, context)
+            found, value, _ = _evaluate(expression, context)
             if found:
                 return value, "resolved"
         return None, "unresolved"

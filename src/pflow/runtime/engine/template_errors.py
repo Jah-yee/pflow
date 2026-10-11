@@ -13,12 +13,15 @@ in ``core/diagnostic.py`` render this into the agent-actionable format.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.diagnostic_render import written_reference
+from pflow.core.security_utils import is_sensitive_parameter
 from pflow.core.templates import (
+    LIST_TYPES,
     DynamicIndex,
     Field,
     Reference,
@@ -26,6 +29,7 @@ from pflow.core.templates import (
     TemplateResolver,
     lookup,
     parse,
+    unparsed_declared_text,
 )
 from pflow.runtime.node_state import NodeStatus, get_node_failure, get_node_status
 
@@ -77,6 +81,33 @@ def build_type_error_message(
             error_msg += f"Access items with: ${{{var_name}[0]}}, ${{{var_name}[1]}}, etc.\n"
 
     return error_msg
+
+
+def build_shape_error_message(param_key: str, resolved_value: Any, template_str: str, expected_type: str) -> str:
+    """A structured param received well-formed JSON of the other container shape."""
+    actual = type(resolved_value).__name__
+    preview = _truncate(json.dumps(resolved_value, ensure_ascii=False, default=str), 200)
+    return (
+        f"Parameter '{param_key}' expects {expected_type} but {template_str} resolved to {actual}.\n\n"
+        f"Value preview: {preview}\n\n"
+        f"Fix: reference the part of the value that is a {expected_type}, or reshape it in a code step."
+    )
+
+
+def build_declared_text_error_message(
+    param_key: str, template_str: str, expected_type: str, input_name: str, declared_type: str
+) -> str:
+    """A structured param received a declared input's text, which is never JSON-parsed."""
+    wanted = "array" if expected_type in LIST_TYPES else "object"
+    return (
+        f"Parameter '{param_key}' expects {expected_type} but {template_str} reads input '{input_name}', "
+        f"declared `- type: {declared_type}` — a declared input is never JSON-parsed.\n\n"
+        f"Fix: declare `- type: {wanted}` for '{input_name}' if it holds JSON."
+    )
+
+
+def _truncate(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 def build_json_parse_error_message(
@@ -227,6 +258,11 @@ def _classify_one_reference(
         # range, not an int), which the field text alone cannot show.
         if index_values := {source.raw: lookup(source, context)[1] for source in reference.index_sources}:
             path_error["index_values"] = index_values
+        # A declared input's JSON text is never re-parsed: say so, or the miss reads as a typo.
+        if unparsed := unparsed_declared_text(reference, context):
+            text_path, text = unparsed
+            path_error["text_not_parsed"] = text_path
+            path_error["unparsed_text"] = "<REDACTED>" if is_sensitive_parameter(root) else text
         return path_error
 
     if status == NodeStatus.FAILED:

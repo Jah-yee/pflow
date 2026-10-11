@@ -39,7 +39,7 @@ from typing import Any, Literal
 
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.exceptions import LoopCarryError, LoopConditionError
-from pflow.core.templates import resolve
+from pflow.core.templates import DECLARED_INPUT_TYPES_KEY, resolve
 from pflow.core.workflow.sub_workflow_resolver import resolve_sub_workflow
 from pflow.execution.result import Plan, PlanEntry, PlanSummary, ResumePlanInfo
 from pflow.registry import Registry
@@ -598,6 +598,7 @@ def create_planner_shared(
     if parent_workflow_file:
         shared["_pflow_workflow_file"] = parent_workflow_file
     shared["__pflow_prompt_cache__"] = MappingProxyType(build_prompt_cache_dict(compiled, shared))
+    shared[DECLARED_INPUT_TYPES_KEY] = MappingProxyType(compiled.input_types)  # as WorkflowEngine.run
     # issue #445: mirror the engine's _PROPAGATED_KEYS["__loop_active__"]
     # (WorkflowExecutor._create_child_storage). When this child plan is a looped
     # sub-workflow body, the active loop depth must cross the boundary so the
@@ -1584,7 +1585,9 @@ def _resolve_per_item_sub_workflow_inputs(
     if raw_inputs_template is None:
         return default_inputs, None
     per_item_context = {**shared, batch_config.item_alias: item, "__index__": idx}
-    resolution = resolve(raw_inputs_template, per_item_context, auto_parse=True)
+    # As the engine resolves a workflow step's `inputs:` — never JSON-parsed (the child's own
+    # `## Inputs` types each value), and a whole-map template must already be a dict.
+    resolution = resolve(raw_inputs_template, per_item_context)
     resolved_inputs = resolution.value
     if not isinstance(resolved_inputs, dict):
         problem = f"resolved to {type(resolved_inputs).__name__}, expected dict"

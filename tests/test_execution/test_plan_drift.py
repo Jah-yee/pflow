@@ -3783,7 +3783,7 @@ Save it.
     ("extra", "params", "error_type"),
     [
         (" ${nope}", {"name": "x"}, "WorkflowValidationError"),  # only the full validator rejects it
-        ("", {}, "SchemaValidationError"),  # missing required input — the compile's input check
+        ("", {}, "WorkflowValidationError"),  # missing required input — the compile's input check
     ],
     ids=["validator-only", "missing-input"],
 )
@@ -3796,6 +3796,9 @@ def test_plan_and_preflight_refuse_the_same_pre_trace_error(tmp_path, extra, par
         WorkflowRunner().preflight(str(wf), params)
     assert type(via_plan.value).__name__ == type(via_preflight.value).__name__ == error_type
     assert str(via_plan.value) == str(via_preflight.value)
+    plan_messages = [d.message for d in via_plan.value.to_diagnostics()]
+    assert plan_messages == [d.message for d in via_preflight.value.to_diagnostics()]
+    assert plan_messages  # each path names the same problem, not just the same summary
 
 
 def test_preflight_compiles_with_the_params_the_run_uses_and_never_mutates_the_callers(tmp_path) -> None:
@@ -3810,3 +3813,75 @@ def test_preflight_compiles_with_the_params_the_run_uses_and_never_mutates_the_c
     assert list(prepared.compiled.node_configs) == ["save"]
     plan = WorkflowRunner().plan(str(wf), params, RunnerConfig())
     assert [entry.node_id for entry in plan.entries] == ["save"]
+
+
+def test_plan_and_engine_hand_a_batched_child_the_same_text_inputs(tmp_path) -> None:
+    """A workflow step's `inputs:` are never JSON-parsed by the parent — the child's own
+    `## Inputs` types each value (Task 120). The planner's per-item resolution must agree with
+    the engine's, item by item, or `--dry-run` describes inputs the run never sends."""
+    from pflow.core.templates import DECLARED_INPUT_TYPES_KEY
+    from pflow.execution.plan import _resolve_per_item_sub_workflow_inputs
+    from pflow.runtime.engine.template_resolution import resolve_templates
+
+    items = ['{"a":1}', "[1, 2]", "plain"]
+    ir = {
+        "ir_version": "0.1.0",
+        "nodes": [
+            {
+                "id": "call",
+                "type": "workflow",
+                "params": {"workflow": str(tmp_path / "child.pflow.md"), "inputs": {"s": "${item}", "n": "7"}},
+                "batch": {"items": items},
+            }
+        ],
+        "edges": [],
+    }
+    compiled, _ = _compile(ir)
+    config = compiled.node_configs["call"]
+    assert config.template_config is not None and config.batch_config is not None
+    shared: dict[str, Any] = {DECLARED_INPUT_TYPES_KEY: compiled.input_types}
+    for idx, item in enumerate(items):
+        engine_inputs = resolve_templates(config.template_config, {**shared, "item": item, "__index__": idx}, "call")[
+            0
+        ]["inputs"]
+        planned, diagnostic = _resolve_per_item_sub_workflow_inputs(
+            shared=shared,
+            batch_config=config.batch_config,
+            item=item,
+            idx=idx,
+            raw_inputs_template=config.template_config.template_params["inputs"],
+            default_inputs={},
+            node_id="call",
+        )
+        assert diagnostic is None
+        assert planned == engine_inputs == {"s": item, "n": "7"}
+
+
+def test_plan_cache_key_reads_a_declared_input_as_the_run_does(tmp_path) -> None:
+    """The planner's scratch store carries the declared-input map like the engine's, so a
+    declared string holding JSON text hashes as text in both — else the plan predicts a
+    re-execution for a step the run will serve from cache (Task 120)."""
+    ir = {
+        "inputs": {"s": {"type": "string"}},
+        "nodes": [
+            {
+                "id": "show",
+                "type": "code",
+                "cache": True,
+                "params": {
+                    "inputs": {"t": "${s}"},
+                    "code": "from typing import Any\nt: Any\nresult: str = type(t).__name__",
+                },
+            }
+        ],
+        "edges": [],
+    }
+    params = {"s": '{"a": 1}'}
+    compiled, registry = _compile(ir, dict(params))
+    cache = MemoizationCache(db_path=tmp_path / "cache.db")
+
+    shared = _run(compiled, cache, params)
+    plan = build_plan(compiled, dict(params), cache, registry, workflow_name="declared")
+
+    assert shared["show"]["result"] == "str"
+    assert [entry.status for entry in plan.entries] == ["cached"]

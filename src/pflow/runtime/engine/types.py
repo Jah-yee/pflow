@@ -21,6 +21,8 @@ class TemplateConfig:
     resolution_mode: str  # "strict" or "permissive"
     optional_input_keys: set[str] = field(default_factory=set)  # For branch convergence
     node_type: str = ""  # The IR type string (``shell``); keys per-param rules such as ``parses_leaves``
+    # A code step's ``inputs:`` keys annotated text (``str``, ``str | None``): handed on unparsed.
+    text_input_keys: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -84,6 +86,8 @@ class CompiledWorkflow:
     outputs: dict[str, Any] = field(default_factory=dict)  # IR outputs section
     resolved_defaults: dict[str, Any] = field(default_factory=dict)  # From prepare_inputs
     env_param_names: set[str] = field(default_factory=set)
+    # Declared input name -> canonical type, installed under ``templates.DECLARED_INPUT_TYPES_KEY``.
+    input_types: dict[str, str] = field(default_factory=dict)
     template_resolution_mode: str = "strict"
     # Task 159: workflow-level ## Cache IR. Frozen + tuple items so it is safe
     # to share across parallel sub-workflow invocations via _compiled_workflow_cache.

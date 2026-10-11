@@ -134,7 +134,7 @@ class TestPrecedenceOrder:
 
         # Should have errors for both required inputs
         assert len(errors) == 2
-        error_messages = [e[0] for e in errors]
+        error_messages = [e.message for e in errors]
         assert any("api_key" in msg for msg in error_messages)
         assert any("model" in msg for msg in error_messages)
 
@@ -209,8 +209,8 @@ class TestSettingsEnvPopulation:
         errors, _defaults, _env_param_names = prepare_inputs(sample_workflow_ir, provided_params, settings_env)
 
         assert len(errors) == 1
-        assert "api_key" in errors[0][0]
-        assert "empty" in errors[0][0].lower()
+        assert "api_key" in errors[0].message
+        assert "empty" in errors[0].message.lower()
 
 
 class TestBackwardCompatibility:
@@ -281,7 +281,7 @@ class TestErrorHandling:
         errors, _defaults, _env_param_names = prepare_inputs(sample_workflow_ir, provided_params, settings_env)
 
         assert len(errors) == 1
-        error_msg = errors[0][0]
+        error_msg = errors[0].message
         assert "api_key" in error_msg
         assert "required" in error_msg.lower() or "requires" in error_msg.lower()
 
@@ -305,7 +305,7 @@ class TestErrorHandling:
 
         # Should error because api_key not provided (case-sensitive)
         assert len(errors) == 1
-        assert "api_key" in errors[0][0]
+        assert "api_key" in errors[0].message
 
     def test_workflow_without_inputs_section(self) -> None:
         """Test workflow that has no inputs section."""
@@ -591,8 +591,8 @@ class TestShellEnvironmentVariables:
         errors, _defaults, _env_param_names = prepare_inputs(workflow_ir, provided_params, settings_env)
 
         assert len(errors) == 1
-        assert "api_key" in errors[0][0]
-        assert "empty" in errors[0][0].lower()
+        assert "api_key" in errors[0].message
+        assert "empty" in errors[0].message.lower()
 
     def test_shell_env_var_with_special_characters(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that special characters in shell env vars are preserved."""
@@ -637,5 +637,5 @@ class TestShellEnvironmentVariables:
         errors, _defaults, _env_param_names = prepare_inputs(workflow_ir, provided_params, settings_env)
 
         assert len(errors) == 1
-        assert "api_key" in errors[0][0]
-        assert "required" in errors[0][0].lower() or "requires" in errors[0][0].lower()
+        assert "api_key" in errors[0].message
+        assert "required" in errors[0].message.lower() or "requires" in errors[0].message.lower()

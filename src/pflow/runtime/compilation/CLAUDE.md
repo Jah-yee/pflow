@@ -55,10 +55,14 @@ Normal file/library resolution already resolves file references, but
 `compile_workflow` retains idempotent resolution for direct callers, using
 `initial_params['_pflow_workflow_file']` for the base directory.
 
-`prepare_inputs` does not mutate supplied params. Its returned `defaults` contains
-missing-input values **and coerced overrides of supplied values**. Resolution order
-is supplied values → process environment → settings.env → declared default →
-missing-required error; workflow-input coercion is lenient and warns on failure.
+`prepare_inputs` is the workflow input boundary and does not mutate supplied params
+(`_prepare_compilation` does, with its result). Its returned `defaults` contains
+missing-input values **and typed overrides of supplied values**. Per input the first
+value wins: supplied (`None` is no value) → process environment → settings.env →
+declared default; with none, a required input is an error. Every value is typed by
+`core/param_coercion.coerce_declared_input` with its source (`input_sources`), and
+every problem is its own Diagnostic — `_prepare_compilation` raises them together as
+one `WorkflowValidationError`.
 `_prepare_compilation` merges that mapping into `initial_params` and exposes it as
 `resolved_defaults`; the runner applies it to shared storage. Child compile-cache
 reuse must not overwrite current item inputs with a previous item's coerced values:

@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from pflow.core.diagnostic import (
@@ -26,6 +27,7 @@ from pflow.core.exceptions import (
     WorkflowNotFoundError,
     WorkflowValidationError,
 )
+from pflow.core.templates import DECLARED_INPUT_TYPES_KEY
 from pflow.core.workflow.manager import WorkflowManager
 from pflow.core.workflow.status import WorkflowStatus
 from pflow.core.workflow_id import step_identity, synthesize_inline_workflow_id, workflow_content_hash
@@ -350,6 +352,9 @@ class WorkflowRunner:
         # resolved_defaults includes fallback values for missing inputs and coerced
         # replacements for supplied values; those replacements must reach execution.
         shared_store.update(workflow.resolved_defaults)
+        # The engine installs the declared-input map per run and restores the outer value on
+        # exit; post-run readers of this store (`-o`, read-fields) need it here too.
+        shared_store[DECLARED_INPUT_TYPES_KEY] = MappingProxyType(workflow.input_types)
 
         # Task 175: stamp the run's resolved top-level inputs onto the trace's eager
         # ``meta`` line. ORDERING IS LOAD-BEARING — this MUST run after the prepared-input

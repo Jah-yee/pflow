@@ -14,13 +14,15 @@ Supporting concerns are in sibling modules:
 import json
 import logging
 import math
+from collections.abc import Mapping
 from typing import Any
 
 from pflow.core.diagnostic import Severity
 from pflow.core.exceptions import CompilationError
-from pflow.core.ir_schema import start_node_id
+from pflow.core.ir_schema import declared_input_types, start_node_id
 from pflow.core.llm_config import get_default_workflow_model, get_model_not_configured_help
 from pflow.core.node import Node
+from pflow.core.param_coercion import InputSource
 from pflow.core.prompt_cache import CacheBlockIR, CacheChunkIR
 from pflow.core.workflow.gate_validation import check_approval_allowed
 from pflow.core.workflow.loop_validation import check_loop_polarity
@@ -290,13 +292,18 @@ def _create_node_and_config(
 
     _reject_static_param_errors(node_type, node_id, params)
 
-    # Extract optional input keys for code nodes
+    # Code-node input annotations the resolver needs: optional keys (branch convergence)
+    # and text keys (a `str` input receives its value unparsed).
     optional_input_keys: set[str] = set()
+    text_input_keys: frozenset[str] = frozenset()
     if node_type == "code" and "code" in params and isinstance(params.get("inputs"), dict):
-        from pflow.nodes.python.python_code import extract_optional_input_keys
+        from pflow.nodes.python.python_code import extract_code_annotation_type, extract_optional_input_keys
 
         input_keys = set(params["inputs"].keys())
         optional_input_keys = extract_optional_input_keys(params["code"], input_keys) or set()
+        text_input_keys = frozenset(
+            key for key in input_keys if extract_code_annotation_type(params["code"], key) == "string"
+        )
 
     # Inject special parameters
     params = inject_special_parameters(node_type, node_id, params, registry)
@@ -346,6 +353,7 @@ def _create_node_and_config(
             resolution_mode=template_resolution_mode,
             optional_input_keys=optional_input_keys,
             node_type=node_type,
+            text_input_keys=text_input_keys,
         )
 
     # Build NodeConfig
@@ -886,6 +894,8 @@ def compile_workflow(
     ir_json: str | dict[str, Any],
     registry: Registry,
     initial_params: dict[str, Any] | None = None,
+    *,
+    input_sources: Mapping[str, InputSource] | None = None,
 ) -> CompiledWorkflow:
     """Compile IR to CompiledWorkflow. No runtime state baked in.
 
@@ -893,6 +903,7 @@ def compile_workflow(
         ir_json: JSON string or dict representing the workflow IR
         registry: Registry instance for node metadata lookup
         initial_params: Parameters provided before execution
+        input_sources: Where each supplied input value came from (``prepare_inputs``)
 
     Returns:
         CompiledWorkflow with bare nodes + per-node configs
@@ -919,7 +930,9 @@ def compile_workflow(
         ) from e
 
     # Step 3: Prepare compilation (validate, resolve inputs)
-    initial_params, _warnings, resolved_defaults, env_param_names = _prepare_compilation(ir_dict, initial_params)
+    initial_params, _warnings, resolved_defaults, env_param_names = _prepare_compilation(
+        ir_dict, initial_params, input_sources
+    )
 
     template_resolution_mode = initial_params.get("__template_resolution_mode__", "strict")
 
@@ -939,6 +952,7 @@ def compile_workflow(
         outputs=ir_dict.get("outputs", {}),
         resolved_defaults=resolved_defaults,
         env_param_names=env_param_names,
+        input_types=declared_input_types(ir_dict),
         template_resolution_mode=template_resolution_mode,
         cache_block=_build_cache_block(ir_dict),
     )

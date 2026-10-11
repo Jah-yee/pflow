@@ -1800,7 +1800,9 @@ class WorkflowValidator:
             # item is a scalar, ``${alias}`` resolves naturally; ``${alias.key}``
             # stays unresolved → ``_load_child_workflow`` defers.
             context = {alias: item}
-            effective_params = TemplateResolver.resolve_nested(params, context)
+            # Not JSON-parsed, as the engine hands a workflow step's `inputs:` on: literal child
+            # values reach `_check_required_inputs` as written.
+            effective_params = resolve(params, context).value
             yield effective_params, idx, inputs_from_item
 
     @staticmethod

@@ -42,10 +42,11 @@ state through `new_execution_state`, not a copied dictionary literal.
 | Services propagated into children | `WorkflowExecutor._PROPAGATED_KEYS`; inspect this list before adding a cross-workflow service |
 | Child-local state | Execution, cache-hit, failure, template-error, and prompt-cache maps must not leak from parent to child |
 | Prompt-cache render context | `engine/engine.py::build_prompt_cache_dict` and `WorkflowEngine.run` install/save/restore `__pflow_prompt_cache__` per workflow; absent restores to an empty frozen map, not `None` |
+| Declared input types | `CompiledWorkflow.input_types` under `core/templates.DECLARED_INPUT_TYPES_KEY`: installed/restored like the prompt-cache map by `WorkflowEngine.run`, and also by `plan.create_planner_shared` and the runner's root store (post-run `-o` readers) |
 
 Internal `__*__` keys are reserved. The child propagation list deliberately
-excludes `__failures__` and `__pflow_prompt_cache__`: parent node IDs and cache
-chunks are not valid in the child's scope.
+excludes `__failures__`, `__pflow_prompt_cache__` and the declared-input map:
+parent node IDs, cache chunks and input declarations are not valid in the child's scope.
 
 ## Template resolution
 
@@ -53,7 +54,8 @@ The language lives in `core/templates.py` (rules and gotchas: `core/CLAUDE.md` â
 **Template language**). Simple `${var}` templates preserve the value's type;
 complex interpolation such as `"Hello ${name}"` always produces a string. Path
 traversal auto-parses JSON containers but keeps numeric identifier strings intact
-(`architecture/core-concepts/data-type-coercion.md`).
+(`architecture/core-concepts/data-type-coercion.md`) â€” except under a declared
+input's root, which is never re-parsed.
 
 `has_templates` counts an escape, so `engine/template_resolution.py::split_params`
 routes escape-only params through resolution. Unresolved references stay literal

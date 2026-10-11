@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import json
+import shlex
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pflow.core.cache_ttl import build_unsupported_cache_ttl_diagnostic, unsupported_cache_ttl_message
 from pflow.core.diagnostic import LLM_FAILURE_CATEGORY, LLM_VALIDATION_CATEGORY, Diagnostic, Severity
 from pflow.core.gate import GATE_KIND_APPROVAL, GateRequest
 from pflow.core.llm_providers import detect_provider, extract_provider_prefix
+from pflow.core.security_utils import is_sensitive_parameter
+from pflow.core.types import TypeSpec
+
+if TYPE_CHECKING:
+    from pflow.core.param_coercion import InputSource
 
 # Typed discriminators for LLMCallError subclasses. Carried as Literal so
 # typos at construction sites (e.g. ``kind="rate_limt"``) fail mypy at the
@@ -171,6 +178,178 @@ class WorkflowValidationError(PflowError):
                 context={"category": "validation"},
             )
         ]
+
+
+# The "received …" clause per source (diagnostics-checkpoint §1.2); `default` and `parent` use their own sentence.
+_SOURCE_CLAUSES: dict[str, str] = {
+    "argument": "from the command line",
+    "stdin": "from stdin",
+    "env": "from the environment variable {name}",
+    "settings": "from settings.env",
+    "recorded": "recorded by the run being resumed",
+    "call": "in the call's parameters",
+    "parent": "from the calling workflow",
+}
+_RECEIVED_LIMIT = 80
+# The declared type a value already has — named in the `default` fix ("or the type to `- type: …`").
+_VALUE_TYPES: tuple[tuple[type, str], ...] = (
+    (bool, "boolean"),
+    (int, "integer"),
+    (float, "number"),
+    (dict, "object"),
+    (list, "array"),
+)
+
+
+class InputTypeError(PflowError):
+    """A workflow input's value does not fit its declared type.
+
+    Raised by ``param_coercion.coerce_declared_input``; every boundary catches it and
+    carries its Diagnostic (``prepare_inputs`` → a ``WorkflowValidationError`` of N
+    diagnostics), so it never crosses a node boundary. The text per source is
+    ``task_120/implementation/diagnostics-checkpoint.md`` §1. ``received`` is shown
+    masked for a sensitive input name and cut at 80 characters; the fix line never
+    echoes a sensitive value.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        declared_type: str,
+        received: Any,
+        source: InputSource,
+        step: str | None = None,
+        sub_workflow_path: str | None = None,
+    ) -> None:
+        self.input_name = name
+        self.type_spec = TypeSpec(declared_type)
+        self.received = received
+        self.source = source
+        self.step = step
+        self.sub_workflow_path = sub_workflow_path
+        super().__init__(self._message())
+
+    @property
+    def path(self) -> str:
+        if self.source == "default":
+            return f"inputs.{self.input_name}.default"
+        if self.source == "parent" and self.step:
+            return f"nodes[id={self.step}].params.inputs.{self.input_name}"
+        return f"inputs.{self.input_name}"
+
+    def _shown(self) -> str:
+        """``received`` as display text: masked, JSON for a non-text value, cut at 80 characters."""
+        if is_sensitive_parameter(self.input_name):
+            return "<REDACTED>"
+        text = self.received if isinstance(self.received, str) else _json_text(self.received)
+        return text if len(text) <= _RECEIVED_LIMIT else text[:_RECEIVED_LIMIT] + "…"
+
+    def _quoted(self) -> str:
+        """``received`` in a sentence: text quoted (escapes visible), a JSON value or the mask as is."""
+        shown = self._shown()
+        return repr(shown) if isinstance(self.received, str) and shown != "<REDACTED>" else shown
+
+    def _message(self) -> str:
+        name, declared = self.input_name, f"`- type: {self.type_spec.name}`"
+        if self.source == "default":
+            return f"The default of input '{name}' is {self._quoted()} but its type is {declared}."
+        if self.source == "parent" and self.step:
+            child = self.sub_workflow_path or "the sub-workflow"
+            return f"Step '{self.step}' passes {self._quoted()} to input '{name}' of {child}, declared {declared}."
+        clause = _SOURCE_CLAUSES[self.source].format(name=name)
+        return f"Input '{name}' is declared {declared} but received {self._quoted()} {clause}."
+
+    def _suggestion(self) -> str:
+        spec, name = self.type_spec, self.input_name
+        example = _fix_example(spec, None if is_sensitive_parameter(name) else self.received)
+        argument = f"{name}={shlex.quote(example)}"
+        match self.source:
+            case "stdin":
+                return f"Pipe {spec.accepted_text}, or pass {argument} on the command line"
+            case "env":
+                return f"export {argument}, or pass {argument} (an argument wins over the environment)"
+            case "settings":
+                return f"pflow settings set-env {name} {shlex.quote(example)}, or pass {argument}"
+            case "recorded":
+                return f"Override it: pflow resume <run-id> {argument}"
+            case "call":
+                literal = json.dumps(example) if spec.name == "string" else example
+                return f'Pass {spec.accepted_noun}: "{name}": {literal}'
+            case "default":
+                fitting = _value_type(self.received)
+                return (
+                    f"Change the default to {spec.accepted_noun} (e.g. `- default: {spec.example_text}`), "
+                    f"or the type to `- type: {fitting}`."
+                )
+            case "parent":
+                return f"Pass {spec.accepted_text} from the parent."
+            case _:  # argument
+                return f"Pass {spec.accepted_text}: {argument}"
+
+    def to_diagnostics(self) -> list[Diagnostic]:
+        context: dict[str, Any] = {
+            "category": "validation",
+            "path": self.path,
+            "input": self.input_name,
+            "declared_type": self.type_spec.name,
+            "received": self._shown(),
+            "source": self.source,
+            "accepted": self.type_spec.accepted_text,
+        }
+        if self.step:
+            context["sub_workflow_step"] = self.step
+        if self.sub_workflow_path:
+            context["sub_workflow_path"] = self.sub_workflow_path
+        return [
+            Diagnostic(
+                severity=Severity.ERROR,
+                message=str(self),
+                title="Invalid input value",
+                suggestions=[self._suggestion()],
+                source="validation",
+                context=context,
+            )
+        ]
+
+
+def _json_text(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _value_type(value: Any) -> str:
+    return next((name for kind, name in _VALUE_TYPES if isinstance(value, kind)), "string")
+
+
+def _as_number(received: Any) -> int | float | None:
+    """``received`` as a number when it is one or its text reads as one (``007`` only as an integer)."""
+    if isinstance(received, str):
+        for kind in ("number", "integer"):
+            ok, value = TypeSpec(kind).parse_text(received.strip())
+            if ok:
+                return value  # type: ignore[no-any-return]  # parse_text of a number type yields int | float
+        return None
+    if isinstance(received, (int, float)) and not isinstance(received, bool):
+        return received
+    return None
+
+
+def _fix_example(spec: TypeSpec, received: Any) -> str:
+    """The smallest fix of ``received`` when one is obvious (``3.0`` → ``3``, ``tea`` → ``["tea"]``),
+    else the type's canonical example. ``received`` is ``None`` for a sensitive input."""
+    text = received.strip() if isinstance(received, str) else None
+    if spec.name in ("integer", "number"):
+        number = _as_number(received)
+        if number is not None and (isinstance(number, int) or number.is_integer()):
+            return str(int(number))
+    if spec.name == "array" and text and text[0] not in "[{":
+        return json.dumps([text], ensure_ascii=False)
+    if spec.name == "string" and isinstance(received, (dict, list)):
+        return _json_text(received)
+    return spec.example_text
 
 
 class UnsupportedCacheTTLError(PflowError):

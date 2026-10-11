@@ -1,14 +1,18 @@
-"""Tests for workflow input type coercion in prepare_inputs().
+"""prepare_inputs() — the workflow input boundary: resolution order, typing by declared
+type with the value's source, and one Diagnostic per problem.
 
-This tests the integration of coerce_workflow_input() into the
-workflow validation pipeline, ensuring CLI-provided values are coerced
-to match declared input types.
-
-Related bug: Numeric string inputs (e.g., Discord snowflake IDs) were
-silently coerced to int by CLI's infer_type() before the workflow's
-declared type: string was consulted.
+Related bug: numeric strings (e.g. Discord snowflake IDs) typed to int before the
+workflow's declared ``type: string`` was consulted.
 """
 
+from typing import Any, ClassVar
+
+import pytest
+
+from pflow.core.diagnostic import Diagnostic
+from pflow.core.exceptions import WorkflowValidationError
+from pflow.registry import Registry
+from pflow.runtime.compilation import compile_workflow
 from pflow.runtime.compilation.ir_preparation import prepare_inputs
 
 
@@ -160,25 +164,16 @@ class TestPrepareInputsCoercionEdgeCases:
         assert errors == []
         assert defaults["flag"] == "True"
 
-    def test_invalid_coercion_returns_original(self):
-        """Invalid coercion (e.g., 'hello' → int) returns original value."""
-        workflow_ir = {
-            "inputs": {
-                "count": {
-                    "type": "integer",
-                    "description": "Count",
-                    "required": True,
-                }
-            }
-        }
-        provided_params = {"count": "not-a-number"}
+    def test_invalid_value_is_a_diagnostic_not_a_pass_through(self):
+        """A value its declared type cannot read is an error at the boundary (decision (a))."""
+        workflow_ir = {"inputs": {"count": {"type": "integer", "description": "Count", "required": True}}}
 
-        errors, defaults, _env_params = prepare_inputs(workflow_ir, provided_params)
+        errors, defaults, _env_params = prepare_inputs(workflow_ir, {"count": "not-a-number"})
 
-        # No error from prepare_inputs (coercion failure is graceful)
-        # Value stays as-is - downstream validation will catch if needed
-        assert errors == []
-        # Original value not in defaults because coercion returned same value
+        assert [e.title for e in errors] == ["Invalid input value"]
+        assert errors[0].context is not None
+        assert errors[0].context["path"] == "inputs.count"
+        assert errors[0].context["received"] == "not-a-number"
         assert "count" not in defaults
 
 
@@ -291,3 +286,123 @@ class TestPrepareInputsEnvSettingsCoercion:
 
         assert errors == []
         assert defaults["optional"] is None  # Not "None" string
+
+
+def _context(diagnostic: Diagnostic) -> dict[str, Any]:
+    assert diagnostic.context is not None
+    return diagnostic.context
+
+
+class TestResolutionOrder:
+    """Supplied → shell environment → settings.env → declared default → required? error : None."""
+
+    IR: ClassVar[dict[str, Any]] = {"inputs": {"port": {"type": "integer", "description": "Port", "default": 8080}}}
+
+    def test_a_default_satisfies_a_required_input(self):
+        """``required`` defaults to true; a declared default is a value, not "missing"."""
+        errors, updates, _ = prepare_inputs(self.IR, {})
+        assert errors == []
+        assert updates == {"port": 8080}
+
+    def test_environment_beats_the_default(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("port", "9090")
+        errors, updates, _ = prepare_inputs(self.IR, {})
+        assert errors == []
+        assert updates == {"port": 9090}
+
+    def test_settings_beat_the_default(self):
+        errors, updates, settings_names = prepare_inputs(self.IR, {}, {"port": "7070"})
+        assert errors == []
+        assert updates == {"port": 7070}
+        assert settings_names == {"port"}
+
+    def test_environment_beats_settings(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("port", "9090")
+        _, updates, settings_names = prepare_inputs(self.IR, {}, {"port": "7070"})
+        assert updates == {"port": 9090}
+        assert settings_names == set()
+
+    def test_supplied_beats_environment(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("port", "9090")
+        _, updates, _ = prepare_inputs(self.IR, {"port": "1"})
+        assert updates == {"port": 1}
+
+    def test_supplied_none_is_no_value_and_falls_back(self, monkeypatch: pytest.MonkeyPatch):
+        _, updates, _ = prepare_inputs(self.IR, {"port": None})
+        assert updates == {"port": 8080}
+        monkeypatch.setenv("port", "9090")
+        _, updates, _ = prepare_inputs(self.IR, {"port": None})
+        assert updates == {"port": 9090}
+
+    def test_supplied_none_for_a_required_input_with_nothing_else_is_missing(self):
+        ir = {"inputs": {"q": {"type": "string", "description": "Query"}}}
+        errors, _, _ = prepare_inputs(ir, {"q": None})
+        assert [e.message for e in errors] == ["Workflow requires input 'q': Query"]
+
+    def test_null_default_is_no_value(self):
+        required = {"inputs": {"q": {"type": "string", "description": "Query", "default": None}}}
+        assert [e.message for e in prepare_inputs(required, {})[0]] == ["Workflow requires input 'q': Query"]
+        optional = {"inputs": {"q": {"type": "string", "required": False, "default": None}}}
+        assert prepare_inputs(optional, {}) == ([], {"q": None}, set())
+
+
+class TestEverySourceIsLabelled:
+    """The error names where the bad value came from — the default pre-fill used to erase it."""
+
+    IR: ClassVar[dict[str, Any]] = {"inputs": {"n": {"type": "integer", "default": "abc"}}}
+
+    @pytest.mark.parametrize("source", ["argument", "stdin", "recorded", "call", "parent"])
+    def test_supplied_values_carry_their_label(self, source):
+        (error,) = prepare_inputs(self.IR, {"n": "x"}, input_sources={"n": source})[0]
+        assert _context(error)["source"] == source
+        assert _context(error)["path"] == "inputs.n"
+
+    def test_unlabelled_supplied_value_is_an_argument(self):
+        (error,) = prepare_inputs(self.IR, {"n": "x"})[0]
+        assert _context(error)["source"] == "argument"
+
+    def test_environment_value(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("n", "x")
+        (error,) = prepare_inputs(self.IR, {})[0]
+        assert _context(error)["source"] == "env"
+        assert error.message.endswith("from the environment variable n.")
+
+    def test_settings_value(self):
+        (error,) = prepare_inputs(self.IR, {}, {"n": "x"})[0]
+        assert _context(error)["source"] == "settings"
+
+    def test_declared_default(self):
+        (error,) = prepare_inputs(self.IR, {})[0]
+        assert _context(error)["source"] == "default"
+        assert _context(error)["path"] == "inputs.n.default"
+
+
+class TestEachProblemIsItsOwnDiagnostic:
+    IR: ClassVar[dict[str, Any]] = {
+        "inputs": {
+            "count": {"type": "integer", "required": True},
+            "flag": {"type": "boolean", "required": True},
+        },
+        "nodes": [{"id": "show", "type": "shell", "params": {"command": "true"}}],
+        "edges": [],
+    }
+
+    def test_two_bad_inputs_two_diagnostics_each_with_its_own_path_and_fix(self):
+        errors, _, _ = prepare_inputs(self.IR, {"count": "abc", "flag": "maybe"})
+        assert [_context(e)["path"] for e in errors] == ["inputs.count", "inputs.flag"]
+        assert [e.suggestions for e in errors] == [
+            ["Pass a whole number (e.g. 3): count=3"],
+            ["Pass true or false (also yes/no, 1/0): flag=true"],
+        ]
+
+    def test_compile_raises_one_validation_error_carrying_both(self):
+        with pytest.raises(WorkflowValidationError) as exc_info:
+            compile_workflow(self.IR, Registry(), {"count": "abc", "flag": "maybe"})
+        assert [_context(d)["input"] for d in exc_info.value.to_diagnostics()] == ["count", "flag"]
+
+    def test_compile_types_supplied_values_in_place(self):
+        params: dict[str, Any] = {"count": "3", "flag": "yes"}
+        compiled = compile_workflow(self.IR, Registry(), params)
+        assert params["count"] == 3
+        assert params["flag"] is True
+        assert compiled.resolved_defaults == {"count": 3, "flag": True}
