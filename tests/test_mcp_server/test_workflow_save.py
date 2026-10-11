@@ -343,8 +343,12 @@ class TestWorkflowSaveOverwrite:
         ExecutionService.save_workflow(workflow=markdown_content, name="test-duplicate", force=True)
 
         # Try to save again without force - should fail
-        with pytest.raises(FileExistsError, match="already exists"):
+        with pytest.raises(FileExistsError) as exc_info:
             ExecutionService.save_workflow(workflow=markdown_content, name="test-duplicate", force=False)
+        # The MCP surface names its own tool argument (#739).
+        assert str(exc_info.value) == (
+            "Workflow 'test-duplicate' already exists. Pass force: true to overwrite, or choose a different name."
+        )
 
     def test_allows_overwrite_with_force(self):
         """Ensure workflows can be overwritten with force=True."""

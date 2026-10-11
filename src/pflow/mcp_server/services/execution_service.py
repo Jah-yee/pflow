@@ -16,6 +16,7 @@ from pflow.core.exceptions import (
     CompilationError,
     MarkdownParseError,
     PflowError,
+    WorkflowExistsError,
     WorkflowNotFoundError,
     WorkflowValidationError,
 )
@@ -628,10 +629,9 @@ class ExecutionService(BaseService):
 
             return success_message
 
-        except FileExistsError as e:
-            raise FileExistsError(
-                f"Workflow '{name}' already exists. Use force=true to overwrite or choose a different name."
-            ) from e
+        except WorkflowExistsError as e:
+            # A pre-formatted FileExistsError passes through the MCP error boundary verbatim.
+            raise FileExistsError(f"{e} Pass force: true to overwrite, or choose a different name.") from e
         except (WorkflowValidationError, MarkdownParseError):
             raise
         except Exception as e:

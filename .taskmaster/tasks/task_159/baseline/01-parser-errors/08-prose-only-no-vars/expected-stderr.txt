@@ -3,11 +3,11 @@ Error: Parse Error
 '## Cache' block must contain at least one '${var}' reference.
   At: line 13
 
-  → Cache uses section-level params + a single tagged code block:
+  → Cache uses section-level params and a single tagged code block (`- ttl:` is optional: default 5m, accepts 1m..60m or 1h):
 
     ## Cache
 
-    - ttl: 5m       # optional; default 5m, accepts 1m..60m or 1h
+    - ttl: 5m
 
     ```cache
     Description of the value:

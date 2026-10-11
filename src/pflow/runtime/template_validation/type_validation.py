@@ -9,6 +9,7 @@ from typing import Any
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.templates import CONTAINER_TYPES, LIST_TYPES, Reference, TemplateResolver, is_type_compatible, parse
 from pflow.core.types import outer_base_type
+from pflow.core.workflow.data_flow import binding_phrase
 from pflow.core.workflow.declared_inputs import declared_root, input_as
 from pflow.core.workflow.template_surfaces import param_mode, template_params
 from pflow.registry import Registry
@@ -275,7 +276,7 @@ def _build_missing_code_annotation_diagnostics(
 
 
 def _build_orphan_code_annotation_diagnostics(
-    node_id: str,
+    node: dict[str, Any],
     input_keys: set[str],
     annotation_keys: set[str],
     annotations: dict[str, str],
@@ -296,7 +297,7 @@ def _build_orphan_code_annotation_diagnostics(
       with the more-likely local reading.
     - Orphan key is read but never bound (``ast.Name(ctx=Load())`` only) → the
       author expected it bound at runtime. Removing the annotation would leave the
-      name unbound, so the only valid fix is "Add to the inputs dict" (or "Rename"
+      name unbound, so the only valid fix is "Bind it as an input" (or "Rename"
       for a typo-level fuzzy match against an existing input key).
     - Orphan key is neither read nor bound → dead annotation; the fix is
       "Remove the annotation".
@@ -307,8 +308,10 @@ def _build_orphan_code_annotation_diagnostics(
     """
     from pflow.core.suggestion_utils import find_similar_items
 
+    node_id = node.get("id", "unknown")
     diagnostics: list[Diagnostic] = []
     for key in sorted(annotation_keys - input_keys):
+        bind_from_source = binding_phrase(node, "inputs", [(key, "<source>")])
         annotation_str = annotations[key]
         is_used = key in load_refs
         is_assigned = key in assigned_names
@@ -334,8 +337,7 @@ def _build_orphan_code_annotation_diagnostics(
                 f"Remove the annotation '{key}: {annotation_str}' — '{key}' is assigned in the code, "
                 f"so it's a local variable, not an input. To keep the type on a local, annotate the "
                 f"assignment itself: '{key}: {annotation_str} = ...'.",
-                f"Or add '{key}' to the inputs dict (in params.inputs): {key}: ${{<source>}} "
-                f"— if it's a workflow input.",
+                f"Or, if '{key}' is meant as a workflow input: {bind_from_source}",
             ]
         elif is_used:
             # Read but never assigned: removing the annotation would leave '{key}'
@@ -349,17 +351,14 @@ def _build_orphan_code_annotation_diagnostics(
                 # The engine injects the batch alias into template resolution
                 # only — code-exec requires an explicit binding. The canonical
                 # fix is to route the alias through `inputs:` verbatim.
-                fixes = [
-                    f"Add '{key}' to the inputs dict (in params.inputs): {key}: ${{{key}}} "
-                    f"(binds the batch alias into the code block)"
-                ]
+                fixes = [f"Bind the batch alias '{key}' as an input: {binding_phrase(node, 'inputs', [(key, key)])}"]
             else:
                 similar = find_similar_items(key, sorted(input_keys), method="fuzzy", cutoff=0.6, max_results=3)
                 if similar:
                     fixes = [f"Rename the annotation to '{similar[0]}' to match the existing input binding."]
                     context["similar_names"] = similar
                 else:
-                    fixes = [f"Add '{key}' to the inputs dict (in params.inputs): {key}: ${{<source>}}"]
+                    fixes = [f"Bind '{key}' as an input: {bind_from_source}"]
         else:
             fixes = [f"Remove the annotation '{key}: {annotation_str}' — it is never read in the code."]
 
@@ -731,7 +730,7 @@ def validate_code_node_input_annotations(workflow_ir: dict[str, Any], node_outpu
         # using batch must explicitly bind `inputs: {item: ${item}}` or runtime
         # fails with "Undefined variable 'item'". Pass 9 correctly flags the
         # missing binding as Class 2 (orphan annotation with Load reference →
-        # "Add 'item' to the inputs dict").
+        # "Bind 'item' as an input").
         # `annotated_keys` (all annotations) drives the missing/type checks;
         # `bare_keys` (input declarations) drives the orphan check.
         annotated_keys = {key for key in annotations if key not in {"result", "next"}}
@@ -754,7 +753,7 @@ def validate_code_node_input_annotations(workflow_ir: dict[str, Any], node_outpu
         )
         diagnostics.extend(
             _build_orphan_code_annotation_diagnostics(
-                node_id, input_keys, bare_keys, input_annotations, load_refs, assigned_names, batch_alias
+                node, input_keys, bare_keys, input_annotations, load_refs, assigned_names, batch_alias
             )
         )
         diagnostics.extend(

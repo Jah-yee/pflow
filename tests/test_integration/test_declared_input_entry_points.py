@@ -565,9 +565,9 @@ class TestValidateOnlyChecksTheSuppliedValues:
             "edges": [],
         }
         result = WorkflowRunner().validate(ir, {"a": "x"})
-        stdin_errors = [d.message for d in result.errors if '"stdin": true' in d.message]
+        stdin_errors = [d.message for d in result.errors if "`- stdin: true`" in d.message]
         assert len(stdin_errors) == 1, stdin_errors
-        assert stdin_errors[0].startswith('Multiple inputs marked with "stdin": true: a, b')
+        assert stdin_errors[0].startswith("Multiple inputs marked `- stdin: true`: a, b")
 
 
 def _failed_run(workflow: Path, *args: str) -> tuple[str, Path]:

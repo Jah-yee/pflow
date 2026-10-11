@@ -88,6 +88,8 @@ class TestMoveFileNode:
 
             assert action == "error"
             assert "exists" in shared["error"].lower()
+            # The fix is the step line the author types, not a Python kwarg (#739).
+            assert "Set `- overwrite: true` on the step" in shared["error"]
 
             # BEHAVIOR: Source should remain untouched
             assert os.path.exists(source_path)

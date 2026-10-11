@@ -417,8 +417,8 @@ _REQUIRES_TYPING_IMPORT = frozenset({
 _REJECTED_ANNOTATION_NAMES = _MODERN_GENERIC_NAMES | {"Union"} | _REQUIRES_TYPING_IMPORT
 
 
-def _suggest_for_nameerror(var_name: str) -> str:
-    """Return an opinionated, canonical fix suggestion for a NameError.
+def _typing_name_fix(var_name: str) -> str | None:
+    """Return an opinionated, canonical fix for a typing name, or None for any other name.
 
     pflow auto-injects `Any`, `Optional`, and the `typing` module — other
     typing names produce a NameError. Rather than listing multiple options,
@@ -441,9 +441,19 @@ def _suggest_for_nameerror(var_name: str) -> str:
             f"  - Add 'from typing import {var_name}' at the top of your code block.\n"
             "    (pflow auto-injects 'Any' and 'Optional' — other typing names need explicit import.)"
         )
-    # Not a known typing name — fall back to the input-variable suggestions.
+    return None
+
+
+def _suggest_for_nameerror(var_name: str, step_inputs: Any) -> str:
+    """A NameError's fix: the typing-name fix, else bind the name through the step's ``inputs:``."""
+    typing_fix = _typing_name_fix(var_name)
+    if typing_fix is not None:
+        return typing_fix
+    from pflow.core.workflow.data_flow import binding_phrase
+
+    add = binding_phrase({"params": {"inputs": step_inputs}}, "inputs", [(var_name, "<source>")])
     return (
-        f'  - Add \'{var_name}\' to the inputs dict: "inputs": {{"{var_name}": ...}}\n'
+        f"  - If '{var_name}' is a workflow value: {add}, and declare its type in the code (`{var_name}: <type>`)\n"
         f"  - Or define '{var_name}' in the code before use\n"
         "  - Check for typos in variable names"
     )
@@ -516,7 +526,7 @@ def _check_annotation_vocabulary(code: str, annotations: dict[str, str]) -> None
             if node.id in _REJECTED_ANNOTATION_NAMES and node.id not in imported:
                 raise NodeError(
                     f"Invalid type annotation for '{var_name}': '{node.id}' is not defined.\n\n"
-                    f"{_suggest_for_nameerror(node.id)}",
+                    f"{_typing_name_fix(node.id)}",
                     param="code",
                 )
 
@@ -851,9 +861,12 @@ class PythonCodeNode(Node):
         if not isinstance(code, str) or not code.strip():
             raise NodeError(
                 "Missing required 'code' parameter\n\n"
-                "Provide a Python code string with type-annotated inputs and result.\n"
-                "Example:\n"
-                '  "code": "data: list\\nresult: list = data[:10]"',
+                "Add a ```python code``` block to the step (or reference one file: `- code: ./script.py`), "
+                "with type-annotated inputs and result:\n\n"
+                "    ```python code\n"
+                "    data: list\n"
+                "    result: list = data[:10]\n"
+                "    ```",
                 param="code",
             )
         return code
@@ -970,7 +983,7 @@ class PythonCodeNode(Node):
             return (
                 f"Python code execution timed out after {timeout} seconds\n\n"
                 f"Suggestions:\n"
-                f'  - Increase timeout: "timeout": {int(timeout * 2)}\n'
+                f"  - Increase the step's timeout: `- timeout: {timeout * 2:g}`\n"
                 f"  - Check for infinite loops or blocking I/O in code\n"
                 f"  - Break long computation into multiple code nodes"
             )
@@ -979,7 +992,7 @@ class PythonCodeNode(Node):
             msg = f"Undefined variable '{var_name}'"
             if location:
                 msg += f"\n{location}"
-            suggestion = _suggest_for_nameerror(var_name)
+            suggestion = _suggest_for_nameerror(var_name, prep_res.get("inputs"))
             msg += f"\n\nSuggestions:\n{suggestion}"
             return msg
         if isinstance(exc, ImportError):
@@ -993,7 +1006,7 @@ class PythonCodeNode(Node):
                 f"  - Or with uv (list existing extras first — uv replaces, not adds):\n"
                 f"    uv tool list --show-with\n"
                 f"    uv tool install --with {module} --with <existing-extras> pflow-cli\n"
-                f'  - Document dependency: "requires": ["{module}"]'
+                f"  - Document the dependency on the step: `- requires: [{module}]`"
             )
             return msg
 

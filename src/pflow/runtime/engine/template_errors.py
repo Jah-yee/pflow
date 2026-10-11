@@ -46,38 +46,35 @@ def build_type_error_message(
 
     Returns a plain string used in a ValueError. Type mismatch errors are
     a different class from unresolved-template errors and don't need the
-    structured Diagnostic treatment.
+    structured Diagnostic treatment. A str param reaches this only with a
+    dict/list that ``coerce_param_for_node`` could not serialize to JSON.
     """
     expressions = parse(template_str).expressions
     var_name = expressions[0].raw if expressions else "variable"
 
     error_msg = (
-        f"Parameter '{param_key}' expects {expected_type} but received {actual_type}\n\n"
-        f"Template used: {template_str}\n"
-        f"Resolved to: {actual_type} object\n"
+        f"Parameter '{param_key}' expects {expected_type} but {template_str} resolved to a {actual_type} "
+        "that cannot be written as JSON text: it holds a value JSON has no type for (a set, bytes, a datetime, ...).\n\n"
+        "Fix — any one of:\n"
+        "  - Convert it in the step that produces it, so it holds only JSON types "
+        "(a list instead of a set, text instead of bytes or a datetime).\n"
     )
-    error_msg += "\n\U0001f4a1 Common fixes:\n"
-    error_msg += "  1. Serialize to JSON (recommended):\n"
-    error_msg += f'     {param_key}: "{template_str}"\n\n'
     if isinstance(resolved_value, dict):
-        error_msg += "  2. Access a specific field:\n"
-        error_msg += f"     {param_key}: ${{{var_name}.field_name}}\n\n"
+        error_msg += f"  - Read only the field you need: `- {param_key}: ${{{var_name}.field_name}}`\n"
     elif isinstance(resolved_value, list):
-        error_msg += "  2. Access a specific item:\n"
-        error_msg += f"     {param_key}: ${{{var_name}[0]}}\n\n"
-    error_msg += "  3. Combine with text:\n"
-    error_msg += f'     {param_key}: "Summary: {template_str}"\n'
+        error_msg += f"  - Read only the item you need: `- {param_key}: ${{{var_name}[0]}}`\n"
+    error_msg += f'  - Embed it in text (written in Python notation): `- {param_key}: "Summary: {template_str}"`\n'
 
     if isinstance(resolved_value, dict) and resolved_value:
         keys = list(resolved_value.keys())[:10]
-        error_msg += f"\n\nAvailable fields in {var_name}:\n"
+        error_msg += f"\nAvailable fields in {var_name}:\n"
         for key in keys:
             error_msg += f"  - {key}\n"
         if len(resolved_value) > 10:
             remaining = len(resolved_value) - 10
             error_msg += f"  ... and {remaining} more\n"
     elif isinstance(resolved_value, list):
-        error_msg += f"\n\n{var_name} contains {len(resolved_value)} items\n"
+        error_msg += f"\n{var_name} contains {len(resolved_value)} items\n"
         if len(resolved_value) > 0:
             error_msg += f"Access items with: ${{{var_name}[0]}}, ${{{var_name}[1]}}, etc.\n"
 

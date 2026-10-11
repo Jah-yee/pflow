@@ -863,7 +863,8 @@ class TestCodeNodeInputAnnotationValidation:
         annotation_errors = [d for d in errors if "has no corresponding entry in 'inputs'" in d.message]
         assert len(annotation_errors) == 1
         diagnostic = annotation_errors[0]
-        assert any("Add 'y' to the inputs dict" in s for s in diagnostic.suggestions or []), diagnostic.suggestions
+        # The step already has inputs:, so the binding goes under it (binding_phrase, not a JSON dict).
+        assert diagnostic.suggestions == ["Bind 'y' as an input: add y: ${<source>} under the step's existing inputs:"]
         assert not any("Remove" in s for s in diagnostic.suggestions or []), diagnostic.suggestions
 
     def test_annotated_assignment_local_is_not_flagged_as_orphan(self, test_registry):
@@ -976,7 +977,7 @@ class TestCodeNodeInputAnnotationValidation:
         ann = [d for d in errors if "Annotation 'items: list'" in d.message]
         assert len(ann) == 1, [d.message for d in errors]
         suggestions = ann[0].suggestions or []
-        assert any("Add 'items' to the inputs dict" in s for s in suggestions), suggestions
+        assert "Bind 'items' as an input: add `- inputs: {items: ${<source>}}` to the step" in suggestions, suggestions
         assert not any("local variable" in s for s in suggestions), suggestions
 
     def test_orphan_annotation_augmented_assignment_is_not_safe_local(self, test_registry):
@@ -998,7 +999,7 @@ class TestCodeNodeInputAnnotationValidation:
         ann = [d for d in errors if "Annotation 'count: int'" in d.message]
         assert len(ann) == 1, [d.message for d in errors]
         suggestions = ann[0].suggestions or []
-        assert any("Add 'count' to the inputs dict" in s for s in suggestions), suggestions
+        assert "Bind 'count' as an input: add `- inputs: {count: ${<source>}}` to the step" in suggestions, suggestions
         assert not any("local variable" in s for s in suggestions), suggestions
 
     def test_orphan_annotation_on_def_name_suggests_remove(self, test_registry):
@@ -1785,5 +1786,7 @@ class TestCodeNodeInputAnnotationValidation:
         assert len(orphan_errors) == 1, [d.message for d in errors]
         diagnostic = orphan_errors[0]
         assert diagnostic.context["annotation_key"] == "item"
-        # `item` is read in the body → canonical fix is "Add to the inputs dict".
-        assert any("Add 'item' to the inputs dict" in s for s in diagnostic.suggestions or []), diagnostic.suggestions
+        # `item` is read in the body → canonical fix is to bind the alias through inputs:.
+        assert diagnostic.suggestions == [
+            "Bind the batch alias 'item' as an input: add `- inputs: {item: ${item}}` to the step"
+        ]

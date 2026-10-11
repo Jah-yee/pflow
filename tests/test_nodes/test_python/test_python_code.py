@@ -450,6 +450,8 @@ class TestSafetyAndErrors:
         )
         assert action == "error"
         assert "timed out" in shared["error"]
+        # The fix is the step line the author types (#700), with a usable sub-second value.
+        assert "`- timeout: 0.1`" in shared["error"]
 
     def test_name_error_identifies_variable(self):
         """NameError message includes the undefined variable name."""
@@ -461,6 +463,18 @@ class TestSafetyAndErrors:
         )
         assert action == "error"
         assert "undefined_var" in shared["error"]
+        # A step with no inputs gets a new `- inputs:` line (binding_phrase), not a JSON dict (#700).
+        assert (
+            "If 'undefined_var' is a workflow value: add `- inputs: {undefined_var: ${<source>}}` to the step"
+            in shared["error"]
+        )
+
+    def test_name_error_with_existing_inputs_binds_under_them(self):
+        """A step that already has inputs: is told to add the name under them — a second bullet would replace it."""
+        shared: dict = {}
+        action = run_code_node(shared, code="x: int\nresult: int = x + missing", inputs={"x": 1})
+        assert action == "error"
+        assert "add missing: ${<source>} under the step's existing inputs:" in shared["error"]
 
     def test_union_in_annotation_rejected_with_pipe_syntax_hint(self):
         """Union in an annotation should be rejected at prep with a PEP 604 hint.
@@ -785,6 +799,7 @@ x: dict
         assert action == "error"
         assert "nonexistent_module_xyz" in shared["error"]
         assert "not found" in shared["error"]
+        assert "`- requires: [nonexistent_module_xyz]`" in shared["error"]
 
     def test_syntax_error_includes_line_info(self):
         """SyntaxError surfaces line number for debugging."""
@@ -1092,8 +1107,10 @@ class TestEdgeCases:
 
     def test_empty_code_rejected(self):
         shared: dict = {}
-        with pytest.raises(NodeError, match="Missing required 'code' parameter"):
+        with pytest.raises(NodeError, match="Missing required 'code' parameter") as exc_info:
             run_code_node(shared, code="", inputs={})
+        # The fix names the fenced block the author writes, not a JSON "code": key (#700).
+        assert "```python code\n" in str(exc_info.value)
 
     def test_whitespace_only_code_rejected(self):
         shared: dict = {}

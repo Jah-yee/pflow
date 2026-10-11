@@ -187,9 +187,10 @@ _SECTION_SYNTAX_HINTS: dict[_SectionType, str] = {
         "    - source: ${step-name.output}"
     ),
     _SectionType.CACHE: (
-        "Cache uses section-level params + a single tagged code block:\n\n"
+        "Cache uses section-level params and a single tagged code block "
+        "(`- ttl:` is optional: default 5m, accepts 1m..60m or 1h):\n\n"
         "    ## Cache\n\n"
-        "    - ttl: 5m       # optional; default 5m, accepts 1m..60m or 1h\n\n"
+        "    - ttl: 5m\n\n"
         "    ```cache\n"
         "    Description of the value:\n\n"
         "    ${concept}\n\n"
