@@ -16,7 +16,7 @@ import click
 import pytest
 
 from pflow.core.exceptions import GateNotInteractiveError
-from pflow.core.gate import GateRequest, GateResolution
+from pflow.core.gate import GateRequest, GateResolution, build_approval_request
 from pflow.execution.gate_prompt import build_gate_resolver, can_prompt
 
 
@@ -220,16 +220,48 @@ class TestPreviewRendering:
         build_gate_resolver(frozenset(), _FakeOC())(request)
         return capsys.readouterr().err
 
-    def test_secret_values_masked_long_values_truncated_newlines_escaped(self, monkeypatch, capsys):
+    def test_secret_values_masked_long_values_shown_in_full_newlines_escaped(self, monkeypatch, capsys):
+        # #746: the approver consents to the whole value — a long one is never cut.
+        long_note = "x" * 490 + "END_MARKER"
         rendered = self._rendered(
-            _approval(api_key="sk-super-secret", body="line1\nline2", note="x" * 500),
+            _approval(api_key="sk-super-secret", body="line1\nline2", note=long_note),
             monkeypatch,
             capsys,
         )
         assert "sk-super-secret" not in rendered
         assert "line1\\nline2" in rendered
-        assert "… (500 chars)" in rendered
+        assert long_note in rendered
+        assert "chars)" not in rendered
         assert "Approval required: notify (ShellNode)" in rendered
+
+    def test_shell_env_shows_the_bound_text_in_full(self, monkeypatch, capsys):
+        # #746: `env:` values render as the text the command receives (`true` binds as `True`,
+        # null as empty), and a long value never hides the variables after it.
+        long_value = "a" * 290 + "END_MARKER"
+        request = build_approval_request(
+            "deploy",
+            "ShellNode",
+            {
+                "command": "deploy.sh",
+                "env": {
+                    "FLAG": True,
+                    "NOTHING": None,
+                    "LONG": long_value,
+                    "AFTER": "tail",
+                    "CONFIG": {"api_key": "sk-nested-secret", "region": "eu"},
+                },
+            },
+        )
+        rendered = self._rendered(request, monkeypatch, capsys)
+        # An object value is masked before it becomes text — its nested secret never shows.
+        assert "sk-nested-secret" not in rendered
+        assert '\\"api_key\\": \\"<REDACTED>\\", \\"region\\": \\"eu\\"' in rendered
+        assert '"FLAG": "True"' in rendered
+        assert '"FLAG": true' not in rendered
+        assert '"NOTHING": ""' in rendered
+        assert "null" not in rendered
+        assert f'"LONG": "{long_value}"' in rendered
+        assert '"AFTER": "tail"' in rendered
 
     def test_non_string_values_render_as_compact_json(self, monkeypatch, capsys):
         rendered = self._rendered(_approval(payload={"a": 1, "b": [True, None]}), monkeypatch, capsys)
@@ -248,18 +280,17 @@ class TestPreviewRendering:
         assert "<REDACTED>" in rendered
         assert "application/json" in rendered  # non-secret nested value survives
 
-    def test_long_nonsecret_nested_value_survives_to_display_budget(self, monkeypatch, capsys):
+    def test_long_nonsecret_nested_value_survives_masking(self, monkeypatch, capsys):
         # PR #554 review warning: routing preview values through
         # sanitize_parameters cut long NON-secret nested strings to ~20 chars —
-        # blinding the approver. Masking must not truncate; only the renderer's
-        # 200-char display budget applies.
-        body = "b" * 150
+        # blinding the approver. Masking must not truncate.
+        body = "b" * 400
         rendered = self._rendered(
             _approval(json={"body": body, "token": "sk-super-secret"}),
             monkeypatch,
             capsys,
         )
-        assert body in rendered  # full 150-char value visible (under the 200 budget)
+        assert body in rendered  # the full nested value is visible
         assert "<truncated>" not in rendered
         assert "sk-super-secret" not in rendered  # nested secret still redacted
 
@@ -296,15 +327,16 @@ class TestPausedGateRendering:
     surfaces render the SAME content shape as the blocking prompt, from the
     GateRequest.to_dict() payload (what the trace trailer carries)."""
 
-    def test_loop_gate_leads_with_its_iteration(self):
-        """Task 179: one rule serves every pause surface (CLI stderr, MCP ``Gate:`` block,
-        the answer-required error) — a loop step's gate leads with ``Loop iteration N``."""
+    def test_loop_gate_leads_with_its_position(self):
+        """Task 179/183: one rule serves every pause surface (CLI stderr, MCP ``Gate:`` block,
+        the answer-required error) — a loop step's gate leads with ``Loop iteration N of up
+        to M`` (the clause only when the cap is known)."""
         from dataclasses import replace
 
         from pflow.execution.gate_prompt import format_gate_lines
 
-        approval = replace(_approval(command="deploy"), iteration=2).to_dict()
-        assert format_gate_lines(approval)[:2] == ["Loop iteration 2", "command:  deploy"]
+        approval = replace(_approval(command="deploy"), iteration=2, max_iterations=3).to_dict()
+        assert format_gate_lines(approval)[:2] == ["Loop iteration 2 of up to 3", "command:  deploy"]
         escalation = replace(_escalation(question="which?"), iteration=3).to_dict()
         assert format_gate_lines(escalation)[:2] == ["Loop iteration 3", "which?"]
         # A non-loop gate (iteration None) has no such line.
@@ -338,6 +370,36 @@ class TestPausedGateRendering:
         assert lines[1] == "1. merge — simpler — breaks overrides"
         assert lines[2] == "2. split (rec)"
 
+    def test_loop_position_follows_the_shared_case_table(self):
+        """D8: the Python renderer and the web eyebrow's TS twin read ONE hand-authored table."""
+        import json
+        from pathlib import Path
+
+        from pflow.core.gate import loop_position
+
+        table = Path(__file__).resolve().parents[2] / "web" / "src" / "test" / "fixtures" / "loop-position.json"
+        rows = json.loads(table.read_text(encoding="utf-8"))
+        assert [row["id"] for row in rows] == ["capped", "null-cap", "old-record", "non-loop", "empty", "past-cap"]
+        for row in rows:
+            gate = row["gate"]
+            assert loop_position(gate.get("iteration"), gate.get("max_iterations")) == row["text"], row["id"]
+
+    def test_bulk_approve_hint_only_for_a_loop_approval(self):
+        """R1: one line naming ``--auto-approve <step>`` — never for a non-loop approval (one
+        gate, nothing to bulk-approve) nor an escalation (it cannot be pre-answered)."""
+        from dataclasses import replace
+
+        from pflow.execution.gate_prompt import format_bulk_approve_hint
+
+        loop_approval = replace(_approval("gated"), iteration=2, max_iterations=None).to_dict()
+        assert format_bulk_approve_hint("tok-1", loop_approval) == (
+            "To approve this and every remaining iteration of 'gated' (only with your human's OK): "
+            "pflow resume tok-1 --approve yes --auto-approve gated"
+        )
+        assert format_bulk_approve_hint("tok-1", _approval("gated").to_dict()) is None
+        loop_escalation = replace(_escalation(question="q?"), iteration=2, max_iterations=3).to_dict()
+        assert format_bulk_approve_hint("tok-1", loop_escalation) is None
+
     def test_resume_answer_command_pairs_verb_with_kind(self):
         from pflow.execution.gate_prompt import format_resume_answer_command
 
@@ -355,17 +417,17 @@ class TestLoopIterationInPromptHeaders:
         from dataclasses import replace
 
         monkeypatch.setattr(click, "confirm", lambda *a, **k: True)
-        build_gate_resolver(frozenset(), _FakeOC())(replace(_approval(), iteration=2))
+        build_gate_resolver(frozenset(), _FakeOC())(replace(_approval(), iteration=2, max_iterations=3))
         build_gate_resolver(frozenset({"notify"}), _FakeOC())(replace(_approval(), iteration=3))
         build_gate_resolver(frozenset(), _FakeOC())(_approval())
-        err = capsys.readouterr().err
-        assert "Approval required: notify (ShellNode) — iteration 2" in err
-        assert "Gate 'notify' — iteration 3 pre-approved via --auto-approve=notify" in err
-        assert "Approval required: notify (ShellNode)\n" in err  # the non-loop header, no suffix
+        lines = capsys.readouterr().err.splitlines()
+        assert "⏸  Approval required: notify (ShellNode) — iteration 2 of up to 3" in lines
+        assert "✓ Gate 'notify' — iteration 3 pre-approved via --auto-approve=notify" in lines  # no known cap
+        assert "⏸  Approval required: notify (ShellNode)" in lines  # the non-loop header, no suffix
 
     def test_escalation_prompt_names_the_iteration(self, monkeypatch, capsys):
         from dataclasses import replace
 
         monkeypatch.setattr(click, "prompt", lambda *a, **k: "x")
-        build_gate_resolver(frozenset(), _FakeOC())(replace(_escalation(question="q?"), iteration=2))
-        assert "Escalation from agent-step — iteration 2:" in capsys.readouterr().err
+        build_gate_resolver(frozenset(), _FakeOC())(replace(_escalation(question="q?"), iteration=2, max_iterations=3))
+        assert "⏸  Escalation from agent-step — iteration 2 of up to 3:" in capsys.readouterr().err.splitlines()

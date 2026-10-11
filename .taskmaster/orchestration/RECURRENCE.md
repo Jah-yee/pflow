@@ -49,9 +49,10 @@ proof.
   reverted without asking (the searcher's `effort` value) — an uncommitted change with no author
   is indistinguishable from a leaf's; ask before reverting anything you did not make | s07 | n=1
 - host load from many parallel agents on one machine (lanes + lenses + planner; load average
-  140–217 measured) makes timing-benchmark tests flake (`test_real_compilation_performance…`
-  203 ms/200, another 166/150) and produced one unidentified first-run `make test` failure —
-  recognition would cap concurrent local lanes or exempt benchmarks under load | s08 | n=1
+  140–217 measured s08; 50–76 with 1 build + 3 lanes s13) makes timing tests flake and timing
+  measurements meaningless — recognition would cap concurrent local agents in ORCHESTRATION
+  "Parallel tasks" (s13 ran 1 build + 3 lanes as the cap) | s08, s13 | n=2 → PROPOSED (promote now:
+  one sentence in ORCHESTRATION step 7 — at most 1 build + 3 lanes; nothing new above load ~40)
 - a lane squash-merged after `origin/main` moved past its last merge-of-main without
   re-gating (CI on the push to main caught it green) — the lane def's merged-result gate runs
   before the PR, not again before the merge click; recognition would add "re-check origin/main
@@ -61,9 +62,9 @@ proof.
   DECIDED ledger line + ADR-0016 ("compact JSON" — `to_string` uses default separators) and Task 182 ("SC2154
   catches it"); each caught by a context-free reader; APPLIED at s11 close as a sentence in ADR-FORMAT.md's
   "Review before commit" (re-derive every mechanism from the cited code; name the function, not a list of its
-  outputs) | s08, s09, s10, s11, s12 | n=5 → promoted (ratify or revert); s12 instance: Task 120's (e) "the code node
-  already knows the annotation" (written s11 from an investigation summary) refuted by four lenses — the node reads
-  it in `prep`, after the parse
+  outputs) | s08, s09, s10, s11, s12, s13 | n=6 → promoted (ratify or revert); s13 instances: the class-name fold ruled
+  from `engine/types.py:23` (the IR type lives on `TemplateConfig`, not `NodeConfig` — the 183 orchestrator found it);
+  a packet path `cli/gate_prompt.py` (it is `execution/`); the #751 "point of use" design (refuted by two searchers)
 - a lane ran `git stash push`/`pop` in a worktree and popped the USER's shared `stash@{0}` (Task 125 WIP) —
   stashes are repo-wide across worktrees; recognition would add "never `git stash`" to every implementing
   role's def (packets carried it ad hoc after; no repeat in s10 under the packet line) | s09 | n=1 → PROPOSED
@@ -113,6 +114,18 @@ proof.
 - a `gh` WRITE with stderr suppressed failed silently (`gh issue comment … -q 2>/dev/null` — `-q` is not a flag; both
   comments never posted, caught only by reading them back); recognition: never suppress stderr on a write, and read
   back every external write | s12 | n=1
-- `tests-windows` wall-clock flakes — two distinct tests in one day (`test_stdin_no_hang_integration` 5 s timeout on a
-  main push; `test_cache.py::test_concurrent_access` on PR #726), each green on one re-run; recognition: a third
-  distinct one → file a de-flake issue for timing assertions on shared runners | s12 | n=1
+- `tests-windows` wall-clock flakes — distinct timing failures each green on one re-run: `test_stdin_no_hang_integration`
+  and `test_cache.py::test_concurrent_access` (s12), `tests-windows-mcp-smoke` 60 s request timeout on main `f0b39c5c` and
+  PR #764 (s13; #685 family); recognition: the third distinct one has now happened → file one de-flake issue for timing
+  assertions on shared runners | s12, s13 | n=2 → PROPOSED (file the issue next session; not a rule)
+- a producer's TESTS wrote to the user's real `~/.pflow` (Task 181: a fixture ran before the test-home isolation and
+  overwrote the `chrome-devtools` MCP entry on every `make test` for hours), and the producer then repaired the user's
+  HOME itself — recognition: implementer + lane defs say "tests never touch the real HOME; a HOME write you discover is a
+  hand-back, never a self-repair" | s13 | n=1 → PROPOSED (severity override: the next one may hit a secret or a saved
+  workflow)
+- I tore down a worktree whose gitignored scratch held the only evidence a producer cited (181's `*.corrupt.json`
+  before-images) — recognition: before `./scripts/worktree rm`, copy any scratch path a hand-back cites into the session
+  scratchpad | s13 | n=1
+- a lens re-audit produced a recommendation I presented before verifying its premises (#751 "sync at point of use",
+  refuted the next hour by two searchers); the user had to ask *"verify all assumptions"* — recognition: a re-derived
+  design under the lens goes out labelled HYPOTHESIS until its load-bearing premise is checked | s13 | n=1

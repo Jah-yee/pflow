@@ -723,6 +723,13 @@ class TestBuildNodeFile:
         assert "- Time: 42ms" in md
         assert "- Status: success" in md
 
+    def test_shell_timeout_flag_shows_only_when_the_step_timed_out(self) -> None:
+        in_time = _build_node_file(_make_event(node_type="ShellNode", node_output={"exit_code": 0, "timeout": False}))
+        timed_out = _build_node_file(_make_event(node_type="ShellNode", node_output={"exit_code": -1, "timeout": True}))
+
+        assert "## Output" not in in_time
+        assert '"timeout": true' in timed_out
+
     def test_cached_node_shows_cached_status(self) -> None:
         event = _make_event(node_id="cached-node", cached=True, duration_ms=0)
         md = _build_node_file(event)
@@ -2161,6 +2168,27 @@ class TestSuggestTemplateFixes:
         assert len(suggestions) >= 1
         assert any("messages" in s for s in suggestions)
         assert any("data" in s for s in suggestions)
+
+    def test_suggest_template_fix_reads_a_json_insert_as_its_path(self) -> None:
+        """Task 181: an unresolved JSON insert names its path (``up.result.missing``), never
+        ``missing|json``; JavaScript's own ``${a + b}`` in the template is no path at all."""
+        upstream_event = _make_event(
+            node_id="up", node_type="ShellNode", success=True, node_output={"result": {"text": "T"}}
+        )
+        failed_event = _make_event(
+            node_id="click",
+            node_type="MCPNode",
+            success=False,
+            error="Unresolved variables in parameter 'function': ${up.result.missing|json}",
+            template_resolutions={
+                "function": {
+                    "template": "`${a + b}` ${up.result.missing|json}",
+                    "resolved": "`${a + b}` ${up.result.missing|json}",
+                },
+            },
+        )
+        suggestions = _suggest_template_fixes(failed_event, [upstream_event, failed_event])
+        assert suggestions == ["`${up.result.missing}`: key `missing` not found at `up.result`. Available keys: `text`"]
 
 
 # --- Batch item warnings in _build_node_summary() ---

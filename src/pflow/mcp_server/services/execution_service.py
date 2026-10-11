@@ -4,6 +4,7 @@ This service handles workflow execution, validation, saving,
 and node testing operations.
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -116,67 +117,6 @@ def _format_mcp_diagnostic_sections(diagnostics: list[Diagnostic]) -> str:
     return "\n\n".join(sections)
 
 
-def _format_error_result(
-    result: Any,
-    workflow_ir: dict[str, Any],
-) -> dict[str, Any]:
-    """Format failed execution result for MCP error text.
-
-    Args:
-        result: ExecutionResult from WorkflowRunner
-        workflow_ir: Workflow IR dictionary
-
-    Returns:
-        Formatted error dictionary
-    """
-    from pflow.execution.formatters.error_formatter import format_execution_errors
-
-    formatted = format_execution_errors(
-        result,
-        shared_storage=result.shared_after,
-        ir_data=workflow_ir,
-        metrics_collector=result.metrics,
-        sanitize=True,
-    )
-
-    # Build error response
-    error_details: dict[str, Any] = {
-        "type": "execution",
-        "message": "Workflow execution failed",
-        "checkpoint": formatted["checkpoint"],
-    }
-
-    # Add first error details for backward compatibility
-    if formatted["errors"]:
-        first_error = formatted["errors"][0]
-        error_details["message"] = first_error.get("message", "Unknown error")
-        error_details["node"] = first_error.get("node_id")
-        error_details["category"] = first_error.get("category")
-
-        for key, value in first_error.items():
-            if key not in ["message", "node_id", "category"]:
-                error_details[key] = value
-
-    return {
-        "success": False,
-        "error": error_details,
-        "errors": formatted["errors"],
-        "execution": formatted.get("execution"),
-        "metrics": formatted.get("metrics"),
-        "trace_path": _trace_path_str(result),
-        "warnings": [
-            diagnostic.to_display_dict()
-            for diagnostic in getattr(result, "diagnostics", [])
-            if diagnostic.severity == Severity.WARNING
-        ],
-        "advisories": [
-            diagnostic.to_display_dict()
-            for diagnostic in getattr(result, "diagnostics", [])
-            if diagnostic.severity == Severity.INFO and diagnostic.source in {"parser", "validator"}
-        ],
-    }
-
-
 def _build_error_text(
     errors: list[Diagnostic],
     warnings: list[Diagnostic],
@@ -215,6 +155,7 @@ def _build_error_text(
 
         steps = build_execution_steps(workflow_ir, result.shared_after, metrics_summary=None)
         lines.extend(format_batch_errors_section(steps))
+        lines.extend(_format_resolved_outputs_section(result, workflow_ir))
 
     if warnings:
         lines.append("\n" + _format_mcp_diagnostic_sections(warnings))
@@ -225,6 +166,24 @@ def _build_error_text(
     return "\n".join(lines)
 
 
+def _format_resolved_outputs_section(result: Any, workflow_ir: dict[str, Any]) -> list[str]:
+    """The declared outputs that resolved before an output-resolution failure.
+
+    MCP has no JSON failure document, so this is where the CLI's failure ``result``
+    reaches an MCP caller.
+    """
+    from pflow.execution.formatters.success_formatter import collect_outputs_resolved_before_failure
+
+    resolved = collect_outputs_resolved_before_failure(result, workflow_ir)
+    if not resolved:
+        return []
+    try:
+        rendered = json.dumps(resolved, indent=2, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):  # non-str dict keys; same fallback as the success text's outputs
+        rendered = repr(resolved)
+    return ["", "Outputs that resolved before the failure:", rendered]
+
+
 def _format_paused_text(result: Any) -> str:
     """Text response for a durably PAUSED run (Task 171).
 
@@ -233,7 +192,7 @@ def _format_paused_text(result: Any) -> str:
     gate content is rendered so the agent (or its human) can compose the answer
     from this response alone; the resume command is the exact next step.
     """
-    from pflow.execution.gate_prompt import format_gate_lines, format_resume_answer_command
+    from pflow.execution.gate_prompt import format_bulk_approve_hint, format_gate_lines, format_resume_answer_command
 
     pause = result.trace.pause_request or {}
     node_id = pause.get("paused_node_id")
@@ -249,9 +208,11 @@ def _format_paused_text(result: Any) -> str:
         f"paused_node_id: {node_id}",
         f"trace_path: {_trace_path_str(result)}",
         f"resume_command: {resume_command}",
-        "",
-        "Gate:",
     ]
+    bulk_hint = format_bulk_approve_hint(execution_id, gate_request)
+    if bulk_hint:
+        lines.append(bulk_hint)
+    lines += ["", "Gate:"]
     lines.extend(f"  {line}" for line in format_gate_lines(gate_request))
     return "\n".join(lines)
 
@@ -730,14 +691,19 @@ class ExecutionService(BaseService):
         try:
             # Resolve ${ENV_VAR} from os.environ and settings.json
             # (the compiler's template resolver only resolves from shared store).
-            # A body (a shell command, a code block) is plain code: its ${…} is the
-            # language's own, never expanded here.
+            # A body (a shell command, a code block) or embedded code (JavaScript an MCP
+            # tool runs) is another language: its ${…} is that language's own, never
+            # expanded here.
             if node_params:
                 from pflow.core.workflow.template_surfaces import param_mode
                 from pflow.mcp.auth_utils import expand_env_vars_nested
 
                 expanded = expand_env_vars_nested(
-                    {key: value for key, value in node_params.items() if param_mode(node_type, key) != "body"},
+                    {
+                        key: value
+                        for key, value in node_params.items()
+                        if param_mode(node_type, key) not in ("body", "embedded")
+                    },
                     include_settings=True,
                     raise_on_missing=True,
                 )

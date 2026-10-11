@@ -26,12 +26,19 @@ useful unknown-type error with a validator exception.
 
 ## One enumeration, one Issue pass, one classifier
 
-- Every template check walks `iter_template_surfaces`; a new template-bearing
-  location is added there, never as another walk.
+- The Issue pass, the operand classifier and data flow walk
+  `iter_template_surfaces`; a new template-bearing location is added there, never
+  as another walk. Passes 6 and 9 (below) and the graph's edge emitter
+  (`core/workflow/graph/build.py`, via `template_params`) read params themselves
+  and ask `param_mode` — inspect them too.
 - `_validate_malformed_templates` is the ONE Issue pass: an Issue (an unescaped
   `${` that opens no Expression) is an ERROR on every surface, cache prose
   included. Any future tolerance (which Issues are errors on which surface) is
-  decided there only; `parse()` has no mode.
+  decided there only; `parse()` has no mode. It also owns JSON-insert placement:
+  a `${x|json}` outside embedded code (output sources included) is an ERROR
+  naming where `|json` is allowed; in embedded code, an insert the view cannot
+  see (inside `$${…}` or another `${…}` — `templates.hidden_inserts`) or a
+  near-miss spelling (`near_miss_insert`) is an ERROR.
 - `operands.iter_template_operands` yields every Reference in params,
   `batch.items` and loop fields, a dynamic index's inner refs included, tagged
   `FIELD_CHECK` or `ROOT_ONLY`. Pass 5 and Pass 8 field-check `FIELD_CHECK`
@@ -44,8 +51,9 @@ useful unknown-type error with a validator exception.
   Pass 5 field-checks their `FIELD_CHECK` node-output paths only (a whole-node
   `n` source is legal), and all of them count toward unused inputs.
 - A carry value's own reference and cache vars have their own passes (one
-  diagnostic per mistake); cache vars also join unused-input accounting
-  (`_extract_cache_templates_for_unused_check`). A carry may only reference the loop
+  diagnostic per mistake). What counts an input as used — every surface, cache vars
+  and output sources included — is `core/workflow/data_flow.py::template_reads`, the
+  one answer for unused-input accounting. A carry may only reference the loop
   node itself, but its dynamic-index sources (`${s.lst[${i}]}`) are ordinary reads:
   `iter_template_operands` and data_flow check them (`Reference.index_sources`).
   Feeding cache vars to path validation produces two diagnostics for one mistake.
@@ -55,13 +63,20 @@ useful unknown-type error with a validator exception.
 
 Type and code-annotation passes (6, 9) read params independently through
 `TemplateResolver.extract_variables` — Pass 6 over `template_params`, so a code
-body never reaches it; they do not consume the operand iterator. When adding a
+body never reaches it, and it skips embedded code (always text); they do not
+consume the operand iterator. When adding a
 template-bearing location, inspect those passes too.
 
 A code body (`template_surfaces.param_mode` → `"body"`) is not a surface: no pass
 here reads it. Leftover `${…}` and `$${` in a body are `core/workflow/data_flow.py`'s
-("Code bodies"); their in-scope roots join unused-input accounting through
-`body_reference_roots`.
+("Code bodies"); their in-scope roots count as used (`template_reads`).
+
+Embedded code (`"embedded"`) is a surface whose `templates()` yields the
+`embedded_code` view, so every pass above sees only its JSON inserts. Bare pflow
+names and quoted inserts in it are reported by `core/workflow/data_flow.py`
+("Embedded code"), not here — the compiler runs data flow, so a child chosen at run
+time gets them too. Here the bare roots only count as used, so an input used only
+bare gets data flow's ERROR naming `|json` instead of the unused-input error.
 
 ## Output metadata and limits
 

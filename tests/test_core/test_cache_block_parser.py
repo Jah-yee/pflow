@@ -328,9 +328,9 @@ def test_inputs_referenced_only_in_cache_not_flagged_unused() -> None:
     """A workflow input referenced ONLY by ``## Cache`` (no node param uses it)
     must NOT trigger the unused-input ERROR.
 
-    Split-extractor contract (post-double-emit fix): cache vars live in
-    ``_extract_cache_templates_for_unused_check`` and are unioned into the unused-check input
-    only — they MUST NOT be in ``_extract_all_templates``'s output (which
+    Split-extractor contract (post-double-emit fix): cache vars are in
+    ``data_flow.template_reads`` (the unused-check input) only — they MUST NOT be in
+    ``_extract_all_templates``'s output (which
     flows into ``validate_template_paths``, producing a duplicate generic
     "Template variable ${X} has no valid source" diagnostic alongside the
     richer ``Cache chunk 'X' references...`` one from
@@ -340,10 +340,8 @@ def test_inputs_referenced_only_in_cache_not_flagged_unused() -> None:
     walker fix routed cache vars through BOTH passes; the second fix splits
     them so each pass owns exactly one rule (V5 single-source pattern).
     """
-    from pflow.runtime.template_validation.validator import (
-        _extract_all_templates,
-        _extract_cache_templates_for_unused_check,
-    )
+    from pflow.core.workflow.data_flow import template_reads
+    from pflow.runtime.template_validation.validator import _extract_all_templates
 
     md = (
         "# Test\n\nTest workflow.\n\n"
@@ -356,7 +354,7 @@ def test_inputs_referenced_only_in_cache_not_flagged_unused() -> None:
 
     # (1) Mechanism: split-extractor contract.
     node_param_templates = _extract_all_templates(result.ir)
-    cache_templates = _extract_cache_templates_for_unused_check(result.ir)
+    cache_templates = template_reads(result.ir)
     assert "concept" not in node_param_templates, (
         f"Cache var must not be in _extract_all_templates output (would cause "
         f"path-validation to emit a generic duplicate diagnostic). Got: {sorted(node_param_templates)}"

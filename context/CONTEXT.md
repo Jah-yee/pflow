@@ -49,6 +49,10 @@ entry on a shell step (an environment variable, always text), an `inputs:` entry
 (a Python variable, typed). The entry's value is a Template; the body reads the name. _Avoid_:
 injection, interpolation, variable (unqualified — a Reference is not one).
 
+**Embedded code** — program text pflow hands to an MCP tool through a parameter (a JavaScript `function:`): a bare `${…}` in it belongs to the embedded language and passes through untouched; pflow values enter only as a JSON insert. _Avoid_: inline script, template body.
+
+**JSON insert** — `${x|json}`: a Reference rendered as a JSON literal of its value, so it lands in Embedded code as data, never as code. _Avoid_: json filter, escape, quoting.
+
 **Reference** — a path inside a template expression — a root (step, input, or batch alias) plus
 field/index segments — naming data in the shared store. _Avoid_: variable, pointer, path
 (unqualified).

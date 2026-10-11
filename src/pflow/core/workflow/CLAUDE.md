@@ -10,6 +10,7 @@
 | Change dependencies or cache declaration rules | `data_flow.py::validate_data_flow`, `_validate_cache_block` |
 | Add a template-bearing IR location (every template check sees it) | `template_surfaces.py::iter_template_surfaces` |
 | Make a param a plain-code body (never a Template) | `template_surfaces.py::_BODIES` (definitions: `param_mode`); the body rule is `data_flow.py` "Code bodies" |
+| Make an MCP tool param embedded code (only `${x|json}` is pflow's) | `template_surfaces.py::EMBEDDED_CODE` (definitions: `param_mode`); bare names in it are `data_flow.py::embedded_references` |
 | Decide that a param's values bind as text (never JSON-parsed — `shell.env`) | `template_surfaces.py::binds_as_text`; the resolver consults it through `parses_leaves` |
 | Shared loop/gate validation rules | `loop_validation.py::check_loop_polarity`, `gate_validation.py::check_approval_allowed` (also used by the compiler) |
 | Resolve child workflows and external files | `sub_workflow_resolver.py`, `dependency_discovery.py` |
@@ -65,7 +66,10 @@ fields), a dynamic index's inner references included. Bash expansions such as
 `${var:-default}` in a Template param open no Expression — they are Issues,
 reported by the template validator's Issue pass, never dependencies here. A code
 body is no surface: the "Code bodies" section reads it once for leftovers and
-`$${`, scoped per step (`step_scope`).
+`$${`, scoped per step (`step_scope`). Embedded code's bare pflow names and quoted
+inserts ("Embedded code") are reported here for the same reason as body leftovers:
+the compiler runs this check, the template validator does not (a child workflow
+chosen at run time is only compiled). Whether an input is used is `template_reads`.
 
 `check_inputs=True` checks undeclared workflow inputs. The compiler passes False
 because its `initial_params` can contain values unavailable to this validator;

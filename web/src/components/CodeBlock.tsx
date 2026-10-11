@@ -14,18 +14,25 @@ import { toJsxRuntime } from "hast-util-to-jsx-runtime";
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 import type { ElementContent } from "hast";
 
-import { parseTemplate, refMatchesHighlight } from "../utils/format";
+import type { ParamMode } from "../types";
+import { fullValue, parseTemplate, refMatchesHighlight } from "../utils/format";
 import { codeChildren, highlight, markRefs } from "../utils/highlight";
 
 export function CodeBlock({
   code,
   lang,
+  mode,
   highlightRef,
   expandLabel,
   modalBody,
 }: {
-  code: string;
+  // The value shown: text as is; a param's dict/list value as `fullValue`'s JSON, its
+  // `${…}` read per string leaf (`parseTemplate`).
+  code: unknown;
   lang: string | null;
+  // The param's mode when `code` is a param's value (which `${…}` are pflow's —
+  // `templateTokens`); absent for any other text, read as a Template.
+  mode?: ParamMode;
   highlightRef?: string;
   // The ⛶ expand-to-modal title. Every value box carries the expand by default
   // (the 320px scroll cap keeps panels skimmable; long values are READ in the
@@ -44,30 +51,33 @@ export function CodeBlock({
   // NOT (shiki owns them; a bash variable is not a pflow ref), exactly as the
   // source pane leaves those fences to their grammar.
   const tealRefs = lang === "markdown" || lang === null;
+  const text = fullValue(code);
+  const segments = parseTemplate(code, mode);
+  // The count rule's target: the marks the plain paint carries.
+  const expectedMarks = highlightRef ? segments.filter((s) => refMatchesHighlight(s, highlightRef)).length : 0;
 
   // The highlighted tree is keyed by its inputs: a re-render with new props must
   // never paint a stale highlight of the OLD value while the effect catches up.
-  const key = `${lang ?? ""}\u0000${highlightRef ?? ""}\u0000${code}`;
+  const key = `${lang ?? ""}\u0000${mode ?? ""}\u0000${highlightRef ?? ""}\u0000${text}`;
   const [highlighted, setHighlighted] = useState<{ key: string; nodes: ElementContent[] } | null>(null);
   const nodes = highlighted?.key === key ? highlighted.nodes : null;
 
   useEffect(() => {
     if (!lang) return;
     let cancelled = false;
-    void highlight(code, lang).then((root) => {
+    void highlight(text, lang).then((root) => {
       if (cancelled || !root) return;
       // The count rule (highlightRef only): swap only when every plain-text mark
       // landed in the hast. tealRest decoration is best-effort and never gates.
-      const expected = highlightRef ? parseTemplate(code).filter((s) => s.isRef && refMatchesHighlight(s.text, highlightRef)).length : 0;
-      const landed = markRefs(root, highlightRef, { tealRest: tealRefs });
-      if (highlightRef && landed !== expected) return;
+      const landed = markRefs(root, highlightRef, { tealRest: tealRefs, mode });
+      if (highlightRef && landed !== expectedMarks) return;
       const children = codeChildren(root);
       if (children) setHighlighted({ key, nodes: children });
     });
     return () => {
       cancelled = true;
     };
-  }, [code, lang, highlightRef, key, tealRefs]);
+  }, [text, lang, mode, highlightRef, key, tealRefs, expectedMarks]);
 
   // ONE <pre> — when the hast lands, the <code>'s children render inside OUR
   // container so the box recipe (pre-wrap, scroll cap) keeps governing; shiki's
@@ -80,10 +90,10 @@ export function CodeBlock({
   ) : (
     <pre className="read-param-value">
       {highlightRef != null || tealRefs
-        ? parseTemplate(code).map((seg, i) => {
+        ? segments.map((seg, i) => {
             if (!seg.isRef) return seg.text;
             const t = `\${${seg.text}}`;
-            if (highlightRef != null && refMatchesHighlight(seg.text, highlightRef)) {
+            if (highlightRef != null && refMatchesHighlight(seg, highlightRef)) {
               return (
                 <mark className="ref-mark" key={i}>
                   {t}
@@ -98,17 +108,18 @@ export function CodeBlock({
               t
             );
           })
-        : code}
+        : text}
     </pre>
   );
 
   // An empty value gets no expand — a full-screen read of nothing is noise.
-  if (expandLabel === null || code === "") return pre;
+  if (expandLabel === null || text === "") return pre;
   return (
     <ExpandableBox
       pre={pre}
       code={code}
       lang={lang}
+      mode={mode}
       highlightRef={highlightRef}
       label={expandLabel ?? "value"}
       modalBody={modalBody}
@@ -122,13 +133,15 @@ function ExpandableBox({
   pre,
   code,
   lang,
+  mode,
   highlightRef,
   label,
   modalBody,
 }: {
   pre: JSX.Element;
-  code: string;
+  code: unknown;
   lang: string | null;
+  mode?: ParamMode;
   highlightRef?: string;
   label: string;
   modalBody?: JSX.Element;
@@ -149,6 +162,7 @@ function ExpandableBox({
         <ValueModal
           code={code}
           lang={lang}
+          mode={mode}
           highlightRef={highlightRef}
           label={label}
           modalBody={modalBody}
@@ -166,13 +180,15 @@ function ExpandableBox({
 function ValueModal({
   code,
   lang,
+  mode,
   highlightRef,
   label,
   modalBody,
   onClose,
 }: {
-  code: string;
+  code: unknown;
   lang: string | null;
+  mode?: ParamMode;
   highlightRef?: string;
   label: string;
   modalBody?: JSX.Element;
@@ -219,7 +235,7 @@ function ValueModal({
           </button>
         </header>
         <div className="value-modal-body">
-          {modalBody ?? <CodeBlock code={code} lang={lang} highlightRef={highlightRef} expandLabel={null} />}
+          {modalBody ?? <CodeBlock code={code} lang={lang} mode={mode} highlightRef={highlightRef} expandLabel={null} />}
         </div>
       </div>
     </div>,

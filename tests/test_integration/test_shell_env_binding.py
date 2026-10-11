@@ -6,6 +6,7 @@ re-serialized on the way in; an unreadable name reached the child silently. Each
 class below drives the real ``WorkflowRunner`` (or ``compile_workflow`` for the
 compiler's twin check) and asserts what the command actually received. The
 binding rule itself is unit-tested in ``tests/test_nodes/test_shell/test_env_binding.py``.
+``TestBindingFailures`` also covers ``stdin:``, the step's other binding channel (#727).
 """
 
 from __future__ import annotations
@@ -324,6 +325,57 @@ class TestBindingFailures:
         ir = _ir(step, inputs={"x": _input("string")})
         self._assert_failed_before_spawn(_run(ir, {"x": "x" * 1_100_000}), "(largest: BIG 1.1 MB bound in env:")
         assert len(spawns) == 1
+
+    # stdin: is the step's other binding channel (#727): a value UTF-8 cannot encode once failed
+    # after spawn as "exit code -2" with a traceback, retried and swallowed by ignore_errors.
+    # stdin: is strict UTF-8, not env:'s os.fsencode — a low surrogate (\udc80) fsencodes on POSIX
+    # but cannot be piped, and a NUL (refused by env:) pipes fine.
+    @pytest.mark.parametrize(
+        ("type_", "value", "expected"),
+        [
+            ("string", "cut \ud800", "contains '\\ud800' at character 4,"),
+            ("string", "cut \udc80", "contains '\\udc80' at character 4,"),
+            ("object", {"s": "cut \ud800"}, "contains '\\ud800' at character 11,"),
+        ],
+        ids=["high-surrogate", "low-surrogate", "object-as-json"],
+    )
+    @pytest.mark.trace_files
+    def test_an_unencodable_stdin_value_under_ignore_errors_and_retry(
+        self,
+        type_: str,
+        value: Any,
+        expected: str,
+        attempts: list[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        step = _shell(None, "cat", retry={"max": 3})
+        step["params"].update(stdin="${x}", ignore_errors=True)
+        result = _run(_ir(step, inputs={"x": _input(type_)}), {"x": value})
+        self._assert_failed_before_spawn(result, f"The value bound to stdin: {expected}")
+        assert [(d.node_id, d.context.get("param")) for d in result.errors] == [("s", "stdin")]
+        assert not any("codec" in d.message for d in result.errors)
+        assert attempts == ["prep"]
+
+    def test_an_unencodable_stdin_item_fails_once_in_a_continue_batch(self, attempts: list[str]) -> None:
+        batch = {
+            "items": ["a\0b", "cut \ud800", "naïve ✓"],
+            "as": "item",
+            "error_handling": "continue",
+            "max_retries": 3,
+        }
+        step = _shell(None, "cat", batch=batch)
+        step["params"]["stdin"] = "${item}"
+        result = _run(_ir(step))
+        assert result.status is WorkflowStatus.DEGRADED
+        output = result.shared_after["s"]
+        # The valid items, a NUL and non-ASCII included, still reach the command.
+        assert [item["stdout"] for item in output["results"]] == ["a\0b", "naïve ✓"]
+        assert [
+            (error["index"], "The value bound to stdin: contains" in error["error"]) for error in output["errors"]
+        ] == [(1, True)]
+        assert attempts == ["prep", "exec", "prep", "prep", "exec"]
 
 
 def _names_markdown(tmp_path: Path, env_block: str) -> Path:

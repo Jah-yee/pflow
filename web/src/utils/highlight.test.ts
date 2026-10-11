@@ -142,6 +142,15 @@ describe("markRefs — count-based ref marking over hast text nodes", () => {
     expect(marks(root)).toEqual(['${gen.result ?? "fallback"}']);
   });
 
+  it("reads the param's mode: in embedded code only the insert is a ref", () => {
+    const src = "() => `${gen.result}` + ${gen.result|json}";
+    const embedded = tree(span(text(src)));
+    expect(markRefs(embedded, "gen.result", { mode: "embedded" })).toBe(1);
+    expect(marks(embedded)).toEqual(["${gen.result|json}"]);
+    const template = tree(span(text(src)));
+    expect(markRefs(template, "gen.result")).toBe(2);
+  });
+
   it("a ref split across text nodes stays unmarked — the count exposes it", () => {
     // The tokenizer can split "${a.b}" over two spans; cross-node merging is
     // deliberately NOT attempted — the caller's count comparison catches it.

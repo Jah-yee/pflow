@@ -13,7 +13,7 @@ import click
 
 from pflow.core.suggestion_utils import find_similar_items, format_did_you_mean
 from pflow.mcp import MCPRegistrar, MCPServerManager
-from pflow.mcp.registrar import SyncBatchResult
+from pflow.mcp.registrar import ServerSyncResult, SyncBatchResult
 
 logger = logging.getLogger(__name__)
 
@@ -174,55 +174,80 @@ def add(config_sources: tuple, timeout: int | None, sse_timeout: int | None) -> 
         # Full MCP format (compatible with config files):
         {"mcpServers": {"server-name": {...}}}
     """
-    from pathlib import Path
-
     # Validate timeout flags before saving anything
     _validate_timeout_flags(timeout, sse_timeout)
 
     manager = MCPServerManager()
     total_added = []
+    source_failed = False
 
     for config_source in config_sources:
         try:
-            # Check if it's a JSON string or a file path
-            if _is_json_string(config_source):
-                # Handle raw JSON string
-                added_servers = _add_from_json_string(manager, config_source)
-                source_name = "JSON input"
-            else:
-                # Handle file path
-                config_path = Path(config_source)
-                if not config_path.exists():
-                    click.echo(f"Error: File not found: {config_path}", err=True)
-                    sys.exit(1)
-                added_servers = manager.add_servers_from_file(config_path)
-                source_name = config_path.name
-
-            total_added.extend(added_servers)
-
-            if added_servers:
-                click.echo(f"✓ Added/updated {len(added_servers)} server(s) from {source_name}:")
-                for server_name in added_servers:
-                    click.echo(f"  - {server_name}")
-            else:
-                click.echo(f"⚠ No servers found in {source_name}")
-
+            added_servers, source_name = _add_config_source(manager, config_source)
         except ValueError as e:
             click.echo(f"Error: {e}", err=True)
-            sys.exit(1)
+            source_failed = True
+            break
         except Exception as e:
             click.echo(f"Error: Failed to add servers: {e}", err=True)
-            sys.exit(1)
+            source_failed = True
+            break
+
+        total_added.extend(added_servers)
+        if added_servers:
+            click.echo(f"✓ Added/updated {len(added_servers)} server(s) from {source_name}:")
+            for server_name in added_servers:
+                click.echo(f"  - {server_name}")
+        else:
+            click.echo(f"⚠ No servers found in {source_name}")
 
     # Apply timeout overrides to newly added HTTP servers
     if total_added and (timeout is not None or sse_timeout is not None):
         _apply_http_timeouts(manager, total_added, timeout, sse_timeout)
 
+    # Servers saved before a failing source are still configured, so they still get synced.
     if total_added:
         click.echo(f"\nSuccessfully configured {len(total_added)} MCP server(s).")
-        click.echo("Run 'pflow mcp sync --all' to discover available tools from all servers.")
-    else:
+        _sync_added_servers(manager, list(dict.fromkeys(total_added)))
+    elif not source_failed:
         click.echo("No servers were added.")
+    if source_failed:
+        sys.exit(1)
+
+
+def _add_config_source(manager: MCPServerManager, config_source: str) -> tuple[list[str], str]:
+    """Save the servers from one raw-JSON or file source; return their names and a display name."""
+    from pathlib import Path
+
+    if _is_json_string(config_source):
+        return _add_from_json_string(manager, config_source), "JSON input"
+    config_path = Path(config_source)
+    if not config_path.exists():
+        raise ValueError(f"File not found: {config_path}")
+    return manager.add_servers_from_file(config_path), config_path.name
+
+
+def _sync_added_servers(manager: MCPServerManager, server_names: list[str]) -> None:
+    """Discover tools for servers `add` just saved.
+
+    A failed discovery never undoes the add: the config stays saved and each
+    failed server gets a retry command.
+    """
+    click.echo("Discovering tools...")
+    try:
+        batch = MCPRegistrar(manager=manager).sync_servers(server_names, reconcile_all=False)
+        problem = batch.aborted_reason or (
+            "MCP configuration was removed before tool discovery." if batch.config_missing else None
+        )
+    except Exception as e:
+        problem = f"Tool discovery failed: {e}"
+    if problem:
+        click.echo(f"  ✗ {problem}", err=True)
+        failed = server_names
+    else:
+        failed = _echo_server_results(batch.servers, verbose=False)
+    for name in failed:
+        click.echo(f"  → Run 'pflow mcp sync {name}' when the server is reachable.", err=True)
 
 
 def _format_http_server(config: dict) -> list[str]:
@@ -516,7 +541,7 @@ def remove(name: str, force: bool) -> None:
                 click.echo("Cancelled.")
                 return
 
-        # Remove exact owned tools and the server fingerprint before config removal.
+        # Remove exact owned tools before config removal.
         removed = registrar.remove_server_tools(name)
         if removed:
             click.echo(f"  Removed {removed} tools from registry")
@@ -575,37 +600,34 @@ def _sync_all_servers(registrar: MCPRegistrar, verbose: bool = False) -> None:
         click.echo("No MCP servers configured.")
         return
 
-    total_discovered = 0
-    total_registered = 0
-    has_failures = False
-
-    for result in batch.servers:
-        server = result.server
-        discovered = result.tools_discovered
-        registered = result.tools_registered
-
-        total_discovered += discovered
-        total_registered += registered
-
-        if result.error is not None:
-            has_failures = True
-            click.echo(f"  ✗ {server}: {result.error}", err=True)
-            diagnostic = result.diagnostic
-            if diagnostic:
-                if diagnostic.suggestions:
-                    for suggestion in diagnostic.suggestions:
-                        click.echo(f"    → {suggestion}", err=True)
-                context = diagnostic.context or {}
-                technical = context.get("technical_details")
-                if verbose and technical:
-                    click.echo(f"    Detail: {technical[:200]}", err=True)
-        else:
-            click.echo(f"  ✓ {server}: {discovered} discovered, {registered} registered")
-
+    failed = _echo_server_results(batch.servers, verbose=verbose)
+    total_discovered = sum(result.tools_discovered for result in batch.servers)
+    total_registered = sum(result.tools_registered for result in batch.servers)
     click.echo(f"\nTotal: {total_discovered} tools discovered, {total_registered} registered")
 
-    if has_failures and not verbose:
+    if failed and not verbose:
         click.echo("Run with --verbose for technical error details.", err=True)
+
+
+def _echo_server_results(results: list[ServerSyncResult], *, verbose: bool) -> list[str]:
+    """Print one line per server sync result; return the names that failed."""
+    failed = []
+    for result in results:
+        if result.error is None:
+            click.echo(
+                f"  ✓ {result.server}: {result.tools_discovered} discovered, {result.tools_registered} registered"
+            )
+            continue
+        failed.append(result.server)
+        click.echo(f"  ✗ {result.server}: {result.error}", err=True)
+        diagnostic = result.diagnostic
+        if diagnostic:
+            for suggestion in diagnostic.suggestions or []:
+                click.echo(f"    → {suggestion}", err=True)
+            technical = (diagnostic.context or {}).get("technical_details")
+            if verbose and technical:
+                click.echo(f"    Detail: {technical[:200]}", err=True)
+    return failed
 
 
 def _sync_single_server(name: str, manager: MCPServerManager, registrar: MCPRegistrar, verbose: bool = False) -> None:
@@ -752,14 +774,17 @@ def _format_tool_header(tool_info: dict) -> None:
     click.echo(f"Class: {tool_info['class_name']}")
 
 
-def _format_parameters(params: list[dict], title: str = "Parameters") -> None:
+def _format_parameters(params: list[dict], node_type: str, title: str = "Parameters") -> None:
     """Format and display parameters or inputs."""
+    from pflow.registry.context_builder import param_note
+
     if params:
         click.echo(f"\n{title}:")
         for param in params:
             required = " (required)" if param.get("required", True) else ""
+            note = param_note(node_type, param["key"])
             desc = f" - {param.get('description', '')}" if param.get("description") else ""
-            click.echo(f"  - {param['key']}: {param['type']}{required}{desc}")
+            click.echo(f"  - {param['key']}: {param['type']}{required}{note}{desc}")
     else:
         click.echo(f"\n{title}: None")
 
@@ -962,6 +987,8 @@ def describe_tool(tool: str) -> None:
     Example:
         pflow mcp describe mcp-slack-SEND_MESSAGE
     """
+    from pflow.registry.context_builder import snippet_placeholder
+
     registrar = MCPRegistrar()
     lookup_id = _resolve_tool_id(tool, registrar)
 
@@ -974,7 +1001,7 @@ def describe_tool(tool: str) -> None:
             sys.exit(1)
 
         _format_tool_header(tool_info)
-        _format_parameters(tool_info["params"])
+        _format_parameters(tool_info["params"], tool_info["node_name"])
         _format_outputs(tool_info["outputs"], tool_info.get("output_schema"))
 
         # Add .pflow.md usage snippet
@@ -990,16 +1017,7 @@ def describe_tool(tool: str) -> None:
         for param in params[:3]:
             key = param.get("key", "")
             if key:
-                # First param gets a literal, subsequent get template refs
-                ptype = param.get("type", "str").lower()
-                if shown == 0:
-                    placeholder = "value"
-                elif ptype in ("int", "integer", "number"):
-                    placeholder = "0"
-                elif ptype in ("bool", "boolean"):
-                    placeholder = "true"
-                else:
-                    placeholder = "${previous-step.response}"
+                placeholder = snippet_placeholder(tool_name, key, param.get("type", "str").lower(), first=shown == 0)
                 click.echo(f"    - {key}: {placeholder}")
                 shown += 1
 

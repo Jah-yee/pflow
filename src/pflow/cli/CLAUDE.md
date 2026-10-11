@@ -18,7 +18,6 @@ Keep those responsibilities in the Runner so CLI and MCP share them.
 | Ordinary failure rendering | `error_output.py:output_error` |
 | Status dispatch and exit codes | `commands/run.py:_display_execution_result` |
 | Rerun commands and secret masking | `rerun_display.py` |
-| Execution-start MCP discovery | `mcp_sync.py:_auto_discover_mcp_servers`; `../mcp/CLAUDE.md` |
 | Subcommand-specific seams | `commands/CLAUDE.md` |
 
 Add top-level commands through `main.py:cli.add_command`. Keep cycle-sensitive
@@ -66,8 +65,7 @@ A non-durable PAUSED result becomes a failure, with no unusable resume token.
 Completed/degraded runs exit 0, failures 1, interrupts 130; Click owns usage exit 2.
 
 Workflow progress streams to stderr for TTY and non-TTY callers; run.py's print-mode
-gate suppresses it. Optional MCP discovery has its own interactive-only progress
-policy in `mcp_sync.py`; do not apply that gate to workflow progress.
+gate suppresses it.
 
 ## Lifecycle and verification seams
 

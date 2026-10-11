@@ -1,6 +1,6 @@
 """Template-reference extraction helpers for graph construction."""
 
-from pflow.core.templates import Field, parse
+from pflow.core.templates import Field, embedded_code, parse
 
 
 def refs_in(value: str) -> list[tuple[str, str | None]]:
@@ -14,12 +14,12 @@ def refs_in(value: str) -> list[tuple[str, str | None]]:
     return source_refs_in(value)
 
 
-def source_refs_in(source: str) -> list[tuple[str, str | None]]:
+def source_refs_in(source: str, *, embedded: bool = False) -> list[tuple[str, str | None]]:
     """Extract ``(root, field)`` pairs from a template expression."""
-    return [(root, field) for root, field, _ in refs_with_path_in(source)]
+    return [(root, field) for root, field, _ in refs_with_path_in(source, embedded=embedded)]
 
 
-def refs_with_path_in(value: str) -> list[tuple[str, str | None, tuple[str, ...]]]:
+def refs_with_path_in(value: str, *, embedded: bool = False) -> list[tuple[str, str | None, tuple[str, ...]]]:
     """``(root, first_field, remaining_fields)`` per Reference the runtime would resolve.
 
     ``${a.b.c.d}`` → ``("a", "b", ("c", "d"))``; a bare ``${a}`` → ``("a", None, ())``.
@@ -28,9 +28,12 @@ def refs_with_path_in(value: str) -> list[tuple[str, str | None, tuple[str, ...]
     AND its index source (``${a[${i}].x}`` → ``a``, then ``i``). Indices are not
     fields: ``${data[0].field}`` → ``("data", "field", ())``. One walk implements all
     three extractors so they cannot drift; ``web/src/graph/scan.ts`` mirrors it.
+    ``embedded=True`` reads embedded code (``templates.embedded_code``): only JSON
+    inserts are references, JavaScript's own ``${…}`` none.
     """
+    template = parse(value)
     refs: list[tuple[str, str | None, tuple[str, ...]]] = []
-    for ref in parse(value).references:
+    for ref in (embedded_code(template) if embedded else template).references:
         fields = [seg.name for seg in ref.path if isinstance(seg, Field)]
         refs.append((ref.root, fields[0] if fields else None, tuple(fields[1:])))
     return refs

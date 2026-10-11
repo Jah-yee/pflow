@@ -24,7 +24,7 @@ The `pflow mcp` command group manages Model Context Protocol (MCP) server connec
 
 ## pflow mcp add
 
-Add MCP servers from config files or JSON.
+Add MCP servers from config files or JSON, then discover their tools. A server that can't be reached is still added; pflow prints its error and the `pflow mcp sync <name>` command to retry.
 
 ```bash
 pflow mcp add <CONFIG_SOURCE>...
@@ -189,7 +189,7 @@ Registered tools:
 ```
 
 <Tip>
-  pflow auto-syncs servers when workflows run. Manual sync is useful for immediate testing or troubleshooting.
+  `pflow mcp add` syncs the servers it adds, and workflow runs never sync. Run `pflow mcp sync` after editing `mcp-servers.json` by hand, or to retry a server that failed during `add`.
 </Tip>
 
 ## pflow mcp list

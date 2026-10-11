@@ -15,7 +15,6 @@ from typing import Any, cast
 
 import click
 
-from pflow.cli.mcp_sync import _auto_discover_mcp_servers
 from pflow.cli.param_parsing import parse_workflow_params
 from pflow.cli.workflow_output import (
     _create_workflow_metadata,
@@ -655,7 +654,7 @@ def _display_paused_result(result: Any, output_format: str) -> None:
     pause carries no error, but what happened on the way to it still matters.
     """
     from pflow.execution.formatters.success_formatter import partition_surfaced_diagnostics
-    from pflow.execution.gate_prompt import format_gate_lines, format_resume_answer_command
+    from pflow.execution.gate_prompt import format_bulk_approve_hint, format_gate_lines, format_resume_answer_command
 
     surfaced = [d for d in result.diagnostics if d.severity in {Severity.WARNING, Severity.INFO}]
 
@@ -705,6 +704,9 @@ def _display_paused_result(result: Any, output_format: str) -> None:
                 click.echo(format_diagnostic(diagnostic), err=True)
             click.echo("", err=True)
     click.echo(f"To answer: {resume_command}", err=True)
+    bulk_hint = format_bulk_approve_hint(execution_id, gate_request)
+    if bulk_hint:
+        click.echo(bulk_hint, err=True)
 
 
 def _echo_diagnostic_group(diagnostics: list[Any], *, blank_line: bool) -> None:
@@ -1385,11 +1387,8 @@ def run(
         # Only resume's `--approve yes|no` populates this (no answer flag on run).
         ctx.obj["approval_answer"] = None
 
-        print_flag = ctx.obj.get("print_flag", False)
         output_format = ctx.obj.get("output_format", "text")
         verbose = ctx.obj.get("verbose", False)
-        effective_verbose = verbose and not print_flag
-        _auto_discover_mcp_servers(ctx, effective_verbose)
 
         stdin_content, enhanced_stdin = _read_stdin_data()
         stdin_data = enhanced_stdin if enhanced_stdin else stdin_content

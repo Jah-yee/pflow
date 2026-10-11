@@ -11,7 +11,7 @@ import logging
 import tokenize
 from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from pflow.core.cache_ttl import (
     build_unsupported_cache_ttl_diagnostic,
@@ -24,6 +24,7 @@ from pflow.core.diagnostic import (
     Diagnostic,
     Severity,
 )
+from pflow.core.diagnostic_render import written_reference
 from pflow.core.suggestion_utils import find_similar_items
 from pflow.core.templates import (
     Expression,
@@ -40,7 +41,7 @@ from pflow.core.templates import (
 from pflow.core.types import is_template_reserved_internal_key
 from pflow.core.workflow.gate_validation import check_approval_allowed
 from pflow.core.workflow.loop_validation import check_loop_polarity
-from pflow.core.workflow.template_surfaces import BodyLanguage, code_bodies, iter_node_surfaces
+from pflow.core.workflow.template_surfaces import BodyLanguage, code_bodies, iter_node_surfaces, iter_template_surfaces
 
 logger = logging.getLogger(__name__)
 
@@ -183,8 +184,10 @@ def _reserved_internal_key_diagnostic(
     param_name: str,
     *,
     has_path: bool,
+    as_json: bool = False,
 ) -> Diagnostic | None:
-    """Targeted error for ``${__execution__}`` / ``${__index__.x}`` references.
+    """Targeted error for ``${__execution__}`` / ``${__index__.x}`` references
+    (``as_json``: written as a JSON insert, so every reference shown keeps ``|json``).
 
     Catches reserved double-underscore keys in BOTH bare (``${__cache_hits__}``)
     and path (``${__execution__.x}``) forms. The ``__index__`` path-access error
@@ -203,6 +206,9 @@ def _reserved_internal_key_diagnostic(
     """
     path = f"nodes[id={node_id}].params.{param_name}"
 
+    def written(text: str) -> str:
+        return written_reference(text, as_json=as_json)
+
     if is_template_reserved_internal_key(ref_node_id):
         return Diagnostic(
             severity=Severity.ERROR,
@@ -215,7 +221,7 @@ def _reserved_internal_key_diagnostic(
                 f"Names starting and ending with double-underscore are reserved by pflow."
             ),
             suggestions=[
-                "Only `${__index__}` (the current batch item index) is available in templates.",
+                f"Only `{written('__index__')}` (the current batch item index) is available in templates.",
                 "To track iteration count across loop visits, maintain a counter explicitly: "
                 "a checker node returns `prior + 1`, seeded from `${checker.result ?? 0}` "
                 "on the first visit. See `pflow guide branching` -> Loops for a worked example.",
@@ -224,38 +230,36 @@ def _reserved_internal_key_diagnostic(
         )
 
     if ref_node_id == "__index__" and has_path:
-        path_remainder = ref[len(ref_node_id) :].lstrip(".")
         return Diagnostic(
             severity=Severity.ERROR,
             source="validator",
             title="Validation Error",
             node_id=node_id,
             message=(
-                f"Template '${{__index__.{path_remainder}}}' in node '{node_id}' "
+                f"Template '{written(ref)}' in node '{node_id}' "
                 f"(parameter '{param_name}') accesses fields on `__index__`, "
                 f"which is an integer (the current batch item index)."
             ),
             suggestions=[
-                "Use bare `${__index__}` for the item position number.",
-                "For batch item data, use `${item}` or `${item.field}` on a batch node.",
+                f"Use bare `{written('__index__')}` for the item position number.",
+                f"For batch item data, use `{written('item')}` or `{written('item.field')}` on a batch node.",
             ],
             context={"category": "validation", "path": path},
         )
 
     if ref_node_id == "__iteration__" and has_path:
-        path_remainder = ref[len(ref_node_id) :].lstrip(".")
         return Diagnostic(
             severity=Severity.ERROR,
             source="validator",
             title="Validation Error",
             node_id=node_id,
             message=(
-                f"Template '${{__iteration__.{path_remainder}}}' in node '{node_id}' "
+                f"Template '{written(ref)}' in node '{node_id}' "
                 f"(parameter '{param_name}') accesses fields on `__iteration__`, "
                 f"which is an integer (the 1-based loop iteration count)."
             ),
             suggestions=[
-                "Use bare `${__iteration__}` for the current loop iteration number.",
+                f"Use bare `{written('__iteration__')}` for the current loop iteration number.",
             ],
             context={"category": "validation", "path": path},
         )
@@ -274,8 +278,11 @@ def _validate_template_reference(
     loop_forward_limits: dict[str, int],
     loop_node_ids: set[str],
     check_inputs: bool,
+    *,
+    as_json: bool = False,
 ) -> Diagnostic | None:
-    """Validate a single template reference.
+    """Validate a single template reference (``as_json``: the value of a JSON insert,
+    so a suggested reference keeps ``|json``).
 
     Args:
         ref: A parsed Reference's source text (e.g., "node1.output", "input_param",
@@ -304,7 +311,7 @@ def _validate_template_reference(
     # message. The __index__ path-access error stays inside the has_path branch
     # (bare ${__index__} is valid). Validator-only by design — see
     # _reserved_internal_key_diagnostic for the runtime-asymmetry note.
-    reserved = _reserved_internal_key_diagnostic(ref, root, node_id, param_name, has_path=has_path)
+    reserved = _reserved_internal_key_diagnostic(ref, root, node_id, param_name, has_path=has_path, as_json=as_json)
     if reserved is not None:
         return reserved
 
@@ -351,19 +358,20 @@ def _validate_template_reference(
         return None
     if ref not in declared_inputs:
         close_matches = [inp for inp in declared_inputs if inp.lower() == ref.lower()]
+        written = written_reference(ref, as_json=as_json)
         if close_matches:
             return Diagnostic(
                 severity=Severity.ERROR,
                 source="validator",
                 title="Validation Error",
                 node_id=node_id,
-                message=f"Node '{node_id}' references undefined input '${{{ref}}}' in parameter '{param_name}'.",
-                suggestions=[f"Did you mean '${{{close_matches[0]}}}'?"],
+                message=f"Node '{node_id}' references undefined input '{written}' in parameter '{param_name}'.",
+                suggestions=[f"Did you mean '{written_reference(close_matches[0], as_json=as_json)}'?"],
                 context={
                     "category": "validation",
                     "path": f"nodes[id={node_id}].params.{param_name}",
-                    "template": f"${{{ref}}}",
-                    "similar_names": [f"${{{match}}}" for match in close_matches[:3]],
+                    "template": written,
+                    "similar_names": [written_reference(match, as_json=as_json) for match in close_matches[:3]],
                 },
             )
         if not declared_inputs:
@@ -373,16 +381,17 @@ def _validate_template_reference(
                 title="Validation Error",
                 node_id=node_id,
                 message=(
-                    f"Node '{node_id}' references '${{{ref}}}' in parameter '{param_name}' "
+                    f"Node '{node_id}' references '{written}' in parameter '{param_name}' "
                     f"but no inputs are declared in this workflow."
                 ),
                 suggestions=[
-                    f"Declare '{ref}' under '## Inputs' or use a node output reference like ${{node_id.field}}."
+                    f"Declare '{ref}' under '## Inputs' or use a node output reference like "
+                    f"{written_reference('node_id.field', as_json=as_json)}."
                 ],
                 context={
                     "category": "validation",
                     "path": f"nodes[id={node_id}].params.{param_name}",
-                    "template": f"${{{ref}}}",
+                    "template": written,
                 },
             )
         sorted_inputs = sorted(declared_inputs)
@@ -391,11 +400,11 @@ def _validate_template_reference(
             source="validator",
             title="Validation Error",
             node_id=node_id,
-            message=f"Node '{node_id}' references undefined input '${{{ref}}}' in parameter '{param_name}'.",
+            message=f"Node '{node_id}' references undefined input '{written}' in parameter '{param_name}'.",
             context={
                 "category": "validation",
                 "path": f"nodes[id={node_id}].params.{param_name}",
-                "template": f"${{{ref}}}",
+                "template": written,
                 "available_fields": sorted_inputs,
                 "available_fields_total": len(sorted_inputs),
                 "available_fields_label": "inputs",
@@ -525,6 +534,7 @@ def validate_data_flow(
             diagnostics,
         )
         diagnostics.extend(_validate_bodies(workflow_ir, node))
+    diagnostics.extend(_validate_embedded_code(workflow_ir))
 
     # Cache-block validation (Task 159): ## Cache references, prompt_cache: order,
     # invalid-on-non-llm, unused chunks, batch-scoped rejection, prompt-body
@@ -808,6 +818,7 @@ def _validate_node_params(
         # ``location`` names the value in diagnostics: ``headers.Authorization``,
         # ``commands[1]``, ``batch.items``, ``loop.while``
         for location, template in surface.templates():
+            inserted = {op for e in template.expressions if e.as_json for op in e.operands}
             for ref in _checked_references(surface.kind, template):
                 error = _validate_template_reference(
                     ref.raw,
@@ -820,6 +831,7 @@ def _validate_node_params(
                     loop_forward_limits,
                     loop_node_ids,
                     check_inputs,
+                    as_json=ref in inserted,
                 )
                 if error:
                     errors.append(error)
@@ -855,22 +867,37 @@ _CODE_OUTPUT_NAMES = frozenset({"result", "next"})
 _GUIDE_TOPIC: dict[BodyLanguage, str] = {"sh": "shell", "python": "code"}
 
 
+# What a name in a step's scope is, and how diagnostics phrase it (``{}`` is the name).
+ScopeKind = Literal["input", "inputs_key", "batch_item", "batch_index", "iteration", "step"]
+_OWNER_PHRASES: dict[ScopeKind, str] = {
+    "input": "workflow input '{}'",
+    "inputs_key": _INPUTS_KEY_OWNER,
+    "batch_item": _BATCH_ITEM_OWNER,
+    "batch_index": "this step's batch index",
+    "iteration": "this step's loop iteration",
+    "step": "step '{}'",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class StepScope:
     """The pflow names a ``${…}`` in one step could mean: what the runtime resolved for
     that step while bodies were Templates. A step id counts only with a path —
     ``${fetch.stdout}``, never a bare ``${fetch}`` (that is ordinary sh)."""
 
-    names: Mapping[str, str]  # name -> its owner, as diagnostics phrase it
+    names: Mapping[str, ScopeKind]
     step_ids: frozenset[str]
 
-    def owner(self, root: str, *, has_path: bool) -> str | None:
-        """Who ``root`` names in this step (``"step 'fetch'"``); ``None`` if pflow never knew it."""
+    def kind(self, root: str, *, has_path: bool) -> ScopeKind | None:
+        """What ``root`` names in this step; ``None`` if pflow never knew it."""
         if root in self.names:
             return self.names[root]
-        if has_path and root in self.step_ids:
-            return f"step '{root}'"
-        return None
+        return "step" if has_path and root in self.step_ids else None
+
+    def owner(self, root: str, *, has_path: bool) -> str | None:
+        """Who ``root`` names in this step, as diagnostics phrase it (``"step 'fetch'"``)."""
+        kind = self.kind(root, has_path=has_path)
+        return None if kind is None else _OWNER_PHRASES[kind].format(root)
 
 
 def step_scope(workflow_ir: dict[str, Any], node: dict[str, Any]) -> StepScope:
@@ -878,18 +905,18 @@ def step_scope(workflow_ir: dict[str, Any], node: dict[str, Any]) -> StepScope:
     batched or looped step only — its batch alias, ``__index__``, ``__iteration__`` (a later
     source shadows an earlier one, as at run time); every step id, with a path."""
     declared = workflow_ir.get("inputs")
-    names = {str(name): f"workflow input '{name}'" for name in (declared if isinstance(declared, dict) else {})}
+    names: dict[str, ScopeKind] = dict.fromkeys(map(str, declared if isinstance(declared, dict) else {}), "input")
     params = node.get("params")
     own_inputs = params.get("inputs") if isinstance(params, dict) else None
     if isinstance(own_inputs, dict):
-        names.update(dict.fromkeys(map(str, own_inputs), _INPUTS_KEY_OWNER))
+        names.update(dict.fromkeys(map(str, own_inputs), "inputs_key"))
     batch = node.get("batch")
     if isinstance(batch, dict):
         alias = batch.get("as")
-        names[alias if isinstance(alias, str) and alias else "item"] = _BATCH_ITEM_OWNER
-        names["__index__"] = "this step's batch index"
+        names[alias if isinstance(alias, str) and alias else "item"] = "batch_item"
+        names["__index__"] = "batch_index"
     if isinstance(node.get("loop"), dict):
-        names["__iteration__"] = "this step's loop iteration"
+        names["__iteration__"] = "iteration"
     nodes = workflow_ir.get("nodes", [])
     step_ids = frozenset(other["id"] for other in nodes if isinstance(other, dict) and isinstance(other.get("id"), str))
     return StepScope(names, step_ids)
@@ -955,12 +982,37 @@ def body_reference_roots(workflow_ir: dict[str, Any]) -> set[str]:
     }
 
 
+def template_reads(workflow_ir: dict[str, Any]) -> set[str]:
+    """Every reference the workflow's templates read, as written (``fetch.stdout``, ``x``):
+    node params (embedded code: its JSON inserts only), ``batch.items``, loop fields, a
+    carry's dynamic-index sources (its own reference is the carry check's), cache vars,
+    and output sources read as the runtime reads them — plus code-body leftover roots. The
+    one answer to "is this input used?" (the unused-input check, embedded code's ERROR)."""
+    from pflow.runtime.output_resolver import normalize_output_source  # runtime helper; lazy like validator.py
+
+    reads = body_reference_roots(workflow_ir)
+    for surface in iter_template_surfaces(workflow_ir):
+        if surface.kind == "cache_prose":
+            continue
+        if surface.kind == "output_source":
+            templates = [parse(normalize_output_source(surface.value))]
+        else:
+            templates = [template for _, template in surface.templates()]
+        for template in templates:
+            for expression in template.expressions:
+                for operand in expression.operands:
+                    if isinstance(operand, Reference):
+                        refs = operand.index_sources if surface.kind == "carry" else operand.references
+                        reads.update(ref.raw for ref in refs)
+    return reads
+
+
 def _leftover(segment: Expression | Issue, scope: StepScope) -> tuple[str, str, tuple[str, ...], bool] | None:
     """``(reference, owner, in-scope roots, is_expression)`` when ``segment`` names something in scope."""
     if isinstance(segment, Expression):
         owned = [(ref.root, owner) for ref in segment.references if (owner := _owner(scope, ref))]
         if owned:
-            return segment.raw, owned[0][1], tuple(dict.fromkeys(root for root, _ in owned)), True
+            return segment.bare_raw, owned[0][1], tuple(dict.fromkeys(root for root, _ in owned)), True
         first = segment.operands[0]
         leading = first if isinstance(first, Reference) else None
     else:
@@ -978,6 +1030,10 @@ def _leftover(segment: Expression | Issue, scope: StepScope) -> tuple[str, str, 
 
 def _owner(scope: StepScope, ref: Reference) -> str | None:
     return scope.owner(ref.root, has_path=bool(ref.path))
+
+
+def _kind(scope: StepScope, ref: Reference) -> ScopeKind | None:
+    return scope.kind(ref.root, has_path=bool(ref.path))
 
 
 def _issue_reference(raw: str) -> Reference | None:
@@ -1451,6 +1507,262 @@ def _foreign_shape_warning(node: dict[str, Any], param: str, text: str, scope: S
         fix = f'To use a pflow value, bind it in env: and read "$NAME". {_KEEP_FOREIGN}'
     location = _location(node, param, text.count("\n", 0, start))
     return [_body_diagnostic(Severity.WARNING, node, param, location, message, [fix])]
+
+
+# ------------------------------------------------------------------------------
+# Embedded code: JavaScript an MCP tool runs (``template_surfaces.param_mode`` →
+# ``"embedded"``). A bare ${…} there is JavaScript, sent as written; this section
+# reports the ones that name a pflow value, and inserts left inside quotes.
+# ------------------------------------------------------------------------------
+
+_QUOTES = ("'", '"')
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddedReference:
+    """A ``${…}`` in embedded code that pflow reports: a bare reference whose root is in the
+    step's scope (``step_scope``) — one record per such root — or a JSON insert wrapped in
+    matching quotes."""
+
+    node_id: str
+    param: str  # the param's location (``function``)
+    expression: str  # as written, without its quotes: ``${selector}``, ``${selector|json}``
+    root: str  # the in-scope root a bare reference names ("" for an insert)
+    root_kind: ScopeKind | None  # None for an insert
+    is_insert: bool  # a quoted JSON insert, not a bare reference
+    quote: str | None  # the matching quote around it, if any
+    whole_value: bool  # the param's whole value is this ``${…}``
+    name: str  # the JavaScript name a fix's example declares
+
+    @property
+    def written(self) -> str:
+        """As written, quotes included."""
+        quote = self.quote or ""
+        return f"{quote}{self.expression}{quote}"
+
+    @property
+    def insert(self) -> str:
+        """The JSON insert that carries this value: ``${selector|json}``."""
+        return self.expression if self.is_insert else f"{self.expression[:-1]}|json}}"
+
+    @property
+    def replacement(self) -> str:
+        """The paste-able fix: the insert, or for a whole-value program the ``eval`` form."""
+        if self.whole_value and not self.is_insert:
+            return f"() => eval({self.insert})()"
+        return self.insert
+
+
+def embedded_references(workflow_ir: dict[str, Any]) -> list[EmbeddedReference]:
+    """Every reported ``${…}`` in the workflow's embedded code, in IR then source order. A bare
+    Expression counts when any of its references (dependency view) is in the step's scope —
+    never an Issue (``${a + b}`` is ordinary JavaScript) or a JSON insert."""
+    found: list[EmbeddedReference] = []
+    for node in workflow_ir.get("nodes", []):
+        if not isinstance(node, dict) or not isinstance(node.get("id"), str):
+            continue
+        scope: StepScope | None = None
+        for surface in iter_node_surfaces(node):
+            if surface.mode != "embedded":
+                continue
+            scope = scope or step_scope(workflow_ir, node)
+            whole = surface.value.strip() if isinstance(surface.value, str) else None
+            for location, view in surface.templates():
+                found.extend(_embedded_reports(node["id"], location, view.source, scope, whole))
+    return found
+
+
+def _embedded_reports(
+    node_id: str, param: str, text: str, scope: StepScope, whole: str | None
+) -> Iterator[EmbeddedReference]:
+    for expression in parse(text).expressions:
+        start, end = expression.span
+        before, after = text[start - 1 : start], text[end : end + 1]
+        quote = before if before in _QUOTES and before == after else None
+        if expression.as_json:
+            roots: dict[str, ScopeKind | None] = {"": None} if quote else {}
+        else:
+            roots = {ref.root: kind for ref in expression.references if (kind := _kind(scope, ref))}
+        span = (start - 1, end + 1) if quote else (start, end)
+        for root, root_kind in roots.items():
+            yield EmbeddedReference(
+                node_id=node_id,
+                param=param,
+                expression=text[start:end],
+                root=root,
+                root_kind=root_kind,
+                is_insert=expression.as_json,
+                quote=quote,
+                whole_value=whole == text[start:end],
+                name=_declared_name(text, *span) or js_value_name(expression),
+            )
+
+
+def _declared_name(text: str, start: int, end: int) -> str | None:
+    """``sel`` when ``text[start:end]`` is the whole right-hand side of ``const sel = …``
+    (``let`` / ``var`` too) — the author's own name for the value."""
+    before, after = text[:start].rstrip(" \t"), text[end:].lstrip(" \t")
+    if not before.endswith("=") or after[:1] not in ("", ";", ",", "\n"):
+        return None
+    words = before[:-1].split()
+    if len(words) >= 2 and words[-2] in ("const", "let", "var") and words[-1].isidentifier():
+        return words[-1]
+    return None
+
+
+def js_value_name(expression: Expression) -> str:
+    """A JavaScript name for an expression's value in a fix's example: its first reference's
+    last field, else its root (``user.name`` → ``name``); ``value`` for a literal."""
+    ref = next((op for op in expression.operands if isinstance(op, Reference)), None)
+    if ref is None:
+        return "value"
+    fields = [seg.name for seg in ref.path if isinstance(seg, Field)]
+    name = (fields[-1] if fields else ref.root).replace("-", "_")
+    return name if name.isidentifier() else "value"
+
+
+def _validate_embedded_code(workflow_ir: dict[str, Any]) -> list[Diagnostic]:
+    """Bare pflow names and quoted inserts in embedded code (``embedded_references``).
+
+    A bare reference to a workflow input used nowhere else is an ERROR naming ``|json``
+    (the unused-input check counts it as used: one mistake, one diagnostic); every other
+    bare reference in a param shares one WARNING (the name may be the author's own
+    JavaScript variable); an insert wrapped in quotes is a WARNING. Here, not in the
+    template validator, because the compiler runs data flow: a child workflow chosen at
+    run time gets the ERROR too.
+    """
+    references = embedded_references(workflow_ir)
+    if not references:
+        return []
+    used_roots = {TemplateResolver.extract_root_node_id(var) for var in template_reads(workflow_ir)}
+    diagnostics: list[Diagnostic] = []
+    warned: dict[tuple[str, str], list[EmbeddedReference]] = {}
+    errored: set[tuple[str, str, str]] = set()
+    for ref in references:
+        if ref.is_insert:
+            diagnostics.append(_quoted_insert_warning(ref))
+        elif ref.root_kind == "input" and ref.root not in used_roots:
+            if (ref.node_id, ref.param, ref.root) not in errored:
+                errored.add((ref.node_id, ref.param, ref.root))
+                diagnostics.append(_never_inserted_error(ref))
+        else:
+            warned.setdefault((ref.node_id, ref.param), []).append(ref)
+    diagnostics.extend(_bare_reference_warning(refs) for refs in warned.values())
+    return diagnostics
+
+
+_JS_VALUE_PLACE = "where a JavaScript value goes, outside any quotes or `…`"
+
+
+def _insert_fix(ref: EmbeddedReference) -> str:
+    """How to turn ``ref`` into an insert, phrased for where it sits (no leading verb case)."""
+    if ref.whole_value:
+        return f"A program produced by a step is text, not code: run it with eval — {ref.replacement}"
+    if ref.quote:
+        return (
+            f"Replace {ref.written} (the quotes too) with {ref.insert} — the value arrives already quoted: "
+            f"const {ref.name} = {ref.insert};"
+        )
+    return f"Put {ref.insert} {_JS_VALUE_PLACE}: const {ref.name} = {ref.insert};"
+
+
+def _embedded_context(ref: EmbeddedReference, refs: list[EmbeddedReference]) -> dict[str, Any]:
+    return {
+        "category": "template_error",
+        "path": f"nodes[id={ref.node_id}].params.{ref.param}",
+        "embedded_references": [
+            {"reference": r.expression, "root_kind": r.root_kind, "replacement": r.replacement} for r in refs
+        ],
+    }
+
+
+def _never_inserted_error(ref: EmbeddedReference) -> Diagnostic:
+    return Diagnostic(
+        severity=Severity.ERROR,
+        source="validator",
+        title="Template Error",
+        node_id=ref.node_id,
+        message=(
+            f"Input '{ref.root}' is never inserted: its only use, '{ref.expression}' in '{ref.param}', "
+            "is JavaScript text that pflow sends to the MCP tool unchanged."
+        ),
+        suggestions=[_insert_fix(ref)],
+        context=_embedded_context(ref, [ref]),
+    )
+
+
+def _owner_noun(ref: EmbeddedReference) -> str:
+    match ref.root_kind:
+        case "batch_item":
+            return "the batch item"
+        case "batch_index":
+            return "the batch index"
+        case "iteration":
+            return "the loop iteration"
+        case "inputs_key":
+            return f"this step's inputs: key '{ref.root}'"
+        case "step":
+            return f"the output of step '{ref.root}'"
+        case _:
+            return f"workflow input '{ref.root}'"
+
+
+def _and_list(items: list[str], word: str = "and") -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} {word} {items[-1]}"
+
+
+def _bare_reference_warning(refs: list[EmbeddedReference]) -> Diagnostic:
+    first = refs[0]
+    per_expression: dict[str, EmbeddedReference] = {}  # one fix per expression, however many roots
+    for ref in refs:
+        per_expression.setdefault(ref.expression, ref)
+    nouns = list(dict.fromkeys(_owner_noun(ref) for ref in refs))
+    roots = list(dict.fromkeys(f"'{ref.root}'" for ref in refs))
+    one = len(per_expression) == 1
+    message = (
+        f"{_and_list(list(per_expression))} in '{first.param}' {'is' if one else 'are'} JavaScript: "
+        f"pflow sends {'it' if one else 'them'} unchanged, "
+        f"so {_and_list(nouns)} {'is' if len(nouns) == 1 else 'are'} not inserted."
+    )
+    spaced = "${ " + first.expression[2:-1] + " }"
+    if one and len(roots) == 1:
+        closing = (
+            f"If {roots[0]} here is your JavaScript variable, the code is correct — write {spaced} "
+            "(spaces inside the braces) to clear this warning."
+        )
+    else:
+        closing = (
+            f"If {_and_list(roots, 'or')} here is your JavaScript variable, the code is correct — write it with "
+            f"spaces inside the braces ({spaced}) to clear this warning."
+        )
+    fixes = [
+        _insert_fix(ref) if ref.whole_value else "To insert it, " + _insert_fix(ref)[0].lower() + _insert_fix(ref)[1:]
+        for ref in per_expression.values()
+    ]
+    return Diagnostic(
+        severity=Severity.WARNING,
+        source="validator",
+        title="Template Warning",
+        node_id=first.node_id,
+        message=message,
+        suggestions=[*fixes, closing],
+        context=_embedded_context(first, refs),
+    )
+
+
+def _quoted_insert_warning(ref: EmbeddedReference) -> Diagnostic:
+    return Diagnostic(
+        severity=Severity.WARNING,
+        source="validator",
+        title="Template Warning",
+        node_id=ref.node_id,
+        message=(
+            f"{ref.written} in '{ref.param}': the insert is already a quoted JavaScript value, "
+            "so these quotes wrap it a second time."
+        ),
+        suggestions=[f"Remove the quotes around it: {ref.insert}"],
+        context=_embedded_context(ref, [ref]),
+    )
 
 
 # ------------------------------------------------------------------------------

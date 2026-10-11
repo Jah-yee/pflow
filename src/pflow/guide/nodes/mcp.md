@@ -163,6 +163,49 @@ session cookie carried across separate probes and runs. Everything using the
 long-lived registration shares that one server and its state, so confirm the
 finished workflow against the normal run-scoped registration.
 
+### Code Passed to a Tool
+
+Four tool params hold JavaScript that the server runs: `function` of `evaluate_script`
+(chrome-devtools) and `browser_evaluate` (Playwright), `initScript` of `navigate_page`, and
+`code` of `browser_run_code_unsafe`. pflow sends that code as written: a `${…}` in it is
+JavaScript's own (a template literal), never a pflow template. A pflow value goes in only as
+a JSON insert, `${x|json}`, written where a JavaScript value goes:
+
+````markdown
+### check-title
+
+Compare the page title with the expected one.
+
+- type: mcp-chrome-devtools-evaluate_script
+- pageId: ${page_id}
+- function: |
+    () => {
+      const expected = ${title|json};
+      const count = ${limit|json};
+      return { same: document.title === expected, label: `${expected} (max ${count})` };
+    }
+````
+
+- **The value arrives as a JavaScript literal of its own type**: a string quoted and
+  escaped (`"Don't Stop"`), a number, `true`/`false`, `null`, an object or array literal. Put
+  no quotes around the insert — `'${title|json}'` quotes it twice (validation warns). Inside a
+  template literal it is not detected: `` `Hello ${name|json}` `` sends `Hello "Ann"`, so
+  assign the insert to a constant first and interpolate that, as `label` does above.
+- **Text holding JSON stays text**: a shell `stdout` arrives as a string, so parse it in the
+  code — `JSON.parse(${fetch.stdout|json})`.
+- The insert covers the whole expression: `${cfg.selector ?? "#main"|json}`,
+  `${rows[${i}].name|json}`.
+- **`$${` is sent as written too.** It is pflow's escape only in a templated param (a prompt,
+  `stdin`); here `` `$${price}` `` reaches the tool unchanged.
+- **A bare `${name}` that names a pflow value** — a workflow input, a step output, the batch
+  `item` — gets a validation warning with the `|json` form to write (an error when it names an
+  input used nowhere else). If it is a JavaScript variable that shares the name, write
+  `${ name }` (spaces inside the braces) to clear the warning.
+- **A program produced by a step** is text: run it with
+  `() => eval(${gen.code|json})()`. The pflow MCP server's single-node run currently refuses
+  any param containing `eval(`; a workflow run is not affected.
+- `|json` is accepted only in these params; anywhere else it is a validation error.
+
 ### Node Creation Pattern
 
 `````markdown
@@ -301,4 +344,4 @@ pflow probe mcp-example-service-get-data query="test_value"
 
 **Never assume. Always discover.**
 
-**MCP "JSON string" parameters**: When registry output shows a parameter as "JSON string" (like `body_schema`, `query_params`), still use object syntax. pflow auto-serializes with proper escaping. Manual `'{"key": "${val}"}'` breaks on newlines/quotes in template values.
+**MCP "JSON string" parameters**: When registry output shows a parameter as "JSON string" (like `body_schema`, `query_params`), still use object syntax. pflow auto-serializes with proper escaping. Manual `'{"key": "${val}"}'` breaks on newlines/quotes in template values. JavaScript passed to a tool is the exception: insert values with `${x|json}` (see Code Passed to a Tool).

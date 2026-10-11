@@ -105,6 +105,8 @@ def split_params(
 
     A body (``param_mode`` → ``"body"``) is static whatever it contains — decided
     before ``has_templates``, so a ``$${`` in a shell command reaches sh unchanged.
+    Embedded code (``"embedded"``) is a template param only when it holds a JSON insert,
+    so JavaScript's own ``${…}`` and ``$${`` reach the tool unchanged.
     Otherwise only params TemplateResolver.has_templates detects are ever resolved; an
     undetected template stays a literal in static_params.
     Static params get type coercion via coerce_param_for_node.
@@ -124,7 +126,8 @@ def split_params(
     static_params: dict[str, Any] = {}
 
     for key, value in params.items():
-        if param_mode(node_type, key) != "body" and TemplateResolver.has_templates(value):
+        mode = param_mode(node_type, key)
+        if mode != "body" and TemplateResolver.has_templates(value, embedded=mode == "embedded"):
             template_params[key] = value
         else:
             expected_type = expected_types.get(key)
@@ -275,6 +278,11 @@ def resolve_templates(  # noqa: C901
         if key == "inputs" and isinstance(template, dict):
             inputs_by_key = {k: resolve(v, context, auto_parse=True) for k, v in template.items()}
             resolved_value: Any = {k: r.value for k, r in inputs_by_key.items()}
+            is_simple_template = False
+        elif param_mode(template_config.node_type, key) == "embedded":
+            # Embedded code: only JSON inserts are filled in; the result is always text.
+            resolution = resolve(template, context, embedded=True)
+            resolved_value = resolution.value
             is_simple_template = False
         else:
             # A nested dict/list auto-parses JSON-string leaves; a simple string keeps its value's type.

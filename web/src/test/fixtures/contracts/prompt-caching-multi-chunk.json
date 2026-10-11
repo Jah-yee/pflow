@@ -75,7 +75,8 @@
           "source": {
             "file": "examples/core/prompt-caching-multi-chunk.pflow.md",
             "line": 64
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -112,7 +113,8 @@
           "source": {
             "file": "examples/core/prompt-caching-multi-chunk.pflow.md",
             "line": 74
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -148,7 +150,8 @@
             "SESSION_ID": "${session_id}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "command",
@@ -157,7 +160,8 @@
           "source": {
             "file": "examples/core/prompt-caching-multi-chunk.pflow.md",
             "line": 86
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -191,7 +195,8 @@
           "name": "model",
           "value": "anthropic/claude-haiku-4-5",
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "prompt",
@@ -200,7 +205,8 @@
           "source": {
             "file": "examples/core/prompt-caching-multi-chunk.pflow.md",
             "line": 98
-          }
+          },
+          "mode": "template"
         }
       ],
       "io": null,
@@ -238,7 +244,8 @@
           "name": "model",
           "value": "anthropic/claude-haiku-4-5",
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "prompt",
@@ -247,7 +254,8 @@
           "source": {
             "file": "examples/core/prompt-caching-multi-chunk.pflow.md",
             "line": 112
-          }
+          },
+          "mode": "template"
         }
       ],
       "io": null,
@@ -555,7 +563,8 @@
       "stdout_is_binary": "bool",
       "stderr": "str",
       "stderr_is_binary": "bool",
-      "exit_code": "int"
+      "exit_code": "int",
+      "timeout": "bool"
     }
   }
 }

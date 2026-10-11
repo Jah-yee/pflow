@@ -75,7 +75,8 @@
           "source": {
             "file": "examples/agent-orchestration/parallel-planner-review/run-cycle/run-cycle.pflow.md",
             "line": 44
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -112,7 +113,8 @@
           "source": {
             "file": "examples/agent-orchestration/parallel-planner-review/run-cycle/run-cycle.pflow.md",
             "line": 55
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -149,7 +151,8 @@
           "source": {
             "file": "examples/agent-orchestration/parallel-planner-review/run-cycle/prompts/plan.prompt.md",
             "line": null
-          }
+          },
+          "mode": "template"
         },
         {
           "name": "inputs",
@@ -158,7 +161,8 @@
             "max_issues": "${max_issues}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "output_schema",
@@ -197,7 +201,8 @@
             ]
           },
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         }
       ],
       "io": null,
@@ -242,7 +247,8 @@
             "issues": "${plan.response.issues}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "code",
@@ -251,7 +257,8 @@
           "source": {
             "file": "examples/agent-orchestration/parallel-planner-review/run-cycle/run-cycle.pflow.md",
             "line": 97
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -289,7 +296,8 @@
           "name": "workflow",
           "value": "./implement-and-review-one/implement-and-review-one.pflow.md",
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "inputs",
@@ -299,7 +307,8 @@
             "repo_dir": "${find-repo.stdout}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         }
       ],
       "io": null,
@@ -340,7 +349,8 @@
           "name": "backend",
           "value": "claude",
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "prompt",
@@ -349,25 +359,29 @@
           "source": {
             "file": "examples/agent-orchestration/parallel-planner-review/run-cycle/prompts/open-prs.prompt.md",
             "line": null
-          }
+          },
+          "mode": "template"
         },
         {
           "name": "cwd",
           "value": "${find-repo.stdout}",
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "max_turns",
           "value": 30,
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "timeout",
           "value": 900,
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "inputs",
@@ -376,7 +390,8 @@
             "base_branch": "${base_branch}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "allowed_tools",
@@ -385,7 +400,8 @@
             "Read"
           ],
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "output_schema",
@@ -411,7 +427,8 @@
             ]
           },
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         }
       ],
       "io": null,
@@ -565,7 +582,8 @@
           "name": "backend",
           "value": "claude",
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "prompt",
@@ -574,25 +592,29 @@
           "source": {
             "file": "examples/agent-orchestration/parallel-planner-review/run-cycle/implement-and-review-one/prompts/implement.prompt.md",
             "line": null
-          }
+          },
+          "mode": "template"
         },
         {
           "name": "cwd",
           "value": "${repo_dir}",
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "max_turns",
           "value": 80,
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "timeout",
           "value": 1800,
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "inputs",
@@ -601,7 +623,8 @@
             "base_branch": "${base_branch}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "allowed_tools",
@@ -614,7 +637,8 @@
             "Grep"
           ],
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "output_schema",
@@ -638,7 +662,8 @@
             ]
           },
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         }
       ],
       "io": null,
@@ -696,7 +721,8 @@
             "committed": "${implement.result.commits_made}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "code",
@@ -705,7 +731,8 @@
           "source": {
             "file": "examples/agent-orchestration/parallel-planner-review/run-cycle/implement-and-review-one/implement-and-review-one.pflow.md",
             "line": 80
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -748,7 +775,8 @@
           "name": "backend",
           "value": "claude",
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "prompt",
@@ -757,25 +785,29 @@
           "source": {
             "file": "examples/agent-orchestration/parallel-planner-review/run-cycle/implement-and-review-one/prompts/review.prompt.md",
             "line": null
-          }
+          },
+          "mode": "template"
         },
         {
           "name": "cwd",
           "value": "${repo_dir}",
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "max_turns",
           "value": 12,
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "timeout",
           "value": 600,
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "inputs",
@@ -785,7 +817,8 @@
             "base_branch": "${base_branch}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "allowed_tools",
@@ -795,7 +828,8 @@
             "Grep"
           ],
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "output_schema",
@@ -819,7 +853,8 @@
             ]
           },
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         }
       ],
       "io": null,
@@ -1692,7 +1727,8 @@
       "stdout_is_binary": "bool",
       "stderr": "str",
       "stderr_is_binary": "bool",
-      "exit_code": "int"
+      "exit_code": "int",
+      "timeout": "bool"
     }
   }
 }

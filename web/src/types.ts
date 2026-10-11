@@ -128,6 +128,10 @@ export interface GateRequest {
   // Task 179: the 1-based loop iteration that raised this gate (a loop step pauses at EVERY
   // iteration — each is its own approval); null/absent for a non-loop step.
   iteration?: number | null;
+  // Task 183: the loop's author cap as knowable at the gate (display-only, an upper bound);
+  // null on a non-loop gate AND on a loop gate whose cap is absent or not knowable yet;
+  // absent on a record written before the field existed (read as null).
+  max_iterations?: number | null;
 }
 
 // GET /api/gate's 200 body: a paused run's gate, keyed by its frontier node.
@@ -155,6 +159,11 @@ export interface RunNodeDetail {
   output: Record<string, unknown> | string | null;
 }
 
+// How pflow reads a param's `${…}` (Python's `template_surfaces.param_mode`): a Template,
+// a code body (plain sh/Python — never pflow's), or embedded code (JavaScript an MCP tool
+// runs — only a `${x|json}` insert is pflow's).
+export type ParamMode = "template" | "body" | "embedded";
+
 export interface RFParam {
   name: string;
   // JSON-able authored value: string (incl. full prompt/code), number, bool,
@@ -162,6 +171,7 @@ export interface RFParam {
   value: unknown;
   is_dynamic: boolean;
   source: SourceRef | null;
+  mode?: ParamMode; // always on the wire; absent (hand-built fixtures) reads as "template"
 }
 
 export interface LoopSpec {

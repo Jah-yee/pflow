@@ -171,8 +171,12 @@ _LITERAL_PATTERN = (
 # Literal first: keyword literals win over same-spelled identifiers.
 _OPERAND = rf"(?:{_LITERAL_PATTERN}|{_PATH})"
 _EXPRESSION = rf"{_OPERAND}(?:\s*\?\?\s*{_OPERAND})*"
+# A JSON insert's suffix: `${x|json}`, `${a ?? "d" | json}` — one fixed word, on the whole
+# expression, spaced like `??`. Not a general `|<name>` position: in embedded JavaScript
+# `${flags|mask}` is JavaScript, so each word pflow claims is taken from that language.
+_JSON_INSERT = r"\s*\|\s*json"
 
-_EXPRESSION_AT = re.compile(rf"\$\{{({_EXPRESSION})\}}")
+_EXPRESSION_AT = re.compile(rf"\$\{{({_EXPRESSION})({_JSON_INSERT})?\}}")
 _LITERAL_FULL = re.compile(_LITERAL_PATTERN)
 _PATH_FULL = re.compile(_PATH)
 _SEGMENT_AT = re.compile(rf"({_IDENT})(?:\[(?:([0-9]+)|\$\{{({_VAR_NAME_PATTERN})\}})\])?")
@@ -255,13 +259,22 @@ Operand = Reference | Literal
 @dataclass(frozen=True, slots=True)
 class Expression:
     operands: tuple[Operand, ...]  # more than one ⇔ coalesce
-    raw: str  # the text inside `${…}`
+    raw: str  # the text inside `${…}`, a `|json` suffix included
     span: tuple[int, int]  # [start of `${`, end after `}`)
+    # A JSON insert (`${x|json}`): its value enters text as a JSON literal (`to_json`); never
+    # simple. Accepted only in embedded code (`embedded_code`); elsewhere resolution keeps it
+    # as written, in the issues channel.
+    as_json: bool = False
 
     @property
     def references(self) -> tuple[Reference, ...]:
         """Every Reference, dynamic-index inner ones included: the DEPENDENCY view."""
         return tuple(ref for op in self.operands if isinstance(op, Reference) for ref in op.references)
+
+    @property
+    def bare_raw(self) -> str:
+        """``raw`` without a ``|json`` suffix: the text of ``${…}`` read as a plain Template."""
+        return self.raw[: self.raw.rindex("|")].rstrip() if self.as_json else self.raw
 
 
 IssueKind = typing.Literal["malformed", "bad_literal"]
@@ -296,12 +309,13 @@ class Template:
 
     @property
     def is_simple(self) -> bool:
-        """The whole source is one Expression: resolution preserves its value's type.
+        """The whole source is one Expression, not a JSON insert: resolution preserves its value's type.
 
         One trailing newline is tolerated (and dropped by resolution): a YAML block
         scalar ``v: |`` ends in ``\n``, and ``${x}\n`` has always been simple.
         """
-        if not self.segments or not isinstance(self.segments[0], Expression):
+        first = self.segments[0] if self.segments else None
+        if not isinstance(first, Expression) or first.as_json:
             return False
         return self.segments[1:] in ((), (Text("\n"),))
 
@@ -386,7 +400,8 @@ def _expression_at(source: str, start: int) -> Expression | None:
             operands.append(ref)
         else:  # an oversized number or index: an Issue, like any other bad expression
             return None
-    return Expression(tuple(operands), match.group(1), match.span())
+    suffix = match.group(2)
+    return Expression(tuple(operands), match.group(1) + (suffix or ""), match.span(), as_json=suffix is not None)
 
 
 def _issue_at(source: str, start: int) -> Issue:
@@ -403,6 +418,81 @@ def _issue_at(source: str, start: int) -> Issue:
 def _looks_like_literal(operand: str) -> bool:
     """A coarse first-char check: ``{ [ " -`` or a digit, or exactly true/false/null."""
     return bool(operand) and (operand[0] in '{["-0123456789' or operand in ("true", "false", "null"))
+
+
+# ── Embedded code: a policy view over the one parse ──────────────────────────
+
+
+def embedded_code(template: Template) -> Template:
+    """How embedded code reads a parse: only the JSON inserts (``${…|json}``) are pflow's.
+
+    Every other span — a bare ``${…}``, an Issue, a ``$${`` — is Text cut verbatim from
+    the source (an escape is not collapsed). A policy view, not a parse: its Text may
+    hold ``${``. Which params are embedded code: ``workflow/template_surfaces.param_mode``.
+    """
+    segments: list[Text | Expression | Issue] = []
+    pos = 0
+    for insert in (expr for expr in template.expressions if expr.as_json):
+        start, end = insert.span
+        if start > pos:
+            segments.append(Text(template.source[pos:start]))
+        segments.append(insert)
+        pos = end
+    if pos < len(template.source):
+        segments.append(Text(template.source[pos:]))
+    return Template(template.source, tuple(segments), escaped=False)
+
+
+def hidden_inserts(template: Template) -> tuple[tuple[int, int], ...]:
+    """Spans of ``${…|json}`` in the source that the parse did not produce as Expressions —
+    inserts swallowed by a ``$${…}`` escape, an Issue (``${${x|json} + 1}``) or another
+    Expression's literal (``${"${x|json}"}``). Every ``${`` is tried, so matches may nest."""
+    visible = {expr.span[0] for expr in template.expressions}
+    spans: list[tuple[int, int]] = []
+    start = template.source.find("${")
+    while start != -1:
+        match = _EXPRESSION_AT.match(template.source, start)
+        if match is not None and match.group(2) is not None and start not in visible:
+            spans.append(match.span())
+        start = template.source.find("${", start + 1)
+    return tuple(spans)
+
+
+_BRACE_OR_STRING = re.compile(r'"(?:[^"\\]|\\.)*"|[{}]')
+
+
+def balanced_template(source: str, start: int) -> str:
+    """The ``${…}`` opening at ``start`` through its brace-balanced ``}`` (to the end if
+    unclosed) — wider than an Issue, which ends at its first ``}``. A brace inside a
+    ``"…"`` string does not count (``${"}"|JSON}``)."""
+    depth = 0
+    for match in _BRACE_OR_STRING.finditer(source, start + 1):
+        brace = match.group()  # or a whole string, skipped
+        if brace == "{":
+            depth += 1
+        elif brace == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : match.end()]
+    return source[start:]
+
+
+def near_miss_insert(source: str, issue: Issue) -> tuple[str, str] | None:
+    """``(as written, meant)`` when an Issue was probably meant as a JSON insert
+    (``${x|json }``, ``${ x|json}``, ``${x|JSON}``, ``${{}|JSON}`` → ``${…|json}``): the
+    brace-balanced text from its ``${``, ends trimmed and the word after the last ``|``
+    lower-cased, if that parses as one; else ``None``."""
+    written = balanced_template(source, issue.span[0])
+    if not written.endswith("}"):
+        return None
+    head, bar, word = written[2:-1].strip().rpartition("|")
+    if not bar:
+        return None
+    meant = f"${{{head.rstrip()}|{word.strip().lower()}}}"
+    expression = _expression_at(meant, 0)
+    if expression is None or not expression.as_json or expression.span[1] != len(meant):
+        return None
+    return written, meant
 
 
 # ── Walk ─────────────────────────────────────────────────────────────────────
@@ -533,8 +623,9 @@ class Resolution:
     """A resolved value plus what resolution had to leave literal.
 
     ``unresolved`` holds ``Expression.raw`` of every expression left literal;
-    ``issues`` holds ``Issue.raw`` of every Issue routed through resolution (kept
-    verbatim). Both span the whole value. Text that came FROM a resolved value is
+    ``issues`` holds ``Issue.raw`` of every Issue routed through resolution, and the
+    source text of every JSON insert outside embedded code (both kept verbatim). Both
+    span the whole value. Text that came FROM a resolved value is
     never in either — only the author's template is judged. The channels
     stay distinct so a surface can tolerate Issues without tolerating misses (the
     deferred #621 tolerance ruling).
@@ -559,7 +650,7 @@ class Resolution:
         )
 
 
-def resolve(value: Any, context: Mapping[str, Any], *, auto_parse: bool = False) -> Resolution:
+def resolve(value: Any, context: Mapping[str, Any], *, auto_parse: bool = False, embedded: bool = False) -> Resolution:
     """Resolve every template in ``value`` against ``context``.
 
     A string: a simple template yields its value, type preserved; otherwise one
@@ -568,37 +659,45 @@ def resolve(value: Any, context: Mapping[str, Any], *, auto_parse: bool = False)
     re-scanned. No top-level JSON auto-parse. Dicts and lists recurse, keys
     untouched. ``auto_parse=True`` adds ``resolve_nested``'s leaf rule at every
     string leaf, the top-level one included: a simple template's resolved
-    JSON-container string is parsed. Other values pass through unchanged.
+    JSON-container string is parsed. ``embedded=True`` reads every string leaf as
+    embedded code (``embedded_code``): only its JSON inserts are filled in. Other
+    values pass through unchanged.
     """
     if isinstance(value, str):
         if "${" not in value:
             return Resolution(value)
-        return _resolve_string(parse(value), context, auto_parse)
+        template = parse(value)
+        return _resolve_string(embedded_code(template) if embedded else template, context, auto_parse, embedded)
     if isinstance(value, dict):
-        entries = {key: resolve(item, context, auto_parse=auto_parse) for key, item in value.items()}
+        entries = {key: resolve(item, context, auto_parse=auto_parse, embedded=embedded) for key, item in value.items()}
         return Resolution.combine({key: r.value for key, r in entries.items()}, entries.values())
     if isinstance(value, list):
-        items = [resolve(item, context, auto_parse=auto_parse) for item in value]
+        items = [resolve(item, context, auto_parse=auto_parse, embedded=embedded) for item in value]
         return Resolution.combine([r.value for r in items], items)
     return Resolution(value)
 
 
-def _resolve_string(template: Template, context: Mapping[str, Any], auto_parse: bool) -> Resolution:
+def _resolve_simple(template: Template, context: Mapping[str, Any], auto_parse: bool) -> Resolution:
+    expression = template.expressions[0]
+    found, value = _evaluate(expression, context)
+    if not found:
+        logger.debug(f"Template '{template.source}' could not be resolved", extra={"var_name": expression.raw})
+        return Resolution(template.source, unresolved=frozenset({expression.raw}))
+    # resolve_nested's leaf rule; numeric strings stay strings (Discord snowflake IDs).
+    if auto_parse and isinstance(value, str):
+        success, parsed = try_parse_json(value)
+        if success and isinstance(parsed, (dict, list)):
+            return Resolution(parsed)
+    return Resolution(value)
+
+
+def _resolve_string(template: Template, context: Mapping[str, Any], auto_parse: bool, embedded: bool) -> Resolution:
     if template.is_simple:
-        expression = template.expressions[0]
-        found, value = _evaluate(expression, context)
-        if not found:
-            logger.debug(f"Template '{template.source}' could not be resolved", extra={"var_name": expression.raw})
-            return Resolution(template.source, unresolved=frozenset({expression.raw}))
-        # resolve_nested's leaf rule; numeric strings stay strings (Discord snowflake IDs).
-        if auto_parse and isinstance(value, str):
-            success, parsed = try_parse_json(value)
-            if success and isinstance(parsed, (dict, list)):
-                return Resolution(parsed)
-        return Resolution(value)
+        return _resolve_simple(template, context, auto_parse)
 
     parts: list[str] = []
     unresolved: set[str] = set()
+    issues = {issue.raw for issue in template.issues}
     for segment in template.segments:
         match segment:
             case Text(text):
@@ -606,16 +705,19 @@ def _resolve_string(template: Template, context: Mapping[str, Any], auto_parse: 
             case Issue(raw):
                 parts.append(raw)
             case Expression():
+                written = template.source[segment.span[0] : segment.span[1]]
+                if segment.as_json and not embedded:  # a JSON insert outside embedded code
+                    issues.add(written)
+                    parts.append(written)
+                    continue
                 found, value = _evaluate(segment, context)
                 if found:
-                    parts.append(to_string(value))
+                    parts.append(to_json(value) if segment.as_json else to_string(value))
                 else:
                     unresolved.add(segment.raw)
                     _log_unresolved_inline(segment.raw)
-                    parts.append(template.source[segment.span[0] : segment.span[1]])
-    return Resolution(
-        "".join(parts), unresolved=frozenset(unresolved), issues=frozenset(i.raw for i in template.issues)
-    )
+                    parts.append(written)
+    return Resolution("".join(parts), unresolved=frozenset(unresolved), issues=frozenset(issues))
 
 
 def to_string(value: Any) -> str:
@@ -645,6 +747,17 @@ def to_string(value: Any) -> str:
             return str(value)
     else:
         return str(value)
+
+
+def to_json(value: Any) -> str:
+    """A JSON insert's text: the value as a JSON literal (``true``, ``null``, ``"Don't"``,
+    ``{"a": [1, 2]}``) — non-ASCII kept as written. A value JSON cannot encode (a set,
+    bytes) enters as the JSON string of its ``to_string`` text. Text is never re-parsed:
+    a string holding JSON stays a string."""
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return json.dumps(to_string(value), ensure_ascii=False)
 
 
 def _log_unresolved_inline(var_expr: str) -> None:
@@ -679,23 +792,23 @@ class TemplateResolver:
     # Static-discovery views built from the tokenizer's grammar (dynamic index
     # included). They cannot see escape CONSUMPTION (`$${a[${i}]}` still shows
     # `${i}`), so discovery over text that may hold escapes uses ``parse()``.
-    TEMPLATE_PATTERN = re.compile(rf"(?<!\$)\$\{{({_EXPRESSION})\}}")
+    TEMPLATE_PATTERN = re.compile(rf"(?<!\$)\$\{{({_EXPRESSION})(?:{_JSON_INSERT})?\}}")
     SIMPLE_TEMPLATE_PATTERN = re.compile(rf"^\$\{{({_EXPRESSION})\}}$")
-
-    # Loose extraction for validation/diagnostics discovery: everything between an
-    # unescaped `${` and the next `}`. Does NOT validate the grammar.
-    TEMPLATE_EXTRACT_PATTERN = re.compile(r"(?<!\$)\$\{([^}]+)\}")
 
     _COALESCE_SPLIT_PATTERN = _COALESCE_SPLIT
     # Root variable name: everything before the first `.` or `[`.
     _ROOT_SPLIT_PATTERN = re.compile(r"[\.\[]")
 
     @staticmethod
-    def has_templates(value: Any) -> bool:
+    def has_templates(value: Any, *, embedded: bool = False) -> bool:
         """Whether resolution rewrites ``value``: an Expression or a ``$${`` escape
         anywhere (an escape-only value still resolves to its literal ``${…}``;
-        an Issue-only value is static). Uncached — safe on resolved values."""
-        return any("${" in s and _tokenize(s).needs_resolution for s in _strings(value))
+        an Issue-only value is static). In embedded code only a JSON insert counts.
+        Uncached — safe on resolved values."""
+        return any(
+            "${" in s and (embedded_code(_tokenize(s)) if embedded else _tokenize(s)).needs_resolution
+            for s in _strings(value)
+        )
 
     @staticmethod
     def has_references(value: Any) -> bool:

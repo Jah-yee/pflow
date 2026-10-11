@@ -10,11 +10,11 @@ surface: it exposes pflow itself as an MCP server.
 | Persisted server configuration | `manager.py:MCPServerManager` (`~/.pflow/mcp-servers.json`) |
 | Environment expansion and HTTP auth | `auth_utils.py:expand_env_vars_nested`, `build_auth_headers` |
 | Tool discovery/schema conversion | `discovery.py:MCPDiscovery` |
-| Registry reconciliation | `registrar.py:MCPRegistrar.sync_servers`; fingerprints in `sync_state.py` |
+| Registry reconciliation | `registrar.py:MCPRegistrar.sync_servers` |
 | Stateful sessions and transport recovery | `pool.py:MCPConnectionPool` |
 | SDK exception/Diagnostic translation | `errors.py` |
 | Workflow tool execution/results | `nodes/mcp/node.py:MCPNode`, `_extract_result` |
-| Execution-start auto-sync | `cli/mcp_sync.py:_auto_discover_mcp_servers` |
+| When discovery runs | `cli/commands/mcp.py`: `add` (servers it saved) and `sync`; never at workflow start |
 
 ## Registration and naming
 
@@ -29,11 +29,13 @@ contain hyphens. Replacement/removal/listing use exact
 `interface.mcp_metadata.server` ownership. `registrar.py:get_tool_info` still has a
 naive split; its display limitation is separate from mutation and compiler parsing.
 
-Auto-sync fingerprints raw persisted configurations per server. Successful servers
-advance independently; failures retain prior tools/fingerprints for retry. Missing
-configuration is a no-op; an explicit empty configuration can reconcile MCP state
-to empty. `sync_servers` discovers first, rechecks configuration, then late-loads
-unfiltered registry state and publishes tools plus fingerprints together.
+Discovery runs only where a server enters the config (`pflow mcp add`) or on an
+explicit `pflow mcp sync`; workflow start never contacts servers (#751 — a failing
+server used to cost every invocation). Successful servers advance independently;
+a failed server keeps its prior tools. Missing configuration is a no-op; an explicit
+empty configuration reconciles MCP state to empty under `--all`. `sync_servers`
+discovers first, rechecks configuration, then late-loads unfiltered registry state
+and publishes in one write.
 
 Use `registry.load(include_filtered=True)` before replacement writes: saving a
 filtered view deletes hidden entries. Atomic publication prevents partial snapshots,
@@ -53,6 +55,15 @@ the session and reconnecting; the new session does not preserve server state.
 `pool.py:_is_transport_error` explicitly excludes TimeoutError even where it is an
 OSError subclass: slow responses must not trigger destructive reconnects.
 
+## SDK import cost
+
+Import the `mcp` SDK only inside the functions that open a server connection
+(`discovery.py`, `pool.py` session builders, `nodes/mcp/node.py`). `pflow.mcp` loads
+on every CLI invocation and every workflow run (Runner always builds the pool), so a
+module-level SDK import costs every command ~0.1 s (#752). Pinned by
+`tests/test_cli/test_lazy_imports.py`; tests patch `mcp.ClientSession` and
+`mcp.client.stdio.stdio_client`, not `pflow.mcp.pool.*`.
+
 ## Configuration/auth traps
 
 - Runtime transport selection reads `type` (absent means stdio); the TypedDicts in
@@ -61,4 +72,3 @@ OSError subclass: slow responses must not trigger destructive reconnects.
   is opt-in via `include_settings=True` and case-insensitive; discovery and MCPNode
   enable it, together with `raise_on_missing=True`. Other callers may choose differently.
 - Expand configuration before `build_auth_headers`, which expects resolved values.
-  Fingerprints must still use the raw persisted configuration, not expanded secrets.

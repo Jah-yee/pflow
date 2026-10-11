@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Literal
 
 from pflow.core.cache_ttl import build_unsupported_cache_ttl_diagnostic, unsupported_cache_ttl_message
@@ -100,6 +101,39 @@ class WorkflowNotFoundError(PflowError):
                     "workflow_name": self.workflow_name,
                     "similar_names": self.similar_names,
                     "hint": self.hint,
+                },
+            )
+        ]
+
+
+class WorkflowFileNotFoundError(WorkflowNotFoundError):
+    """Raised when a path-like workflow argument names no file.
+
+    A path is never looked up as a saved name, so the fix is the path or the
+    working directory — the diagnostic names both and never suggests ``pflow list``.
+    """
+
+    def __init__(self, workflow_name: str, path: Path, cwd: Path | None):
+        self.path = path
+        self.cwd = cwd
+        where = f"No file at: {path}"
+        if cwd is not None:
+            where += f" (resolved relative to cwd: {cwd})"
+        super().__init__(workflow_name, hint=where)
+
+    def to_diagnostics(self) -> list[Diagnostic]:
+        return [
+            Diagnostic(
+                severity=Severity.ERROR,
+                message=str(self),
+                title="Workflow File Not Found",
+                suggestions=["Check your working directory, or pass an absolute path."],
+                source="runtime",
+                context={
+                    "category": "not_found",
+                    "workflow_name": self.workflow_name,
+                    "file_path": str(self.path),
+                    "cwd": str(self.cwd) if self.cwd is not None else None,
                 },
             )
         ]
@@ -1753,7 +1787,11 @@ class ResumeAnswerRequiredError(ResumeSourceError):
                 suggestions=["Retry the same resume command without the answer flag."],
             )
             return
-        from pflow.execution.gate_prompt import format_gate_lines, format_resume_answer_command
+        from pflow.execution.gate_prompt import (
+            format_bulk_approve_hint,
+            format_gate_lines,
+            format_resume_answer_command,
+        )
 
         request = gate_request or {}
         is_approval = request.get("kind") == GATE_KIND_APPROVAL
@@ -1768,12 +1806,13 @@ class ResumeAnswerRequiredError(ResumeSourceError):
             head = f"This run is paused at {kind_label} on step '{node_id}' and needs an answer."
         content = "\n".join(f"  {line}" for line in format_gate_lines(request))
         command = format_resume_answer_command(execution_id or "<execution-id>", request)
+        bulk_hint = format_bulk_approve_hint(execution_id or "<execution-id>", request)
         super().__init__(
             f"{head}\n\n{content}" if content else head,
             execution_id=execution_id,
             trace_path=trace_path,
             node_id=node_id,
-            suggestions=[f"Answer with: {command}"],
+            suggestions=[f"Answer with: {command}", *([bulk_hint] if bulk_hint else [])],
         )
 
     def to_diagnostics(self) -> list[Diagnostic]:

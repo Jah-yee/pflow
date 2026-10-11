@@ -20,7 +20,9 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+from pflow.core.node_type_display import node_type_tag
 from pflow.core.security_utils import is_sensitive_parameter
+from pflow.core.templates import to_string
 
 GATE_KIND_APPROVAL: Literal["action_approval"] = "action_approval"
 GATE_KIND_ESCALATION: Literal["decision_escalation"] = "decision_escalation"
@@ -51,6 +53,10 @@ class GateRequest:
     # The 1-based loop iteration that raised this gate; ``None`` for a non-loop step.
     # Display-only — resume derives its position from the trace events, never from here.
     iteration: int | None = None
+    # The loop's author cap as known at the gate (``runtime/engine/loop_control.declared_loop_cap``);
+    # ``None`` for a non-loop step, an uncapped loop, or a cap not knowable outside the loop body.
+    # Display-only — resume never reads it.
+    max_iterations: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -69,7 +75,9 @@ class GateResolution:
     notes: str | None = None
 
 
-def build_approval_request(node_id: str, node_type: str, params: Any, *, iteration: int | None = None) -> GateRequest:
+def build_approval_request(
+    node_id: str, node_type: str, params: Any, *, iteration: int | None = None, max_iterations: int | None = None
+) -> GateRequest:
     """Approval payload from the node's (resolved) params.
 
     ``_``-prefixed keys are parser/engine bookkeeping (``_source_line``, ...), not
@@ -77,14 +85,27 @@ def build_approval_request(node_id: str, node_type: str, params: Any, *, iterati
     (node_output_formatter / trace_report convention).
     """
     if not isinstance(params, dict):
-        return GateRequest(node_id=node_id, node_type=node_type, kind=GATE_KIND_APPROVAL, iteration=iteration)
+        return GateRequest(
+            node_id=node_id,
+            node_type=node_type,
+            kind=GATE_KIND_APPROVAL,
+            iteration=iteration,
+            max_iterations=max_iterations,
+        )
     preview = {key: json_safe(value) for key, value in params.items() if not key.startswith("_")}
     return GateRequest(
-        node_id=node_id, node_type=node_type, kind=GATE_KIND_APPROVAL, preview=preview, iteration=iteration
+        node_id=node_id,
+        node_type=node_type,
+        kind=GATE_KIND_APPROVAL,
+        preview=preview,
+        iteration=iteration,
+        max_iterations=max_iterations,
     )
 
 
-def build_escalation_request(node_id: str, node_type: str, marker: Any, *, iteration: int | None = None) -> GateRequest:
+def build_escalation_request(
+    node_id: str, node_type: str, marker: Any, *, iteration: int | None = None, max_iterations: int | None = None
+) -> GateRequest:
     """Escalation payload from a node's ``result.escalation`` marker.
 
     Lenient by design: a string marker becomes the question; dict fields that are
@@ -92,7 +113,12 @@ def build_escalation_request(node_id: str, node_type: str, marker: Any, *, itera
     """
     if isinstance(marker, str):
         return GateRequest(
-            node_id=node_id, node_type=node_type, kind=GATE_KIND_ESCALATION, question=marker, iteration=iteration
+            node_id=node_id,
+            node_type=node_type,
+            kind=GATE_KIND_ESCALATION,
+            question=marker,
+            iteration=iteration,
+            max_iterations=max_iterations,
         )
     question = marker.get("question")
     raw_options = marker.get("options")
@@ -106,6 +132,7 @@ def build_escalation_request(node_id: str, node_type: str, marker: Any, *, itera
         options=options,
         recommendation=str(recommendation) if recommendation is not None else None,
         iteration=iteration,
+        max_iterations=max_iterations,
     )
 
 
@@ -122,16 +149,38 @@ def option_labels(options: list[dict[str, Any]]) -> list[str]:
     return [str(option.get("label") or f"option {i}") for i, option in enumerate(options, start=1)]
 
 
-def masked_preview(preview: dict[str, Any]) -> dict[str, Any]:
-    """Preview with secret-NAMED values redacted (recursively) — never truncated.
+def loop_position(iteration: object, max_iterations: object) -> str | None:
+    """A loop gate's position — THE text every gate renderer shows ("iteration 2 of up to 3").
 
-    THE masking policy for every gate render surface (TTY prompt, error
-    diagnostics); the trace's gate event stays unmasked, consistent with the
-    trace's ``template_resolutions``. Masking only — length truncation belongs
-    to each renderer (the TTY prompt's 200-char step): routing values through
-    ``sanitize_parameters`` here cut long non-secret nested values (an http
-    ``json:`` body, a sub-workflow ``inputs:`` field) to ~20 chars, blinding
-    the approver to what they were approving (PR #554 review warning).
+    Takes raw payload values (a trailer dict may predate either key, or be hand-edited):
+    a non-``int`` iteration means a non-loop gate → ``None``. The cap is shown only as an
+    ``int`` the iteration has not passed — a back edge into the loop continues the count
+    past it (the engine's counter is per run), and "iteration 4 of up to 3" is never
+    printed. ``web/src/components/GateCallout.tsx::loopPosition`` is the TS twin; both are
+    pinned by ``web/src/test/fixtures/loop-position.json``.
+    """
+    if not isinstance(iteration, int):
+        return None
+    if isinstance(max_iterations, int) and iteration <= max_iterations:
+        return f"iteration {iteration} of up to {max_iterations}"
+    return f"iteration {iteration}"
+
+
+def masked_preview(preview: dict[str, Any], node_type: str | None) -> dict[str, Any]:
+    """The preview as every gate render surface shows it: what the step will receive.
+
+    THE display policy (TTY prompt, pause output, error diagnostics, web panel);
+    the trace's gate event keeps the raw resolved params, consistent with the
+    trace's ``template_resolutions``.
+
+    - Secret-NAMED values are redacted, recursively.
+    - A shell step's ``env:`` values show as the text the command receives
+      (``to_string``, ADR-0016 — ``true`` as ``True``, null as empty). Masked
+      first, so a secret nested in an object value stays redacted in its text.
+    - Nothing is truncated on any surface: the approver consents to the whole
+      value (#746). Routing values through ``sanitize_parameters`` here once cut
+      long non-secret nested values (an http ``json:`` body, a sub-workflow
+      ``inputs:`` field) to ~20 chars, blinding the approver (PR #554).
     """
 
     def mask(key: str | None, value: Any) -> Any:
@@ -143,18 +192,20 @@ def masked_preview(preview: dict[str, Any]) -> dict[str, Any]:
             return [mask(None, item) for item in value]
         return value
 
-    return {key: mask(key, value) for key, value in preview.items()}
+    masked = {key: mask(key, value) for key, value in preview.items()}
+    env = masked.get("env")
+    if node_type_tag(node_type or "") == "shell" and isinstance(env, dict):
+        masked["env"] = {name: to_string(value) for name, value in env.items()}
+    return masked
 
 
 def masked_gate_dict(payload: dict[str, Any]) -> dict[str, Any]:
-    """A gate-payload DICT with its ``preview`` secret-masked — THE policy for
-    every surface that holds a plain ``GateRequest.to_dict()`` / trailer gate
-    dict rather than a live ``GateRequest``.
+    """A gate-payload DICT with its ``preview`` in display form (``masked_preview``) —
+    THE policy for every surface that holds a plain ``GateRequest.to_dict()`` /
+    trailer gate dict rather than a live ``GateRequest``.
 
-    Mask-only (recursive, never truncated), delegating to ``masked_preview``;
-    the trace's gate event stays unmasked, consistent with
-    ``template_resolutions``. ``exceptions._masked_gate_payload`` is the
-    object-form twin (``request.to_dict()`` → this). One rule, one home, N
-    consumers (the denied/paused JSON docs, ``ResumeAnswerRequiredError``).
+    ``exceptions._masked_gate_payload`` is the object-form twin
+    (``request.to_dict()`` → this). One rule, one home, N consumers (the
+    denied/paused JSON docs, ``ResumeAnswerRequiredError``, the web panel).
     """
-    return {**payload, "preview": masked_preview(payload.get("preview") or {})}
+    return {**payload, "preview": masked_preview(payload.get("preview") or {}, payload.get("node_type"))}

@@ -114,7 +114,7 @@ iteration 1 when the pause is at a different step, or when a resumed attempt tha
 recovered failure is itself killed. A node output the trace cannot round-trip unchanged (a
 non-string key, a dropped nested key, bytes, or a value that falls to `str()` — judged on what the
 author's code produced) is marked `lossy` on its event and never seeded by resume — the loader
-refuses naming the place — and a gate whose resume would seed one stays `failed` instead of pausing.
+refuses naming the place — and a gate whose resume would seed one stays `failed` instead of pausing. **Task 183 adds `max_iterations` beside `iteration` on the gate payload (trace 2.10.0): the loop's limit as known when the gate is built (`loop_control.declared_loop_cap`), display-only — `null` when no cap is known while the engine still enforces its own visit guard — and, like `iteration`, never read by resume.**
 
 ## Considered options
 
