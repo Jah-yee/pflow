@@ -15,7 +15,24 @@ from tests.conftest import set_isolated_home
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CHILD_HOME_VAR = "USERPROFILE" if sys.platform == "win32" else "HOME"
 
+# The account's password-database home is a second real home (a child without HOME falls back to it).
+# Stand a temp dir in for it before the guard is imported, so the case never involves the actual one.
+INNER_ROOT_CONFTEST = """
+import os
+import types
+
+try:
+    import pwd
+except ImportError:  # Windows
+    pass
+else:
+    pwd.getpwuid = lambda uid: types.SimpleNamespace(pw_dir=os.environ["GUARD_TEST_PWD_HOME"])
+
+pytest_plugins = ("tests.shared.real_home_guard",)
+"""
+
 INNER_TESTS = """
+import importlib.util
 import os
 import subprocess
 import sys
@@ -47,6 +64,24 @@ def test_swallowed_write_under_real_pflow():
         (REAL_HOME / ".pflow" / "registry.json").write_text("overwritten", encoding="utf-8")
     except Exception:
         pass  # code under test that swallows the refusal must not hide it
+
+
+def test_swallowed_write_under_password_database_home():
+    if sys.platform == "win32":
+        return  # no password database
+    try:
+        (Path(os.environ["GUARD_TEST_PWD_HOME"]) / ".pflow" / "registry.json").write_text("overwritten", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def test_second_import_of_the_guard_keeps_the_session_home():
+    # ``--doctest-modules`` imports the guard again under another module name.
+    home = os.environ["HOME"]
+    spec = importlib.util.spec_from_file_location("guard_alias", os.environ["GUARD_TEST_GUARD_FILE"])
+    sys.modules["guard_alias"] = module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert os.environ["HOME"] == home
 
 
 def test_swallowed_spawn_without_child_home_var():
@@ -103,12 +138,15 @@ def test_guard_redirects_wider_scopes_and_refuses_the_real_home(tmp_path: Path) 
     real_registry = real_home / ".pflow" / "registry.json"
     real_registry.parent.mkdir(parents=True)
     real_registry.write_text("the user's registry", encoding="utf-8")
+    pwd_registry = tmp_path / "pwd_home" / ".pflow" / "registry.json"
+    pwd_registry.parent.mkdir(parents=True)
+    pwd_registry.write_text("the account's registry", encoding="utf-8")
     markers = tmp_path / "markers"
     markers.mkdir()
     project = tmp_path / "project"
     project.mkdir()
     (project / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
-    (project / "conftest.py").write_text('pytest_plugins = ("tests.shared.real_home_guard",)\n', encoding="utf-8")
+    (project / "conftest.py").write_text(INNER_ROOT_CONFTEST, encoding="utf-8")
     (project / "test_early").mkdir()
     (project / "test_early" / "conftest.py").write_text(INNER_EARLY_CONFTEST, encoding="utf-8")
     (project / "test_inner.py").write_text(INNER_TESTS, encoding="utf-8")
@@ -118,6 +156,8 @@ def test_guard_redirects_wider_scopes_and_refuses_the_real_home(tmp_path: Path) 
     set_isolated_home(env, real_home)
     env["PYTHONPATH"] = str(REPO_ROOT)
     env["GUARD_TEST_MARKERS"] = str(markers)
+    env["GUARD_TEST_PWD_HOME"] = str(tmp_path / "pwd_home")
+    env["GUARD_TEST_GUARD_FILE"] = str(REPO_ROOT / "tests" / "shared" / "real_home_guard.py")
     flags = ["-p", "no:xdist", "-p", "no:cacheprovider", "-rA", "--continue-on-collection-errors"]
     result = subprocess.run(  # noqa: S603 - fixed argv
         [sys.executable, "-m", "pytest", *flags, "."],
@@ -138,6 +178,8 @@ def test_guard_redirects_wider_scopes_and_refuses_the_real_home(tmp_path: Path) 
     assert outcomes == {
         "test_wider_scoped_fixture_gets_the_session_home": "PASSED",
         "test_swallowed_write_under_real_pflow": "FAILED",
+        "test_swallowed_write_under_password_database_home": "PASSED" if sys.platform == "win32" else "FAILED",
+        "test_second_import_of_the_guard_keeps_the_session_home": "PASSED",
         "test_swallowed_spawn_without_child_home_var": "FAILED",
         "test_swallowed_inherited_spawn_without_child_home_var": "FAILED",
         "test_spawn_with_isolated_home": "PASSED",
@@ -147,6 +189,7 @@ def test_guard_redirects_wider_scopes_and_refuses_the_real_home(tmp_path: Path) 
     assert f"its env has no {CHILD_HOME_VAR}" in output
     # Refused means prevented, not just reported: the write and the spawn never happened.
     assert real_registry.read_text(encoding="utf-8") == "the user's registry"
+    assert pwd_registry.read_text(encoding="utf-8") == "the account's registry"
     assert not (markers / "refused").exists()
     assert not (markers / "refused-inherited").exists()
     assert (markers / "allowed").exists()
