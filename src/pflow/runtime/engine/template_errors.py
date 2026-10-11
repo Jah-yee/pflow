@@ -20,6 +20,7 @@ from typing import Any
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.diagnostic_render import written_reference
 from pflow.core.exceptions import declared_text_fix, shown_declared_text
+from pflow.core.security_utils import redact_sensitive
 from pflow.core.templates import (
     LIST_TYPES,
     PROTECTION_ONLY,
@@ -85,7 +86,7 @@ def build_type_error_message(
 def build_shape_error_message(param_key: str, resolved_value: Any, template_str: str, expected_type: str) -> str:
     """A structured param received well-formed JSON of the other container shape."""
     actual = type(resolved_value).__name__
-    preview = _truncate(json.dumps(resolved_value, ensure_ascii=False, default=str), 200)
+    preview = _truncate(json.dumps(redact_sensitive(resolved_value), ensure_ascii=False, default=str), 200)
     return (
         f"Parameter '{param_key}' expects {expected_type} but {template_str} resolved to {actual}.\n\n"
         f"Value preview: {preview}\n\n"

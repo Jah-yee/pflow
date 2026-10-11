@@ -411,3 +411,14 @@ def test_unserializable_dict_for_str_param_names_the_cause_and_working_fixes():
     assert "  - Read only the field you need: `- content: ${make.result.field_name}`\n" in message
     assert '  - Embed it in text (written in Python notation): `- content: "Summary: ${make.result}"`\n' in message
     assert "Serialize to JSON" not in message
+
+
+def test_shape_error_preview_redacts_sensitive_named_keys():
+    """The other-container-shape message previews the value — never a sensitive-named key's value."""
+    interface = {"inputs": [{"key": "items", "type": "list"}], "params": []}
+    shared = {"cfg": {"result": {"api_key": "sk-live-SECRET", "region": "eu-north"}}}
+    with pytest.raises(ValueError) as exc_info:
+        _resolve({"items": "${cfg.result}"}, shared, interface)
+    message = str(exc_info.value)
+    assert 'Value preview: {"api_key": "<REDACTED>", "region": "eu-north"}' in message
+    assert "sk-live-SECRET" not in message
