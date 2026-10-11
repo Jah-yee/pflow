@@ -923,3 +923,41 @@ resume path for any successor.
   Completed; `create-task-review`; `create-pr` with closing keywords for #686 and #687 ONLY (packet: #188, #297, #742,
   #743 are "Refs … — not a closing PR"); check `closingIssuesReferences`.
 - Next: hand back to the main orchestrator.
+
+## [2026-10-11 14:40] I4 (Opus) — authorized fix: run-form checkbox alignment (user-reported, pre-existing `686b27f6c`)
+- Did: cause confirmed — `.run-field` is a column flex (`index.css`), default `align-items: stretch`, and the unclassed
+  checkbox `<input>` (`RunForm.tsx`) stretched to the row width, drawing its glyph centred. Gave it `run-field-checkbox`
+  (`align-self: flex-start; margin-inline: 0`). Alignment only — no element moved, no other rule touched.
+- Changed: `web/src/components/RunForm.tsx` (className), `web/src/index.css` (one rule + one-line why),
+  `web/src/components/RunForm.test.tsx` (the existing control-mapping test asserts the class — a class pin, no jsdom
+  layout claim).
+- Verified: screenshot skill's `open-and-settle` via `scratchpads/task-120/pf/drive-run-form.pflow.md` (now also returns
+  label/control rects per field), same workflow `typed-form.pflow.md`, Defaults state. Before (current bundle):
+  `scratchpads/task-120/pf/shots/05-checkbox-before.png` — label left 477 px, checkbox box left 481 px, width 260 px
+  (row-wide, glyph centred ≈611 px). After (`make ui-build`, server killed and restarted):
+  `scratchpads/task-120/pf/shots/06-checkbox-after.png` — checkbox left **477 px = label left 477 px**, width 13 px;
+  text/textarea controls unchanged (477 / 267 px both shots). Web `vitest run` 918 passed; `make check` rc 0;
+  `make test` 11439 passed. Server (PIDs 96014, then 97222, port 8791, isolated HOME) killed by PID; none left.
+- Deviations/surprises: none — alignment alone looks right, no layout proposal needed. (The "Run failed · 0 nodes" badge in
+  both shots is the overlay following the newest run in `pf/home`, unrelated to this change.)
+- Self-checks: fully-happy — clean. test-reflect: not needed — one class assertion as directed.
+- Next: hand back.
+
+## [2026-10-11 23:30] task-orchestrator — USER CHECKPOINT RULED; checkbox fixed; resuming to PZ
+- Ruling (user via main orchestrator, 2026-10-11): D1 → **B** (as built); D2 → accept; D3 → accept as shipped; D4 →
+  **(a)** ship as is, follow-up filed as **#777** (source clause names the surface the value entered through; the run
+  form is a labelable source); D5 → accepted. Closing keywords: **#686, #687, #188** (spec line ~314: #188 closed by the
+  per-item child boundary); #297, #742, #743 → "Refs — not a closing PR".
+- User instruction for the rest of the build and the gate (verbatim): *"we should always strive to close bug classes
+  rather than bugs if that makes sense. And if anything is unclear we should resolve that ambiguity first before
+  comitting, and we should resolve all assumptions."* → every gate disposition "fixed" names the CLASS it closes; every
+  log `Assumed:` still open at PZ is verified or handed back before `create-pr`.
+- **Packet claim 1 (`_prep_error` routing vs #768): VERIFIED** — executed by I1 at P0 under an isolated HOME (see the
+  [11:45] P0 entry): a host prep-raised child-input error routes via `on-error:` (handler ran, DEGRADED), fails ONE item
+  under batch `error_handling: continue` (items 0/2 succeed), and fails the run under default routing (exit 1). Re-proven
+  on the built code by PD's real-surface `parent-batch`/non-batch runs ([18:55]) and `test_child_input_boundary.py`.
+- User-reported checkbox misalignment (shots 00/01/03): blame `686b27f6c` (pre-task); fixed by I4 as alignment only
+  (`run-field-checkbox`: `align-self: flex-start`) — before/after `scratchpads/task-120/pf/shots/05-checkbox-before.png` /
+  `06-checkbox-after.png`; measured checkbox left 481→477px = label left 477px (I4 [14:40]); I viewed 06.
+- Tooling postmortem issue filed: **#778** (form-fill workflow, scroll_to, locale).
+- Next: commit; merge `origin/main`; gates; assumption audit; completion gate.

@@ -110,6 +110,7 @@ function RunField({
       {control === "checkbox" ? (
         <input
           id={id}
+          className="run-field-checkbox"
           type="checkbox"
           checked={value === "true"}
           onChange={(e) => onChange(field.name, e.target.checked ? "true" : "false")}
