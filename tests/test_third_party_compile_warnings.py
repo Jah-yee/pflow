@@ -58,8 +58,10 @@ def _runtime_closure() -> dict[str, Distribution]:
 
 def _compile_warnings(dist: Distribution) -> list[str]:
     """`path:line Category: message` for each warning compiling `dist`'s Python files emits."""
+    # No RECORD means nothing to scan; failing beats passing a dependency nobody checked.
+    assert dist.files is not None, f"{dist.name} has no file inventory (RECORD); cannot scan it"
     found: list[str] = []
-    for file in dist.files or []:
+    for file in dist.files:
         if file.suffix != ".py":
             continue
         path = Path(str(dist.locate_file(file)))
