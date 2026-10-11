@@ -82,7 +82,8 @@ body's, the state file's — decays. Verification is the job, not overhead.
    review only. Disposition: A = fold accuracy corrections
    now · B = record design gaps as a "RESOLVE AT START" constraint block in the spec (constraint
    stated, mechanism left to the planner) · C = genuine decisions go to the user. **A freshness
-   check is not a readiness verdict**: "do the citations still hold?" and "would a planner build
+   check is not a readiness verdict** — and a REWRITTEN spec is a new document that gets its own fresh
+   reader before any planner, separate from the battery that produced it: "do the citations still hold?" and "would a planner build
    the wrong thing?" are different questions — a design-bearing spec gets one context-free Opus
    reviewer plus searchers before launch, findings evaluated not accepted; never say
    "launch-ready" off citations alone. **Lock the decisions that gate the build** with the user → record them in the
@@ -116,7 +117,8 @@ body's, the state file's — decays. Verification is the job, not overhead.
    unsure whether it is a class ⇒ targeted investigation first, and a proven not-closable verdict
    is itself the durable artifact. File serially, never batch-fire: verify only the load-bearing
    unknown the source could not resolve, and mark residual uncertainty "verify at start" for the
-   lane. The lane runs its own step-back before building (its def owns that protocol).
+   lane. A closing mechanism you write before anything has run is a HYPOTHESIS — say so in the
+   issue and the packet; the lane's evaluation decides. The lane runs its own step-back before building (its def owns that protocol).
 
 ## The manual lane (lane C — you run it yourself)
 
@@ -209,6 +211,10 @@ like a grant.
   *"simple code that is optimized for AI agents to understand and add features to."* This governs
   orchestration too: no process artifact that fails the deletion test, thin task drafts, no
   bespoke harness where an existing suite is the oracle.
+- **Their standing instructions on fixes, verbatim — put them in every packet:** *"we should always strive to close
+  bug classes rather than bugs if that makes sense. And if anything is unclear we should resolve that ambiguity first
+  before comitting, and we should resolve all assumptions."* And: *"keep a lookout for obvious refactors that needs to be
+  made in regards to consolidating seams"* — name the consolidation candidate at the seam, deletion test as the bar.
 - **They will challenge you before commitment** — "are you sure you're not making assumptions?",
   "let's take a step back". Invitations to do the audit, not resistance. A held gate beats a
   rushed yes.

@@ -16,7 +16,26 @@ medium
 
 ## Roadmap
 
-then
+next
+
+> **Refreshed 2026-10-11 against main `cf8b7fcb` (orchestration session-14; owns #749, closed into this task).**
+> - The guide lives in `src/pflow/guide/` (`core.md`, `nodes/`, `features/`, loaded by `pflow.guide`), not `cli/resources/guide/` —
+>   every path below that says `cli/resources/guide/` means `src/pflow/guide/`.
+> - Topics today (`pflow.guide.list_topics()`): core, agent, code, file, http, llm, mcp, shell, approval, batch, branching,
+>   error-handling, loop, patterns, prompt-caching, resume, sub-workflows, ui — not the `nested`/`structured` list below.
+> - The two instruction files are ~2,170 lines each (2,182 / 2,162), not ~200: a separate, frozen MCP guide. Measured by the
+>   #749 lane: ~30 sections shared with the guide (most drifted, similarity 0.6–0.9), ~55 resource-only; whole features absent
+>   (approval gates, prompt caching, resume, loop `carry:`, the full shell `env:` section); some text now wrong (loops taught as
+>   backward edges against `guide/features/branching.md`; sandbox agents told to run `pflow guide <topic>`). MCP agents are
+>   reading stale instructions today — the reason for the `next` slot.
+> - Tools that exist and the mapping must include: `plan_workflow` (`mcp_server/tools/execution_tools.py:183`) and
+>   `analyze_cache` (`:378`), beside `workflow_execute`, `workflow_validate`, `workflow_save`, `registry_run`, `read_fields`.
+> - `mcp_server/server.py:286-293` instructions string sends agents to `pflow://instructions` ("complete 10-step development
+>   loop", "NON-OPTIONAL") and to `/sandbox` — it changes with the resource removal.
+> - `tests/test_docs/test_agent_guidance_migration.py` pins sentences across `guide/core.md` and both resources — it moves with
+>   whichever single-source shape Phase 3 picks.
+> - Class to close (user's standing rule: close classes, not instances): MCP agent instructions duplicated from the guide with no
+>   single source — the closing shape is one source the MCP surface is derived from, never a re-pasted copy.
 
 ## Problem
 
@@ -143,7 +162,7 @@ CLI_TO_MCP = {
 
 ### MCP agent instruction files
 
-Current `mcp-agent-instructions.md` and `mcp-sandbox-agent-instructions.md` are both ~short files (~200 lines) that describe the high-level MCP agent flow. After this task:
+Current `mcp-agent-instructions.md` and `mcp-sandbox-agent-instructions.md` are both ~2,170-line files (refreshed 2026-10-11) that describe the high-level MCP agent flow. After this task:
 
 - Reduce each to ~50 lines: just the decision tree (discover → read → act) and a pointer to `guide()` for detailed content.
 - Reference only new tool names.

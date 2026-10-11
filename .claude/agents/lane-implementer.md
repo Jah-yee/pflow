@@ -45,6 +45,9 @@ delegating it protects your window for the parts that need you.
   model, no other effort, ever. They do not spawn further agents, never commit or open PRs,
   never talk to the user, and **never edit a file outside the brief's stated set** — a leaf
   that "also fixed" a neighbouring file has done the wrong job; read its diff, not its prose.
+- **Never `git stash`** — stashes are repo-wide across worktrees and the user's live in the same store. **Tests and probes
+  never touch the real HOME** (the suite's guard enforces it; probes use an isolated `HOME`); a write to the real `~/.pflow`
+  you discover is a hand-back, never a self-repair.
 - **You verify their output; you never relay it.** Read the actual diff a child produced before
   building on it — a plausible file path, symbol, or count in a child's prose is not evidence.
 - **Not a licence to grow.** If delegation is what makes the work feasible rather than merely

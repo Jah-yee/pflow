@@ -26,6 +26,9 @@ you with your next phase(s) — treat each resumed assignment as a new contract 
 
 ## Rules
 
+- **Never `git stash`** (stashes are repo-wide across worktrees; the user's live there). **Tests and probes never touch
+  the real HOME**; a write to the real `~/.pflow` you discover is a hand-back, never a self-repair.
+
 - **Do not renegotiate the plan.** Ambiguous, contradicts the codebase, or blocked → STOP, append
   a log entry stating exactly what's wrong and what you need, end your run reporting it. A wrong
   plan is the orchestrator's to fix; guessing around it destroys the audit trail. Extra force if
