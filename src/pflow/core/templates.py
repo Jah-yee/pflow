@@ -763,10 +763,6 @@ class TemplateResolver:
     TEMPLATE_PATTERN = re.compile(rf"(?<!\$)\$\{{({_EXPRESSION})(?:{_JSON_INSERT})?\}}")
     SIMPLE_TEMPLATE_PATTERN = re.compile(rf"^\$\{{({_EXPRESSION})\}}$")
 
-    # Loose extraction for validation/diagnostics discovery: everything between an
-    # unescaped `${` and the next `}`. Does NOT validate the grammar.
-    TEMPLATE_EXTRACT_PATTERN = re.compile(r"(?<!\$)\$\{([^}]+)\}")
-
     _COALESCE_SPLIT_PATTERN = _COALESCE_SPLIT
     # Root variable name: everything before the first `.` or `[`.
     _ROOT_SPLIT_PATTERN = re.compile(r"[\.\[]")

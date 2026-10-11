@@ -518,16 +518,16 @@ def _suggest_template_fixes(
 
     suggestions: list[str] = []
 
-    # Extract template variable paths from error message
-
-    variables = TemplateResolver.TEMPLATE_EXTRACT_PATTERN.findall(error)
+    # The reference paths the error names, read through the template grammar: an
+    # unresolved JSON insert `${up.missing|json}` names `up.missing`.
+    variables = list(TemplateResolver.extract_variables(error))
 
     # Also check template_resolutions for unresolved vars
     for _key, res in event.get("template_resolutions", {}).items():
         template = res.get("template", "")
         resolved = res.get("resolved", "")
         if template == resolved and "${" in str(template):
-            variables.extend(TemplateResolver.TEMPLATE_EXTRACT_PATTERN.findall(str(template)))
+            variables.extend(TemplateResolver.extract_variables(str(template)))
 
     # Build a lookup of node_id → node_output from all events
     output_lookup = _build_output_lookup(all_events)

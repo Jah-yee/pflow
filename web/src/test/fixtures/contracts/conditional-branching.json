@@ -17,7 +17,8 @@
           "source": {
             "file": "examples/core/conditional-branching.pflow.md",
             "line": 15
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -53,7 +54,8 @@
             "data": "${fetch-data.stdout}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "code",
@@ -62,7 +64,8 @@
           "source": {
             "file": "examples/core/conditional-branching.pflow.md",
             "line": 27
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -103,7 +106,8 @@
           "source": {
             "file": "examples/core/conditional-branching.pflow.md",
             "line": 46
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -140,7 +144,8 @@
           "source": {
             "file": "examples/core/conditional-branching.pflow.md",
             "line": 57
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -177,7 +182,8 @@
           "source": {
             "file": "examples/core/conditional-branching.pflow.md",
             "line": 68
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -214,7 +220,8 @@
           "source": {
             "file": "examples/core/conditional-branching.pflow.md",
             "line": 78
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,

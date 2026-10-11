@@ -45,6 +45,7 @@ from pflow.core.exceptions import CompilationError
 from pflow.core.prompt_cache import CacheRenderContext, build_cache_system_blocks
 from pflow.execution.result import RunnerConfig
 from pflow.execution.runner import WorkflowRunner
+from pflow.mcp.manager import MCPServerManager
 from pflow.nodes.shell.env_binding import bind_env
 from pflow.registry import Registry
 from pflow.registry.scanner import extract_metadata
@@ -93,11 +94,21 @@ if set(_CORPUS_NODES) != {"template-corpus-producer", "template-corpus-sink"}:  
     raise RuntimeError(f"corpus node entries are {sorted(_CORPUS_NODES)}")
 
 
+# The sink, registered under an MCP tool type whose ``function`` param is embedded code
+# (Task 181): compilation routes it through the MCP type checks and injects ``__mcp_*``
+# params, which the sink ignores — so the end-to-end leg needs no MCP server.
+EMBEDDED = "mcp-corpus-evaluate_script"
+
+
 @pytest.fixture(autouse=True)
 def _corpus_registry() -> None:
-    """Add the corpus nodes to this test's isolated registry (core nodes come from conftest)."""
+    """Add the corpus nodes (and the sink as ``EMBEDDED``) to this test's isolated registry
+    (core nodes come from conftest); ``EMBEDDED``'s server ``corpus`` joins the MCP config."""
     registry = Registry()
-    registry.save({**registry.load(include_filtered=True), **copy.deepcopy(_CORPUS_NODES)})
+    nodes = copy.deepcopy(_CORPUS_NODES)
+    nodes[EMBEDDED] = copy.deepcopy(_CORPUS_NODES["template-corpus-sink"])
+    registry.save({**registry.load(include_filtered=True), **nodes})
+    MCPServerManager().add_server("corpus", command="true")
 
 
 class HarnessError(Exception):
@@ -617,6 +628,12 @@ SURFACES: Mapping[str, Surface] = MappingProxyType({
         lambda row, _t, _ir: _node("code", {"inputs": {}, "code": f"result: str = {json.dumps(row.template)}"}),
         _drive_body("code"),
         lambda _row, result: result.shared_after["s"]["result"],
+    ),
+    # Embedded code (Task 181): an MCP tool's JavaScript param. Only `${x|json}` is pflow's.
+    "embedded_code": Surface(
+        lambda row, _t, _ir: _node(EMBEDDED, {"function": row.template, **row.extra_params}),
+        lambda row, ir, shared: _resolve_param(row, _compile(row, ir).node_configs["s"], shared, "function"),
+        lambda _row, result: result.shared_after["s"]["received"]["function"],
     ),
     # The engine's batch warm-up resolves an llm node's ``system`` with this helper;
     # end to end, the same text is a plain ``sink_str`` param.
@@ -1642,6 +1659,135 @@ BODY_ROWS: tuple[Row, ...] = (
     ),
 )
 
+EMBEDDED_ROWS: tuple[Row, ...] = (
+    # Task 181: in embedded code a bare `${…}` is JavaScript, sent as written; a pflow value
+    # enters only as a JSON insert `${x|json}`, as a JSON literal of the value's own type.
+    Row(
+        "embedded_insert_string",
+        "embedded_code",
+        "const t = ${p.out_str|json};",
+        Ok(),
+        Resolves('const t = "S";'),
+        mutation="resolve embedded code without the view (to_string, not to_json)",
+    ),
+    Row("embedded_insert_whole_value_is_text", "embedded_code", "${p.out.flag|json}", Ok(), Resolves("true")),
+    Row("embedded_insert_object", "embedded_code", "${p.out.nested|json}", Ok(), Resolves('{"k": "K"}')),
+    Row("embedded_insert_null", "embedded_code", "${p.out.maybe|json}", Ok(), Resolves("null")),
+    Row(
+        "embedded_bare_is_javascript",
+        "embedded_code",
+        "`${a + b} ${x}`",
+        Ok(),
+        StaticLiteral(),
+        mutation="split_params ignores the embedded mode (routes the bare `${x}` as a template)",
+    ),
+    Row("embedded_escape_is_javascript", "embedded_code", "`Total: $${price}`", Ok(), StaticLiteral()),
+    Row(
+        "embedded_insert_beside_bare_and_escape",
+        "embedded_code",
+        "`${p.out_str}` $${q} ${p.out_str|json}",
+        Ok(),
+        Resolves('`${p.out_str}` $${q} "S"'),
+    ),
+    Row(
+        "embedded_insert_unknown_step",
+        "embedded_code",
+        "() => ${ghost.x|json}",
+        Error("non-existent node 'ghost'"),
+        # The compiler's data-flow pass leaves unknown roots to the validator (they could
+        # be runtime params), so a run that skipped validation reports the miss — suffix kept.
+        Unresolved(("${ghost.x|json}",), forbid=("${ghost.x}",)),
+    ),
+    Row(
+        "embedded_insert_unresolved",
+        "embedded_code",
+        "() => ${g.out_str|json}",
+        Ok(),
+        Unresolved(("${g.out_str|json}",), forbid=("${g.out_str}",)),
+        ghost=True,
+    ),
+    # Validator-only rules: an insert the view cannot see reaches the tool as text, so
+    # validation refuses it; a run that skipped validation sends the text unchanged.
+    Row(
+        "embedded_insert_in_escape",
+        "embedded_code",
+        "`$${p.out_str|json}`",
+        Error("sits inside '$${…}'"),
+        StaticLiteral(),
+    ),
+    Row(
+        "embedded_insert_in_javascript_template",
+        "embedded_code",
+        "`${${p.out_str|json} + 1}`",
+        Error("sits inside another '${…}'"),
+        StaticLiteral(),
+    ),
+    Row(
+        "embedded_insert_near_miss", "embedded_code", "${p.out_str|json }", Error("not a pflow insert"), StaticLiteral()
+    ),
+)
+
+# A JSON insert outside embedded code: a validation ERROR naming where it is accepted, and
+# at run time kept as written like an Issue (each surface's existing Issue outcome).
+JSON_INSERT_ELSEWHERE = "is accepted only in JavaScript passed to an MCP tool"
+MISPLACED_INSERT_ROWS: tuple[Row, ...] = (
+    Row(
+        "misplaced_insert_param",
+        "param",
+        "say ${p.out_str|json}",
+        Error(JSON_INSERT_ELSEWHERE),
+        Unresolved(("${p.out_str|json}",)),
+        consumer="sink_str",
+        mutation="honour a JSON insert at run time outside embedded code",
+    ),
+    Row(
+        "misplaced_insert_batch_items",
+        "batch_items",
+        "${p.out_arr|json}",
+        Error(JSON_INSERT_ELSEWHERE),
+        Unresolved(("${p.out_arr|json}",)),
+    ),
+    Row(
+        "misplaced_insert_batch_items_inline",
+        "batch_items",
+        ["${p.out_str|json}"],
+        Error(JSON_INSERT_ELSEWHERE),
+        Resolves(["${p.out_str|json}"]),
+    ),
+    Row(
+        "misplaced_insert_loop_while", "loop_while", "${p.out.flag|json}", Error(JSON_INSERT_ELSEWHERE), Resolves(False)
+    ),
+    Row(
+        "misplaced_insert_loop_max",
+        "loop_max",
+        "${p.out.num|json}",
+        Error(JSON_INSERT_ELSEWHERE),
+        Raises("LoopConditionError", "${p.out.num|json}"),
+    ),
+    Row(
+        "misplaced_insert_output",
+        "output_source",
+        "${p.out_str|json}",
+        Error(JSON_INSERT_ELSEWHERE),
+        Raises("OutputResolutionError", "${p.out_str|json}"),
+    ),
+    Row(
+        "misplaced_insert_output_bare",
+        "output_source",
+        "p.out_str|json",
+        Error(JSON_INSERT_ELSEWHERE),
+        Raises("OutputResolutionError", "p.out_str|json"),
+    ),
+    Row(
+        "misplaced_insert_cache",
+        "cache",
+        "Base: ${p.out_str|json}",
+        Error(JSON_INSERT_ELSEWHERE),
+        Absent(),
+        prompt_cache=("p.out_str|json",),
+    ),
+)
+
 CACHE_ROWS: tuple[Row, ...] = (
     Row(
         "cache_var_ref",
@@ -1805,6 +1951,8 @@ SURFACE_ROWS: tuple[Row, ...] = (
     + PREWARM_ROWS
     + SHELL_ENV_ROWS
     + BODY_ROWS
+    + EMBEDDED_ROWS
+    + MISPLACED_INSERT_ROWS
     + CACHE_ROWS
 )
 

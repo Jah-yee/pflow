@@ -75,7 +75,8 @@
             "focus": "${focus}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "code",
@@ -84,7 +85,8 @@
           "source": {
             "file": "examples/nested/deep-research/deep-research.pflow.md",
             "line": 33
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -122,7 +124,8 @@
           "name": "workflow",
           "value": "./analyze-source.pflow.md",
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "inputs",
@@ -131,7 +134,8 @@
             "focus": "${item.focus}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         }
       ],
       "io": null,
@@ -174,7 +178,8 @@
             "analyses": "${analyze-sources.results}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "code",
@@ -183,7 +188,8 @@
           "source": {
             "file": "examples/nested/deep-research/deep-research.pflow.md",
             "line": 63
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -230,7 +236,8 @@
           "name": "workflow",
           "value": "${item.workflow}",
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "inputs",
@@ -239,7 +246,8 @@
             "aspect": "${item.aspect}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         }
       ],
       "io": null,
@@ -304,7 +312,8 @@
             "reviews": "${reviews.results}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "code",
@@ -313,7 +322,8 @@
           "source": {
             "file": "examples/nested/deep-research/deep-research.pflow.md",
             "line": 103
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -437,7 +447,8 @@
           "name": "prompt",
           "value": "Extract the key sections from this document, focusing on ${focus}: ${content}",
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         }
       ],
       "io": null,
@@ -480,7 +491,8 @@
           "name": "workflow",
           "value": "./score-section.pflow.md",
           "is_dynamic": false,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "inputs",
@@ -489,7 +501,8 @@
             "criteria": "${focus}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         }
       ],
       "io": null,
@@ -531,7 +544,8 @@
             "scores": "${score.score}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "code",
@@ -540,7 +554,8 @@
           "source": {
             "file": "examples/nested/deep-research/analyze-source.pflow.md",
             "line": 49
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -676,7 +691,8 @@
           "name": "prompt",
           "value": "Score this text for ${criteria}: ${text}",
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         }
       ],
       "io": null,
@@ -725,7 +741,8 @@
             "raw_score": "${evaluate.response}"
           },
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         },
         {
           "name": "code",
@@ -734,7 +751,8 @@
           "source": {
             "file": "examples/nested/deep-research/score-section.pflow.md",
             "line": 38
-          }
+          },
+          "mode": "body"
         }
       ],
       "io": null,
@@ -1006,7 +1024,8 @@
           "name": "prompt",
           "value": "Review this research summary for ${aspect}: ${summary}",
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         }
       ],
       "io": null,
@@ -1153,7 +1172,8 @@
           "name": "prompt",
           "value": "Review this research summary for ${aspect}: ${summary}",
           "is_dynamic": true,
-          "source": null
+          "source": null,
+          "mode": "template"
         }
       ],
       "io": null,

@@ -36,6 +36,7 @@ class TemplateOperand:
     node_id: str | None
     ref: Reference
     policy: OperandPolicy
+    as_json: bool = False  # the value operand of a JSON insert (``${ref|json}``), never an index source
 
 
 def iter_template_operands(workflow_ir: dict[str, Any]) -> Iterator[TemplateOperand]:
@@ -71,4 +72,4 @@ def _operands(
             if isinstance(operand, Reference):
                 refs = operand.index_sources if index_sources_only else operand.references
                 for ref in refs:
-                    yield TemplateOperand(node_id, ref, policy)
+                    yield TemplateOperand(node_id, ref, policy, as_json=expression.as_json and ref is operand)

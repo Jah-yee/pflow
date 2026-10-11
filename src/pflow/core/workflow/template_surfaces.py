@@ -7,7 +7,8 @@ every check sees it.
 
 How a param's text is read is decided here too, keyed on (node type, param): a code
 body (``shell.command``, ``code.code`` — ``param_mode`` → ``"body"``) is never a
-surface, and every other param walk asks ``param_mode`` or iterates ``template_params``.
+surface, embedded code (``"embedded"``) is a surface read through ``embedded_code``,
+and every other param walk asks ``param_mode`` or iterates ``template_params``.
 """
 
 from __future__ import annotations
@@ -17,25 +18,50 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
-from pflow.core.templates import Template, parse
+from pflow.core.templates import Template, embedded_code, parse
 
 SurfaceKind = typing.Literal["param", "batch_items", "loop", "carry", "output_source", "cache_var", "cache_prose"]
 
-ParamMode = typing.Literal["template", "body"]
+ParamMode = typing.Literal["template", "body", "embedded"]
 BodyLanguage = typing.Literal["sh", "python"]
 
 # (node type, param) -> the language of a param that holds plain code — see ``param_mode``.
 # TypeScript mirror: web/src/utils/format.ts::isCodeBody — change both together.
 _BODIES: dict[tuple[str, str], BodyLanguage] = {("shell", "command"): "sh", ("code", "code"): "python"}
+# (MCP tool, param) pairs whose param is JavaScript another process runs — see ``param_mode``.
+# JavaScript only: a JSON insert is a JavaScript literal. Ordered: diagnostics list it as written.
+EMBEDDED_CODE: tuple[tuple[str, str], ...] = (
+    ("evaluate_script", "function"),
+    ("browser_evaluate", "function"),
+    ("navigate_page", "initScript"),
+    ("browser_run_code_unsafe", "code"),
+)
 # (node type, param) pairs whose values bind as text — see ``binds_as_text``.
 _BINDS_AS_TEXT: frozenset[tuple[str, str]] = frozenset({("shell", "env")})
 
 
 def param_mode(node_type: str | None, key: str) -> ParamMode:
-    """How pflow reads one param's text: ``"template"`` (the default — ``${…}`` is a
-    Template) or ``"body"`` (plain code in another language — never scanned, validated
-    or resolved; values reach it through the node's own binding, ADR-0016)."""
-    return "body" if (node_type, key) in _BODIES else "template"
+    """How pflow reads one param's text:
+
+    - ``"template"`` (the default) — ``${…}`` is a Template.
+    - ``"body"`` — plain code in another language, never scanned, validated or resolved;
+      values reach it through the node's own binding (ADR-0016).
+    - ``"embedded"`` — JavaScript an MCP tool runs (``EMBEDDED_CODE``): sent as written,
+      a bare ``${…}`` belonging to JavaScript; only a JSON insert ``${x|json}`` is pflow's
+      (``templates.embedded_code``). Matched on the tool-name suffix of
+      ``mcp-<server>-<tool>`` (the server name is the user's): a JavaScript tool missing
+      from the table stays a Template, and a same-named tool of another server is read as
+      embedded code, its in-scope bare names reported by the validator.
+    """
+    if (node_type, key) in _BODIES:
+        return "body"
+    if (
+        node_type is not None
+        and node_type.startswith("mcp-")
+        and any(param == key and node_type.endswith(f"-{tool}") for tool, param in EMBEDDED_CODE)
+    ):
+        return "embedded"
+    return "template"
 
 
 def template_params(node: dict[str, Any]) -> dict[str, Any]:
@@ -74,18 +100,23 @@ class TemplateSurface:
     # ``loop.carry.<key>``, an output name, or a chunk name.
     key: str
     value: Any  # the raw IR value; dicts and lists nest
+    mode: ParamMode = "template"  # a param's ``param_mode``; ``"embedded"`` reads the view
 
     def templates(self) -> Iterator[tuple[str, Template]]:
         """``(location, parsed text)`` for every string in the value.
 
         ``location`` extends ``key`` into nested values (``headers.Authorization``,
         ``batch.items[0].platform``). A cache var is stored bare in the IR (``p.x``),
-        so it is parsed as the ``${p.x}`` the chunk came from.
+        so it is parsed as the ``${p.x}`` the chunk came from. Embedded code yields its
+        ``embedded_code`` view: only JSON inserts are Expressions, so no check sees
+        JavaScript's own ``${…}``.
         """
         if self.kind == "cache_var":
             yield self.key, parse("${" + self.value + "}")
             return
-        yield from ((location, parse(text)) for location, text in _strings(self.key, self.value))
+        for location, text in _strings(self.key, self.value):
+            template = parse(text)
+            yield location, embedded_code(template) if self.mode == "embedded" else template
 
     def path(self, location: str) -> str:
         """The diagnostic path of ``location`` (``nodes[id=X].params.a.b``, ``outputs.o.source``)."""
@@ -123,8 +154,9 @@ def iter_template_surfaces(workflow_ir: dict[str, Any]) -> Iterator[TemplateSurf
 def iter_node_surfaces(node: dict[str, Any]) -> Iterator[TemplateSurface]:
     """One node's surfaces: its params, ``batch.items``, loop fields, and carry values."""
     node_id = node.get("id")
+    node_type = node.get("type")
     for key, value in template_params(node).items():
-        yield TemplateSurface("param", node_id, key, value)
+        yield TemplateSurface("param", node_id, key, value, param_mode(node_type, key))
     batch = node.get("batch")
     if isinstance(batch, dict) and batch.get("items") is not None:
         yield TemplateSurface("batch_items", node_id, "batch.items", batch["items"])

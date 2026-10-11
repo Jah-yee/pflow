@@ -646,14 +646,16 @@ class WorkflowValidator:
                 diagnostics.extend(WorkflowValidator._validate_template_in_source(output_name, source, valid_sources))
                 continue
 
-            # Extract root identifier (handles both dot and bracket syntax)
-            node_id = TemplateResolver.extract_root_node_id(source)
+            # A bare source's roots, read as the runtime resolves it (`a ?? b.x` → a, b;
+            # `x|json` → x); one with no expression keeps its lexical root (`n.out.0` → n).
+            from pflow.runtime.output_resolver import normalize_output_source
 
-            # Validate source root exists (node or declared input)
-            if node_id not in valid_sources:
-                diagnostics.append(
-                    WorkflowValidator._build_node_not_found_diagnostic(output_name, node_id, valid_sources)
-                )
+            roots = [ref.root for ref in parse(normalize_output_source(source)).references]
+            for node_id in dict.fromkeys(roots or [TemplateResolver.extract_root_node_id(source)]):
+                if node_id not in valid_sources:
+                    diagnostics.append(
+                        WorkflowValidator._build_node_not_found_diagnostic(output_name, node_id, valid_sources)
+                    )
 
         return diagnostics
 

@@ -21,13 +21,40 @@ from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.suggestion_utils import find_similar_items
-from pflow.core.templates import DynamicIndex, Literal, Reference, Template, TemplateResolver, parse, resolve
-from pflow.core.workflow.data_flow import binding_phrase, body_reference_roots, body_references, step_scope
-from pflow.core.workflow.template_surfaces import iter_node_surfaces, iter_template_surfaces
+from pflow.core.templates import (
+    DynamicIndex,
+    Expression,
+    Issue,
+    Literal,
+    Reference,
+    Template,
+    TemplateResolver,
+    hidden_inserts,
+    near_miss_insert,
+    parse,
+    resolve,
+)
+from pflow.core.workflow.data_flow import (
+    EmbeddedReference,
+    binding_phrase,
+    body_reference_roots,
+    body_references,
+    embedded_references,
+    js_value_name,
+    step_scope,
+)
+from pflow.core.workflow.template_surfaces import (
+    EMBEDDED_CODE,
+    TemplateSurface,
+    iter_node_surfaces,
+    iter_template_surfaces,
+)
 from pflow.registry import Registry
+from pflow.runtime.output_resolver import normalize_output_source
 from pflow.runtime.template_validation.batch_item_validation import validate_batch_item_fields
 from pflow.runtime.template_validation.operands import (
     OperandPolicy,
+    TemplateOperand,
     iter_output_source_operands,
     iter_template_operands,
 )
@@ -86,13 +113,14 @@ def validate_workflow_templates(
     # If malformed syntax found, return early with those errors
     if malformed_diagnostics:
         logger.error(
-            f"Found {len(malformed_diagnostics)} malformed template(s)",
+            f"Found {len(malformed_diagnostics)} template error(s)",
             extra={"errors": [d.message for d in malformed_diagnostics]},
         )
         return diagnostics
 
     # Every reference in params, batch.items and loop fields, tagged with its policy
     operands = list(iter_template_operands(workflow_ir))
+    inserts = _insert_references(operands)
     output_operands = list(iter_output_source_operands(workflow_ir))
     all_templates = {operand.ref.raw for operand in operands}
     cache_templates = _extract_cache_templates_for_unused_check(workflow_ir)
@@ -109,13 +137,18 @@ def validate_workflow_templates(
     # in ``## Cache`` or an output ``source:`` aren't flagged as unused. Cache vars
     # never reach ``validate_template_paths`` below (see
     # ``_extract_cache_templates_for_unused_check``). A leftover ``${…}`` in a code
-    # body counts too: data flow reports it, one diagnostic for one mistake.
-    unused_input_diagnostics = _validate_unused_inputs(
-        workflow_ir,
+    # body counts too: data flow reports it, one diagnostic for one mistake. So does
+    # a bare reference in embedded code: its own ERROR names ``|json``.
+    used = (
         all_templates
         | cache_templates
         | {operand.ref.raw for operand in output_operands}
-        | body_reference_roots(workflow_ir),
+        | body_reference_roots(workflow_ir)
+    )
+    embedded = embedded_references(workflow_ir)
+    diagnostics.extend(_validate_embedded_references(workflow_ir, embedded, used))
+    unused_input_diagnostics = _validate_unused_inputs(
+        workflow_ir, used | {ref.root for ref in embedded if not ref.is_insert}
     )
     diagnostics.extend(unused_input_diagnostics)
     diagnostics.extend(_validate_unread_step_inputs(workflow_ir))
@@ -150,13 +183,17 @@ def validate_workflow_templates(
     )
 
     # Pass 5: Validate each field-checkable template path
-    diagnostics.extend(validate_template_paths(field_checkable, available_params, node_outputs, workflow_ir, registry))
+    diagnostics.extend(
+        _shown_as_inserts(
+            validate_template_paths(field_checkable, available_params, node_outputs, workflow_ir, registry), inserts
+        )
+    )
 
     # Pass 6: Validate template types match parameter expectations
     diagnostics.extend(validate_template_types(workflow_ir, node_outputs, registry))
 
     # Pass 8: Validate batch item field access (${item.field} against inferred structure)
-    diagnostics.extend(validate_batch_item_fields(workflow_ir, node_outputs, operands))
+    diagnostics.extend(_shown_as_inserts(validate_batch_item_fields(workflow_ir, node_outputs, operands), inserts))
 
     # Pass 9: Validate code-node input annotations against upstream template types
     diagnostics.extend(validate_code_node_input_annotations(workflow_ir, node_outputs))
@@ -184,6 +221,26 @@ def validate_workflow_templates(
     else:
         logger.info("Template validation passed")
 
+    return diagnostics
+
+
+def _insert_references(operands: list[TemplateOperand]) -> set[str]:
+    """The references written only as JSON inserts (``${x|json}``), by source text."""
+    return {op.ref.raw for op in operands if op.as_json} - {op.ref.raw for op in operands if not op.as_json}
+
+
+def _shown_as_inserts(diagnostics: list[Diagnostic], inserts: set[str]) -> list[Diagnostic]:
+    """Show each insert reference as written — ``${x|json}``, never ``${x}`` — in a path
+    pass's message, fixes and ``template``: a pasted fix must stay an insert, or embedded
+    code sends it to the tool as JavaScript."""
+    for diagnostic in diagnostics:
+        for raw in inserts:
+            bare, insert = f"${{{raw}}}", f"${{{raw}|json}}"
+            diagnostic.message = diagnostic.message.replace(bare, insert)
+            if diagnostic.suggestions:
+                diagnostic.suggestions = [s.replace(bare, insert) for s in diagnostic.suggestions]
+            if diagnostic.context and diagnostic.context.get("template") == bare:
+                diagnostic.context["template"] = insert
     return diagnostics
 
 
@@ -632,29 +689,277 @@ def _validate_unused_inputs(workflow_ir: dict[str, Any], all_templates: set[str]
     return diagnostics
 
 
+def _validate_embedded_references(
+    workflow_ir: dict[str, Any], references: list[EmbeddedReference], used: set[str]
+) -> list[Diagnostic]:
+    """Bare pflow names and quoted inserts in embedded code (``embedded_references``).
+
+    A bare reference to a workflow input used nowhere else is an ERROR naming ``|json``
+    (it replaces the unused-input report: one mistake, one diagnostic); every other bare
+    reference in a param shares one WARNING (the name may be the author's own JavaScript
+    variable); an insert wrapped in quotes is a WARNING.
+    """
+    used_roots = {TemplateResolver.extract_root_node_id(var) for var in used}
+    nodes = {node.get("id"): node for node in workflow_ir.get("nodes", [])}
+    diagnostics: list[Diagnostic] = []
+    warned: dict[tuple[str, str], list[EmbeddedReference]] = {}
+    errored: set[tuple[str, str, str]] = set()
+    for ref in references:
+        if ref.is_insert:
+            diagnostics.append(_quoted_insert_warning(ref))
+        elif ref.root_kind == "input" and ref.root not in used_roots:
+            if (ref.node_id, ref.param, ref.root) not in errored:
+                errored.add((ref.node_id, ref.param, ref.root))
+                diagnostics.append(_never_inserted_error(ref))
+        else:
+            warned.setdefault((ref.node_id, ref.param), []).append(ref)
+    diagnostics.extend(_bare_reference_warning(refs, nodes.get(refs[0].node_id, {})) for refs in warned.values())
+    return diagnostics
+
+
+_JS_VALUE_PLACE = "where a JavaScript value goes, outside any quotes or `…`"
+
+
+def _insert_fix(ref: EmbeddedReference) -> str:
+    """How to turn ``ref`` into an insert, phrased for where it sits (no leading verb case)."""
+    if ref.whole_value:
+        return f"A program produced by a step is text, not code: run it with eval — {ref.replacement}"
+    if ref.quote:
+        return (
+            f"Replace {ref.written} (the quotes too) with {ref.insert} — the value arrives already quoted: "
+            f"const {ref.name} = {ref.insert};"
+        )
+    return f"Put {ref.insert} {_JS_VALUE_PLACE}: const {ref.name} = {ref.insert};"
+
+
+def _embedded_context(ref: EmbeddedReference, refs: list[EmbeddedReference]) -> dict[str, Any]:
+    return {
+        "category": "template_error",
+        "path": f"nodes[id={ref.node_id}].params.{ref.param}",
+        "embedded_references": [
+            {"reference": r.expression, "root_kind": r.root_kind, "replacement": r.replacement} for r in refs
+        ],
+    }
+
+
+def _never_inserted_error(ref: EmbeddedReference) -> Diagnostic:
+    return Diagnostic(
+        severity=Severity.ERROR,
+        source="validator",
+        title="Template Error",
+        node_id=ref.node_id,
+        message=(
+            f"Input '{ref.root}' is never inserted: its only use, '{ref.expression}' in '{ref.param}', "
+            "is JavaScript text that pflow sends to the MCP tool unchanged."
+        ),
+        suggestions=[_insert_fix(ref)],
+        context=_embedded_context(ref, [ref]),
+    )
+
+
+def _owner_noun(ref: EmbeddedReference) -> str:
+    match ref.root_kind:
+        case "batch_item":
+            return "the batch item"
+        case "batch_index":
+            return "the batch index"
+        case "iteration":
+            return "the loop iteration"
+        case "inputs_key":
+            return f"this step's inputs: key '{ref.root}'"
+        case "step":
+            return f"the output of step '{ref.root}'"
+        case _:
+            return f"workflow input '{ref.root}'"
+
+
+def _and_list(items: list[str], word: str = "and") -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} {word} {items[-1]}"
+
+
+def _bare_reference_warning(refs: list[EmbeddedReference], node: dict[str, Any]) -> Diagnostic:
+    first = refs[0]
+    nouns = list(dict.fromkeys(_owner_noun(ref) for ref in refs))
+    roots = list(dict.fromkeys(f"'{ref.root}'" for ref in refs))
+    expressions = _and_list(list(dict.fromkeys(ref.expression for ref in refs)))
+    spaced = "${ " + first.expression[2:-1] + " }"
+    if len(refs) == 1:
+        message = (
+            f"{expressions} in '{first.param}' is JavaScript: pflow sends it unchanged, so {nouns[0]} is not inserted."
+        )
+        closing = (
+            f"If {roots[0]} here is your JavaScript variable, the code is correct — write {spaced} "
+            "(spaces inside the braces) to clear this warning."
+        )
+    else:
+        message = (
+            f"{expressions} in '{first.param}' are JavaScript: pflow sends them unchanged, "
+            f"so {_and_list(nouns)} {'is' if len(nouns) == 1 else 'are'} not inserted."
+        )
+        closing = (
+            f"If {_and_list(roots, 'or')} here is your JavaScript variable, the code is correct — write it with "
+            f"spaces inside the braces ({spaced}) to clear this warning."
+        )
+    fixes = [
+        _insert_fix(ref) if ref.whole_value else "To insert it, " + _insert_fix(ref)[0].lower() + _insert_fix(ref)[1:]
+        for ref in refs
+    ]
+    return Diagnostic(
+        severity=Severity.WARNING,
+        source="validator",
+        title="Template Warning",
+        node_id=first.node_id,
+        message=message,
+        suggestions=[*fixes, closing],
+        context=_embedded_context(first, refs),
+    )
+
+
+def _quoted_insert_warning(ref: EmbeddedReference) -> Diagnostic:
+    return Diagnostic(
+        severity=Severity.WARNING,
+        source="validator",
+        title="Template Warning",
+        node_id=ref.node_id,
+        message=(
+            f"{ref.written} in '{ref.param}': the insert is already a quoted JavaScript value, "
+            "so these quotes wrap it a second time."
+        ),
+        suggestions=[f"Remove the quotes around it: {ref.insert}"],
+        context=_embedded_context(ref, [ref]),
+    )
+
+
 def _validate_malformed_templates(workflow_ir: dict[str, Any]) -> list[Diagnostic]:
     """The ONE Issue pass: an unescaped ``${`` that opens no valid expression is an
-    ERROR on every template-bearing surface (``iter_template_surfaces``).
+    ERROR on every template-bearing surface (``iter_template_surfaces``), and so is a
+    JSON insert outside embedded code.
 
     One diagnostic per value; a malformed literal operand gets targeted guidance.
     Which Issues are errors on which surface is decided here and only here (the
-    deferred #621 tolerance is policy over Issues, never a parse mode).
+    deferred #621 tolerance is policy over Issues, never a parse mode). Embedded code
+    has no Issues — its surface yields the ``embedded_code`` view — so here it is
+    checked for the inserts that view cannot see.
     """
     diagnostics: list[Diagnostic] = []
     for surface in iter_template_surfaces(workflow_ir):
+        if surface.kind == "output_source" and "${" not in surface.value:
+            # A bare source (`x|json`) resolves as its normalized `${…}` form.
+            if insert := _first_insert(parse(normalize_output_source(surface.value))):
+                diagnostics.append(_misplaced_insert_diagnostic(surface, surface.key, insert, bare=True))
+            continue
         for location, template in surface.templates():
-            if template.issues and location in ("loop.while", "loop.until") and _has_loop_operator(template.source):
-                # `while: ${x > 0}`: the targeted "a condition is not an expression" guidance
-                diagnostics.append(
-                    _make_loop_operator_diagnostic(
-                        str(surface.node_id), location.removeprefix("loop."), template.source
-                    )
-                )
-            elif template.issues:
-                diagnostics.append(_issue_diagnostic(surface.node_id, surface.path(location), template))
-            elif surface.kind == "cache_prose" and template.expressions:
-                diagnostics.append(_cache_prose_reference_diagnostic(surface.path(location), template))
+            if (diagnostic := _template_diagnostic(surface, location, template)) is not None:
+                diagnostics.append(diagnostic)
     return diagnostics
+
+
+def _template_diagnostic(surface: TemplateSurface, location: str, template: Template) -> Diagnostic | None:
+    """The one diagnostic for one value of a surface, if any."""
+    if surface.mode == "embedded":
+        return _unseen_insert_diagnostic(surface, location, parse(template.source))
+    if template.issues and location in ("loop.while", "loop.until") and _has_loop_operator(template.source):
+        # `while: ${x > 0}`: the targeted "a condition is not an expression" guidance
+        return _make_loop_operator_diagnostic(str(surface.node_id), location.removeprefix("loop."), template.source)
+    if template.issues:
+        return _issue_diagnostic(surface.node_id, surface.path(location), template)
+    if insert := _first_insert(template):
+        return _misplaced_insert_diagnostic(surface, location, insert, bare=False)
+    if surface.kind == "cache_prose" and template.expressions:
+        return _cache_prose_reference_diagnostic(surface.path(location), template)
+    return None
+
+
+def _first_insert(template: Template) -> tuple[str, Expression] | None:
+    """``(as written, Expression)`` of the first JSON insert in ``template``."""
+    for expression in template.expressions:
+        if expression.as_json:
+            return template.source[expression.span[0] : expression.span[1]], expression
+    return None
+
+
+def _template_error(node_id: str | None, path: str, message: str, fix: str, template: str) -> Diagnostic:
+    return Diagnostic(
+        severity=Severity.ERROR,
+        source="validator",
+        title="Template Error",
+        node_id=node_id,
+        message=message,
+        suggestions=[fix],
+        context={"category": "template_error", "path": path, "template": template},
+    )
+
+
+def _embedded_places() -> str:
+    """Where a JSON insert is accepted, in ``EMBEDDED_CODE`` order, grouped by param."""
+    tools_by_param: dict[str, list[str]] = {}
+    for tool, param in EMBEDDED_CODE:
+        tools_by_param.setdefault(param, []).append(f"mcp-<server>-{tool}")
+    places = [f"'{param}' of {' or '.join(tools)}" for param, tools in tools_by_param.items()]
+    first_param, first_tools = next(iter(tools_by_param.items()))
+    places[0] = f"the '{first_param}' param of an {' or '.join(first_tools)} step"
+    return ", ".join(places)
+
+
+def _misplaced_insert_diagnostic(
+    surface: TemplateSurface, location: str, insert: tuple[str, Expression], *, bare: bool
+) -> Diagnostic:
+    written, expression = insert
+    body = expression.raw[: expression.raw.rindex("|")].rstrip()  # the expression without `|json`
+    message = f"{written} is accepted only in JavaScript passed to an MCP tool: {_embedded_places()}."
+    fix = (
+        f"Remove '|json': write {body if bare else '${' + body + '}'}. A dict or list is already inserted as JSON text."
+    )
+    return _template_error(surface.node_id, surface.path(location), message, fix, str(surface.value))
+
+
+def _unseen_insert_diagnostic(surface: TemplateSurface, location: str, template: Template) -> Diagnostic | None:
+    """A JSON insert the embedded view cannot see — swallowed by a ``$${…}`` escape or by a
+    JavaScript ``${…}`` — or a near-miss spelling of one: either would reach the tool as text."""
+    path = surface.path(location)
+    for start, end in hidden_inserts(template):
+        insert = template.source[start:end]
+        container = next((seg for seg in template.issues if seg.span[0] < start < seg.span[1]), None)
+        if container is None:
+            inside = "'$${…}'"
+        else:
+            inside = f"another '${{…}}' ('{_balanced(template.source, container.span[0])}')"
+        name = js_value_name(parse(insert).expressions[0])
+        message = (
+            f"{insert} in '{location}' sits inside {inside}, which pflow sends to the MCP tool as written — "
+            "so the value is never inserted."
+        )
+        fix = f"Insert it where a JavaScript value goes, outside any '${{…}}': const {name} = {insert}; — then use {name} in the JavaScript."
+        return _template_error(surface.node_id, path, message, fix, template.source)
+    for issue in template.issues:
+        if (meant := near_miss_insert(issue)) is not None:
+            message = (
+                f"'{issue.raw}' in '{location}' is not a pflow insert ({_near_miss_reason(issue)}), "
+                "so it would be sent to the MCP tool as JavaScript, unchanged."
+            )
+            return _template_error(surface.node_id, path, message, f"Write {meant}", template.source)
+    return None
+
+
+def _balanced(text: str, start: int) -> str:
+    """The brace-balanced ``${…}`` opening at ``start`` (through the end if unclosed)."""
+    depth = 0
+    for index in range(start + 1, len(text)):
+        depth += (text[index] == "{") - (text[index] == "}")
+        if depth == 0:
+            return text[start : index + 1]
+    return text[start:]
+
+
+def _near_miss_reason(issue: Issue) -> str:
+    inner = issue.raw[2:-1]
+    word = inner.rpartition("|")[2].strip()
+    reasons = [
+        *(["a space after '${'"] if inner[:1].isspace() else []),
+        *(["a space before '}'"] if inner[-1:].isspace() else []),
+        *([f"'{word}' must be lower-case"] if word != word.lower() else []),
+    ]
+    return ", ".join(reasons)
 
 
 def _issue_diagnostic(node_id: str | None, path: str, template: Template) -> Diagnostic:

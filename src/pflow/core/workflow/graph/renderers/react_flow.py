@@ -32,7 +32,7 @@ from pflow.core.workflow.graph.model import (
     NodeId,
 )
 from pflow.core.workflow.graph.scope import source_refs_in
-from pflow.core.workflow.template_surfaces import param_mode
+from pflow.core.workflow.template_surfaces import ParamMode, param_mode
 
 
 @dataclass(frozen=True)
@@ -56,6 +56,7 @@ class RFParam:
     value: Any
     is_dynamic: bool
     source: dict[str, Any] | None
+    mode: ParamMode  # how pflow reads the value's `${…}` (`template_surfaces.param_mode`)
 
 
 @dataclass(frozen=True)
@@ -306,11 +307,13 @@ class _ReactFlowRenderer:
 
     def _param(self, node: Node, name: str, value: Any) -> RFParam:
         source = node.param_sources.get(name)
+        mode = param_mode(node.kind, name)
         return RFParam(
             name=name,
             value=value,
-            is_dynamic=param_mode(node.kind, name) != "body" and _param_is_dynamic(value),
+            is_dynamic=_param_is_dynamic(value, mode),
             source=asdict(source) if source is not None else None,
+            mode=mode,
         )
 
     def _resolve_edges(self) -> list[RFEdge]:
@@ -471,7 +474,7 @@ def _container_level_path(container: Container) -> tuple[AncestorStep, ...]:
     return ()
 
 
-def _param_is_dynamic(value: Any) -> bool:
+def _param_is_dynamic(value: Any, mode: ParamMode) -> bool:
     """Whether an authored param value carries a runtime template ref.
 
     Runs the shared ``source_refs_in`` extractor over the value's string leaves
@@ -479,9 +482,12 @@ def _param_is_dynamic(value: Any) -> bool:
     ``_params_strings`` so this can never disagree with the DATA_FLOW edges:
     ``is_dynamic=True`` ⟺ a DATA_FLOW edge exists for this param's refs). Using
     the extractor rather than a raw ``${`` substring check means literal
-    operands like ``${5}`` correctly read as NOT dynamic.
+    operands like ``${5}`` correctly read as NOT dynamic. A code body is never dynamic;
+    embedded code only through a JSON insert.
     """
-    return any(source_refs_in(leaf) for leaf in _string_leaves(value))
+    if mode == "body":
+        return False
+    return any(source_refs_in(leaf, embedded=mode == "embedded") for leaf in _string_leaves(value))
 
 
 def _string_leaves(value: Any) -> list[str]:

@@ -53,7 +53,7 @@ Dispatch a synthetic mouseover on the named row, then count marks/halos.
 - result_format: json_block
 - function: |
     async () => {
-      const name = "${row_name}";
+      const name = ${row_name|json};
       const rows = [...document.querySelectorAll(".io-row, .param-row")];
       const el = rows.find((r) => (r.textContent || "").startsWith(name));
       if (!el) {

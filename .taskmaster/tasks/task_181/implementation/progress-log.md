@@ -128,3 +128,90 @@
   - D2 table an ordered tuple; `types.ts` `mode?: ParamMode` (PD may tighten); output-source bare branch through `normalize_output_source` — accepted.
 - **Phase-order change (importance 1):** PE's "four sites and their caveats" block (`click.pflow.md`, `hover.pflow.md`, the screenshot SKILL.md caveat + `make sync-claude-assets`) moves to the end of PC: once PB lands those workflows fail validation, and PD's screenshot driving uses them. The rest of PE stays in PE.
 - Next: resume I1 on PB → PC (+ the four sites); D7 also covers `batch_item_validation.py:126` (I1's own note).
+
+## [2026-10-11 14:10] implementer I1 — PB embedded code: classification, validator policy, graph/canvas, Pass 6, registry_run
+- Did: D2 (`param_mode` → `"embedded"` by tool-name suffix + param), D3 surface consumer (`TemplateSurface.mode`; `templates()` yields the `embedded_code` view), D4 validator half (misplaced insert = §5 ERROR on every non-embedded surface, bare output sources through the normalizer, log line `Found N template error(s)`), D5 (§7a hidden / §7b near-miss ERRORs on embedded surfaces), D6 (`data_flow.embedded_references` detector + `_validate_embedded_references` consumer: §4a ERROR per (param, input) instead of unused-input, §4b/§4c one WARNING per param, §4d WARNING), D8 (`refs_with_path_in`/`source_refs_in(…, embedded=)`, `_add_ref_edges(embedded=)` per top-level param, `RFParam.mode`, `_param_is_dynamic(value, mode)`, Pass 6 skip), D9's `registry_run` bullet; regenerated the four React Flow contract fixtures.
+- Changed: `core/workflow/template_surfaces.py`, `core/workflow/data_flow.py` (detector; `_BATCH_INDEX_OWNER`/`_ITERATION_OWNER` constants promoted from 118's literals so root kinds map by constant), `core/workflow/validator.py` (bare output-source roots), `core/workflow/graph/{scope,build}.py`, `graph/renderers/react_flow.py`, `runtime/template_validation/{validator,type_validation}.py`, `mcp_server/services/execution_service.py`, `web/src/types.ts` (`ParamMode`, `mode?`), `web/src/test/fixtures/contracts/*.json` (regenerated — 52× `"mode": "template"`, 18× `"mode": "body"`, trailing commas; nothing else). New tests: `tests/test_integration/test_embedded_code_consumers.py` (classification rows + one row per consumer through its own entry, each with an insert presence half), `tests/test_integration/test_embedded_code_diagnostics.py` (§4/§5/§7 through `WorkflowValidator.validate`, and the CLI for §4a/§4b and the cache var); new helper `tests/shared/mcp_tool.py` (registers `mcp-<server>-<tool>` like `mcp sync` does; stubs only `MCPConnectionPool.call_tool` / `MCPNode._exec_async` / `_load_server_config`).
+- Verified: `make check` rc 0; `make test` 10867 passed + 1 xfailed (baseline 10813 after PA); web `tsc` rc 0, vitest 845 passed. Every checkpoint probe reproduces its AFTER verbatim through `uv run pflow --validate-only` (§2 p1 valid; §3/§4a p2, p5; §5 p3; §4b p7; §3 p8 valid; §7a p12); §7a-JS, §7b, §4c, §4d, the plural 4b and Q2's per-input ERRORs reproduce through the tests. **Mutation ledger** (byte-copy restore, counted failures, over the two new files + the contract-fixture drift test): M1 `templates()` drops the view → 10 red (§4a rows, data_flow/pass_5/pass_8/issue_pass consumer rows); M2 `_add_ref_edges` drops the flag → 1 (graph_build row); M3 Pass 6 skip dropped → 1 (pass_6 row); M4 canvas ignores embedded → 1 (canvas row); M5 bare roots not added to the unused-input union → 5 (every §4a row: "instead of" lost); M6 no misplaced-insert check → 6; M7 bare output source not normalized in the Issue pass → 1; M8 output-source roots lexical again → 2; M9 no hidden-insert check → 2; M10 no near-miss check → 3; M11 quoted insert undetected → 1; M12 step scope ignored → 3; M13 declared `const` name ignored → 2; M14 `param_mode` never embedded → 32. | Assumed: the `registry_run` row's runtime leg — phase-gated `xfail(strict=True, raises=AssertionError)` until PC (its run reaches template resolution, which PC wires); its PB-observable half was executed: the run's error names `${a}` and `${PFLOW_TEST_X}` unexpanded, with no "Missing environment variable".
+- Deviations/surprises:
+  - **Rulings applied as ruled (12:00):** Q1 §4d text; Q2 one §4a ERROR per (param, input); Q3 nouns + `root_kind` ids; Q4 plural head/closing; Q5 `const` name (author's declared name, else last field/root, `-`→`_`); Q6 eval fix for a whole-value input, bare output-source head/fix; D2 ordered tuple; `mode?`; bare output-source roots through the normalizer.
+  - **The table is public `EMBEDDED_CODE`, not `_EMBEDDED_CODE`:** the validator renders the §5 list from it. PE's searcher-doc line should name `template_surfaces.EMBEDDED_CODE`.
+  - **§4b on a QUOTED bare reference** (not enumerated by the checkpoint): its `→` composes the ruled quote-aware fix — `To insert it, replace '${x}' (the quotes too) with ${x|json} — the value arrives already quoted: const …`. Plan D6 requires the fix to be quote-correct; no new phrasing beyond the ruled pieces.
+  - **Warnings render on stderr** (the CLI's convention; the checkpoint's AFTER blocks were captured `2>&1`). The CLI test asserts stdout `✓ Workflow is valid` and the warning block on stderr.
+  - **`_validate_malformed_templates` hit C901**, so its per-value branch moved to `_template_diagnostic` (one diagnostic per value, unchanged behaviour).
+  - **Bare coalesce output sources** (`source: x ?? s.stdout`) no longer get the false "non-existent source 'x ?? s'" (D4's routing; pinned by `test_a_bare_coalesce_output_source_names_real_roots`).
+  - **§6 / D7 is still PC:** p6's suggestion line reads `${nod.result}` (no `|json`) until PC's validator sites (`data_flow.py` did-you-mean, `path_validation.py`, and the `batch_item_validation.py:126` note) land.
+  - The screenshot workflows now fail validation as predicted (§4a) — converted at the end of PC per the 12:00 phase-order change.
+- Self-checks: fully happy with one doubt resolved — I first asserted the 4b CLI warning on stdout (the probe captures merged streams); fixed to stderr after reading the real split. test-reflect: not directed for PB (the plan assigns PB the mutation ledger) — the ledger above kills every site; each absence row has a presence pair in the same medium (consumer rows' insert halves; `test_a_batch_alias_is_in_scope_only_on_the_batched_step`; §7 "embedded-only" vs the embedded rows; 4a presence `test_4a_presence_pair…`).
+- Next: PC (engine wiring D9, D7 rebuilt fixes incl. `batch_item_validation.py:126`, `trace_report`, parity corpus D11, real chrome-devtools run), then the four screenshot sites.
+
+## [2026-10-11 16:40] implementer I1 — PC runtime + diagnostics (engine contact), and the four screenshot sites
+- Did:
+  - **D9 runtime:** `split_params` makes an embedded param a template param only when `has_templates(value, embedded=True)`. Otherwise it is static, so `$${` and JavaScript's own `${…}` stay intact. `resolve_templates` gets an embedded branch: `resolve(template, context, embedded=True)`, `is_simple_template = False`.
+  - **D7 runtime:** `classify_unresolved_references` marks an insert's outer operands `as_json` and keeps `coalesce_expr` without the suffix. A new `diagnostic_render.written_reference(ref, text)` renders every rebuilt `${…}` and the error summary line. It is used for the header, coalesce, did-you-mean, peer-fix and all-unavailable lines.
+  - **D7 validator:** `TemplateOperand.as_json`. `_shown_as_inserts` shows insert-only references as `${x|json}` in Pass 5 (path) and Pass 8 (batch item) diagnostics; this covers `batch_item_validation.py:126` and §6's Error 2. Data flow's mis-cased-input did-you-mean takes `as_json`.
+  - **D9 `trace_report`:** reads paths through `TemplateResolver.extract_variables` (the grammar).
+  - **D11:** an `embedded_code` parity surface, 12 `EMBEDDED_ROWS` and 8 `MISPLACED_INSERT_ROWS` (D4's table), built by the preferred route. The corpus sink is registered as `mcp-corpus-evaluate_script`, server `corpus` is added through `MCPServerManager`, and the sink records `function`. The end-to-end leg runs every `Ok` row with no MCP server.
+  - **Docs:** `runtime/engine/CLAUDE.md` Parameters.
+  - **The four sites (moved here by the 12:00 ruling):**
+    - `click.pflow.md`: three inserts, and its caveat removed;
+    - `hover.pflow.md`: one insert;
+    - the screenshot `SKILL.md` caveat removed, then `make sync-claude-assets` (`.agents/` mirror updated).
+- Changed:
+  - `src/pflow/runtime/engine/{template_resolution,template_errors}.py`, `runtime/engine/CLAUDE.md`;
+  - `src/pflow/core/{diagnostic_render,trace_report,templates}.py`: `templates.py` loses `TemplateResolver.TEMPLATE_EXTRACT_PATTERN` (see deviations);
+  - `src/pflow/core/workflow/data_flow.py` (did-you-mean `as_json`);
+  - `src/pflow/runtime/template_validation/{operands,validator}.py`;
+  - `tests/test_integration/test_template_parity.py`, `tests/fixtures/template_corpus/nodes/producer.py` (sink records `function`);
+  - new `tests/test_runtime/test_embedded_code_runtime.py`; tests added to `test_embedded_code_diagnostics.py` (§6 CLI, did-you-mean, Pass 8 ×2) and `test_core/test_trace_report.py` (one);
+  - deleted `tests/test_runtime/test_template_extract_pattern.py` (deletion unstaged — the orchestrator commits);
+  - the screenshot example workflows, `.claude/skills/screenshot-pflow-web-ui/SKILL.md` + `.agents/` mirror.
+- Verified:
+  - **Gates:** `make check` rc 0. `make test` 10909 passed (PB 10867 + 1 xfail; +54 new, −12 for the deleted pattern file; the PB xfail is removed and the `registry_run` row now passes). Web vitest 845 passed, tsc rc 0. The parity corpus is 397/397.
+  - **Real surface (chrome-devtools, executed):** `uv run pflow <scratch>/probes/real-run.pflow.md title="Don't Stop" flag=true`. The steps are new_page (`data:` URL) → page id → evaluate_script `() => ({t: ${title|json}, on: ${flag|json}, lit: \`${1 + 1}\`, d: \`$${5}\`})` → close_page.
+    - Output: `{"t": "Don't Stop", "on": true, "lit": "2", "d": "$5"}` — exactly the plan's expectation.
+    - The trace's `template_resolutions.function` is `{"template": "() => ({t: ${title|json}, on: ${flag|json}, lit: \`${1 + 1}\`, d: \`$${5}\`})", "resolved": "() => ({t: \"Don't Stop\", on: true, lit: \`${1 + 1}\`, d: \`$${5}\`})"}`.
+  - **All seven screenshot workflows** (`click`, `hover`, `inspect`, `live-reload`, `screenshot`, `visual-invariants`, `shared/open-and-settle`) print `✓ Workflow is valid` under `uv run pflow --validate-only`, with no warnings. No "single-quoted JS" / "double quotes inside" caveat text remains in `examples/ .claude/ .agents/ docs/ src/pflow/guide/`. The click/hover real runs need the `pflow ui` slot and stay PE's.
+  - **§6 reproduces verbatim** through the CLI (Error 2 now `${nod.result|json}`).
+  - **Mutation ledger** (byte-copy restore, counted failures over the five affected test files):
+    - R1 `split_params` ignores embedded → 4 red (3 parity runtime rows + `test_bare_javascript_routes_static…`);
+    - R2 the embedded branch of `resolve_templates` dropped → 13;
+    - R3 `written_reference` ignores `as_json` → 4;
+    - R4 classify drops `as_json` → 4;
+    - R5 `coalesce_expr` keeps the suffix → 1 (the chain test);
+    - R6 validator inserts shown bare → 3 (§6, Pass 8 ×2);
+    - R7 data-flow suffix dropped → 1;
+    - R8 `registry_run` expands embedded code → 1 (the `mcp_expansion` row);
+    - R9 `trace_report` reads the raw expression text → 1;
+    - R10 `TemplateOperand` never `as_json` → 3.
+  - | Assumed: nothing beyond the bullets below.
+- Deviations/surprises:
+  - **D11's `${ghost.x|json}` row:** the plan expected `Raises (compile data flow)`; the code gives `Unresolved`. The compiler's data-flow pass runs with `check_inputs=False` and returns `None` for an unknown root ("could be a runtime param"), so a run that skipped validation reports the miss. The row is `Unresolved(("${ghost.x|json}",), forbid=("${ghost.x}",))`. The validator half (`Error`) is as planned. A bare template param behaves the same way today.
+  - **D7 mechanism (validator half):** the plan says "the validator sites read `as_json` from the Expression they already hold". They do not: Pass 5 and Pass 8 work on reference strings through ~10 functions. So `as_json` is marked once at its source (`operands._operands`) and applied once per pass (`validator._shown_as_inserts`). The fix replaces exact `${raw}` text in the message, suggestions and `context.template`.
+    - Limitation: a suggestion that rebuilds a different path (`for example ${nod.output_key}`, an available-fields list) is not suffixed.
+    - Runtime fixes use the structured `as_json` key and are all suffixed.
+  - **`unresolved_references[]` gains `"as_json": true`, present only when true** (additive to CLI/MCP JSON; documented in `classify_unresolved_references`). This keeps every existing ref-dict assertion unchanged.
+  - **Deleted `TemplateResolver.TEMPLATE_EXTRACT_PATTERN` and its test file.** The plan said "unchanged", but `trace_report` was its last consumer. The deletion test applies (no caller left) and the facade has no external users. `tests/test_runtime/test_template_extract_pattern.py` pinned only the regex.
+  - **Not testable here:**
+    - PC-4's "`inject_none_for_optional_inputs` leaves embedded params alone": `optional_input_keys` exist only for code nodes (`compiler.py:347`, from Python annotations), so an MCP step never has any.
+    - PC-7's "on a miss, `cause` names the insert": `--dry-run` validates first, and every insert miss is a validation error (validated: `WorkflowValidationError` on `${ghost.x|json}`).
+    - The dry-run test asserts the planner resolves an embedded step with no template error (R2 kills it).
+  - **For Task 120's P0 — where the `embedded` flag is consulted.** Unchanged since PA:
+    - `core/templates.resolve`: picks `embedded_code(parse(value))` for a string leaf and passes the flag down the dict/list recursion;
+    - `core/templates._resolve_string`: one guard, `segment.as_json and not embedded`;
+    - `TemplateResolver.has_templates`.
+    - PC adds one caller-side decision in `runtime/engine/template_resolution.py`: `split_params` and `resolve_templates`, both keyed on `param_mode(node_type, key) == "embedded"`. 120's leaf-policy carrier would subsume the bool at those two calls.
+  - **Trace format unchanged** (D12): `template_resolutions` already carries `{template, resolved}`, as the real run shows.
+- Self-checks: fully happy, with these doubts resolved:
+  - (a) Does the dry-run test discriminate? R1 does not kill it — legitimately, because a bare `${a}` is Text in the view either way. R2 does kill it, and R1 is caught by three other rows. Kept.
+  - (b) Did the e2e leg really run through an `mcp-` type? Yes: the `StaticLiteral` e2e assertion compares the sink's received `function` with the template, and the compile path requires the `corpus` server (executed: without `add_server`, compile fails "MCP server not found for node type: mcp-corpus-evaluate_script").
+  - (c) `_shown_as_inserts` mutates freshly built diagnostics in place, before dedup. That is safe, but it is a string rewrite; the docstring names the limit.
+  - test-reflect (directed): every new PC test is killed by at least one of R1–R10 or by PA's M1/M2/M8. Nothing was deleted. Deepened: the ghost row's `forbid=("${ghost.x}",)` and the coalesce test's `"|json ??" not in message` (each paired with an exact positive assertion in the same message). The `registry_run` row lost its phase gate and is killed by R8.
+- Post-handback "fully happy?" (orchestrator-directed): `_shown_as_inserts` weighed against the simplicity lens and **kept**.
+  - The cleaner shape — the operand carrying its rendered form — is not a contained change. Pass 5 takes bare reference strings and renders them in 13 `${template}`/`${base_var}` f-strings (counted) across its builders in `path_validation.py`, which also use the same string for `parse_path` logic. Pass 8's builders take `ref.raw` too. Threading a display form means rewriting those signatures for a display-only concern.
+  - The rewrite is what stays local: one function, applied at the two call sites, limited to references written only as inserts (so it cannot misrender a bare use), and killed by R6/R10.
+  - Recorded as a candidate for the mid-task review's simplicity read. No code change.
+- Next: hand back for the mid-task review (plan §4 PC: validation-consistency, impact-completeness, silent-failures, feature-interactions). PD waits on it. PE keeps:
+  - the guide, docs, `mcp describe` / context-builder snippets and instruction files;
+  - the searcher-doc line, which should name `template_surfaces.EMBEDDED_CODE`;
+  - the click/hover real runs.

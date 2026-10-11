@@ -8,7 +8,7 @@ from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.templates import TemplateResolver, is_type_compatible
-from pflow.core.workflow.template_surfaces import template_params
+from pflow.core.workflow.template_surfaces import param_mode, template_params
 from pflow.registry import Registry
 from pflow.runtime.template_validation.type_checker import get_parameter_type, infer_template_type
 
@@ -37,6 +37,8 @@ def validate_template_types(
         node_id = node.get("id")
 
         for param_name, param_value in template_params(node).items():
+            if param_mode(node_type, param_name) == "embedded":
+                continue  # embedded code is always text: an insert's source type is irrelevant
             expected_type = get_parameter_type(node_type, param_name, registry)
             _check_param_type(param_name, param_value, expected_type, node_id, workflow_ir, node_outputs, diagnostics)
 

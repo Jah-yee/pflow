@@ -11,7 +11,7 @@ import logging
 import tokenize
 from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from pflow.core.cache_ttl import (
     build_unsupported_cache_ttl_diagnostic,
@@ -274,8 +274,11 @@ def _validate_template_reference(
     loop_forward_limits: dict[str, int],
     loop_node_ids: set[str],
     check_inputs: bool,
+    *,
+    as_json: bool = False,
 ) -> Diagnostic | None:
-    """Validate a single template reference.
+    """Validate a single template reference (``as_json``: the value of a JSON insert,
+    so a suggested reference keeps ``|json``).
 
     Args:
         ref: A parsed Reference's source text (e.g., "node1.output", "input_param",
@@ -351,6 +354,7 @@ def _validate_template_reference(
         return None
     if ref not in declared_inputs:
         close_matches = [inp for inp in declared_inputs if inp.lower() == ref.lower()]
+        suffix = "|json" if as_json else ""
         if close_matches:
             return Diagnostic(
                 severity=Severity.ERROR,
@@ -358,12 +362,12 @@ def _validate_template_reference(
                 title="Validation Error",
                 node_id=node_id,
                 message=f"Node '{node_id}' references undefined input '${{{ref}}}' in parameter '{param_name}'.",
-                suggestions=[f"Did you mean '${{{close_matches[0]}}}'?"],
+                suggestions=[f"Did you mean '${{{close_matches[0]}{suffix}}}'?"],
                 context={
                     "category": "validation",
                     "path": f"nodes[id={node_id}].params.{param_name}",
                     "template": f"${{{ref}}}",
-                    "similar_names": [f"${{{match}}}" for match in close_matches[:3]],
+                    "similar_names": [f"${{{match}{suffix}}}" for match in close_matches[:3]],
                 },
             )
         if not declared_inputs:
@@ -808,6 +812,7 @@ def _validate_node_params(
         # ``location`` names the value in diagnostics: ``headers.Authorization``,
         # ``commands[1]``, ``batch.items``, ``loop.while``
         for location, template in surface.templates():
+            inserted = {op for e in template.expressions if e.as_json for op in e.operands}
             for ref in _checked_references(surface.kind, template):
                 error = _validate_template_reference(
                     ref.raw,
@@ -820,6 +825,7 @@ def _validate_node_params(
                     loop_forward_limits,
                     loop_node_ids,
                     check_inputs,
+                    as_json=ref in inserted,
                 )
                 if error:
                     errors.append(error)
@@ -847,6 +853,8 @@ def _checked_references(kind: str, template: Template) -> tuple[Reference, ...]:
 
 _INPUTS_KEY_OWNER = "a key of this step's inputs:"
 _BATCH_ITEM_OWNER = "this step's batch item"
+_BATCH_INDEX_OWNER = "this step's batch index"
+_ITERATION_OWNER = "this step's loop iteration"
 _SHELL_IS_PLAIN = "A shell command is plain sh: pflow never fills in ${…} there."
 _CODE_IS_PLAIN = "A code step's code is plain Python: pflow never fills in ${…} there."
 _KEEP_FOREIGN = "If the text belongs to another program inside the command, leave it."
@@ -887,9 +895,9 @@ def step_scope(workflow_ir: dict[str, Any], node: dict[str, Any]) -> StepScope:
     if isinstance(batch, dict):
         alias = batch.get("as")
         names[alias if isinstance(alias, str) and alias else "item"] = _BATCH_ITEM_OWNER
-        names["__index__"] = "this step's batch index"
+        names["__index__"] = _BATCH_INDEX_OWNER
     if isinstance(node.get("loop"), dict):
-        names["__iteration__"] = "this step's loop iteration"
+        names["__iteration__"] = _ITERATION_OWNER
     nodes = workflow_ir.get("nodes", [])
     step_ids = frozenset(other["id"] for other in nodes if isinstance(other, dict) and isinstance(other.get("id"), str))
     return StepScope(names, step_ids)
@@ -1451,6 +1459,133 @@ def _foreign_shape_warning(node: dict[str, Any], param: str, text: str, scope: S
         fix = f'To use a pflow value, bind it in env: and read "$NAME". {_KEEP_FOREIGN}'
     location = _location(node, param, text.count("\n", 0, start))
     return [_body_diagnostic(Severity.WARNING, node, param, location, message, [fix])]
+
+
+# ------------------------------------------------------------------------------
+# Embedded code: JavaScript an MCP tool runs (``template_surfaces.param_mode`` →
+# ``"embedded"``). A bare ${…} there is JavaScript, sent as written; the template
+# validator reports the ones that name a pflow value, and inserts left inside quotes.
+# ------------------------------------------------------------------------------
+
+EmbeddedRootKind = Literal["input", "inputs_key", "batch_item", "batch_index", "iteration", "step"]
+_OWNER_KINDS: dict[str, EmbeddedRootKind] = {
+    _INPUTS_KEY_OWNER: "inputs_key",
+    _BATCH_ITEM_OWNER: "batch_item",
+    _BATCH_INDEX_OWNER: "batch_index",
+    _ITERATION_OWNER: "iteration",
+}
+_QUOTES = ("'", '"')
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddedReference:
+    """A ``${…}`` in embedded code that pflow reports: a bare reference whose root is in the
+    step's scope (``step_scope``), or a JSON insert wrapped in matching quotes."""
+
+    node_id: str
+    param: str  # the param's location (``function``)
+    expression: str  # as written, without its quotes: ``${selector}``, ``${selector|json}``
+    root: str  # the in-scope root a bare reference names ("" for an insert)
+    root_kind: EmbeddedRootKind | None  # None for an insert
+    is_insert: bool  # a quoted JSON insert, not a bare reference
+    quote: str | None  # the matching quote around it, if any
+    whole_value: bool  # the param's whole value is this ``${…}``
+    name: str  # the JavaScript name a fix's example declares
+
+    @property
+    def written(self) -> str:
+        """As written, quotes included."""
+        quote = self.quote or ""
+        return f"{quote}{self.expression}{quote}"
+
+    @property
+    def insert(self) -> str:
+        """The JSON insert that carries this value: ``${selector|json}``."""
+        return self.expression if self.is_insert else f"{self.expression[:-1]}|json}}"
+
+    @property
+    def replacement(self) -> str:
+        """The paste-able fix: the insert, or for a whole-value program the ``eval`` form."""
+        if self.whole_value and not self.is_insert:
+            return f"() => eval({self.insert})()"
+        return self.insert
+
+
+def embedded_references(workflow_ir: dict[str, Any]) -> list[EmbeddedReference]:
+    """Every reported ``${…}`` in the workflow's embedded code, in IR then source order. A bare
+    Expression counts when any of its references (dependency view) is in the step's scope —
+    never an Issue (``${a + b}`` is ordinary JavaScript) or a JSON insert."""
+    found: list[EmbeddedReference] = []
+    for node in workflow_ir.get("nodes", []):
+        if not isinstance(node, dict) or not isinstance(node.get("id"), str):
+            continue
+        scope: StepScope | None = None
+        for surface in iter_node_surfaces(node):
+            if surface.mode != "embedded":
+                continue
+            scope = scope or step_scope(workflow_ir, node)
+            whole = surface.value.strip() if isinstance(surface.value, str) else None
+            for location, view in surface.templates():
+                found.extend(_embedded_reports(node["id"], location, view.source, scope, whole))
+    return found
+
+
+def _embedded_reports(
+    node_id: str, param: str, text: str, scope: StepScope, whole: str | None
+) -> Iterator[EmbeddedReference]:
+    for expression in parse(text).expressions:
+        start, end = expression.span
+        before, after = text[start - 1 : start], text[end : end + 1]
+        quote = before if before in _QUOTES and before == after else None
+        root, root_kind = "", None
+        if not expression.as_json:
+            owned = next((ref.root for ref in expression.references if _owner(scope, ref)), None)
+            if owned is None:
+                continue
+            root, root_kind = owned, _root_kind(scope, owned)
+        elif quote is None:
+            continue
+        span = (start - 1, end + 1) if quote else (start, end)
+        yield EmbeddedReference(
+            node_id=node_id,
+            param=param,
+            expression=text[start:end],
+            root=root,
+            root_kind=root_kind,
+            is_insert=expression.as_json,
+            quote=quote,
+            whole_value=whole == text[start:end],
+            name=_declared_name(text, *span) or js_value_name(expression),
+        )
+
+
+def _root_kind(scope: StepScope, root: str) -> EmbeddedRootKind:
+    if root not in scope.names:
+        return "step"  # step ids are in scope only with a path, never in ``names``
+    return _OWNER_KINDS.get(scope.names[root], "input")
+
+
+def _declared_name(text: str, start: int, end: int) -> str | None:
+    """``sel`` when ``text[start:end]`` is the whole right-hand side of ``const sel = …``
+    (``let`` / ``var`` too) — the author's own name for the value."""
+    before, after = text[:start].rstrip(" \t"), text[end:].lstrip(" \t")
+    if not before.endswith("=") or after[:1] not in ("", ";", ",", "\n"):
+        return None
+    words = before[:-1].split()
+    if len(words) >= 2 and words[-2] in ("const", "let", "var") and words[-1].isidentifier():
+        return words[-1]
+    return None
+
+
+def js_value_name(expression: Expression) -> str:
+    """A JavaScript name for an expression's value in a fix's example: its first reference's
+    last field, else its root (``user.name`` → ``name``); ``value`` for a literal."""
+    ref = next((op for op in expression.operands if isinstance(op, Reference)), None)
+    if ref is None:
+        return "value"
+    fields = [seg.name for seg in ref.path if isinstance(seg, Field)]
+    name = (fields[-1] if fields else ref.root).replace("-", "_")
+    return name if name.isidentifier() else "value"
 
 
 # ------------------------------------------------------------------------------
