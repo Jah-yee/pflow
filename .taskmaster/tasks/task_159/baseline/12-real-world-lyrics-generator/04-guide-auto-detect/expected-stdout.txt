@@ -38,7 +38,7 @@ Current item: `${item}` (or custom `as`). Index: `${__index__}` (0-based). Resul
 **Options**:
 | Field | Default | Notes |
 |-------|---------|-------|
-| `items` | required | Template reference OR inline array (must resolve to JSON array, not newline-separated string) |
+| `items` | required | A declared `array` input, an upstream list or JSON-array text, OR an inline array (not a newline-separated string; a `- type: string` input is a validation error) |
 | `as` | `"item"` | Custom name: `"file"` → `${file}` |
 | `parallel` | `false` | Concurrent execution |
 | `max_concurrent` | `10` | 1-100; use 30-50 for LLM APIs (rate limits) |
@@ -436,7 +436,7 @@ result: dict = {
 - The `python code` block is plain Python — pflow never fills in `${…}` there. Values arrive only through `- inputs:`, each key bound as a Python variable. A `${…}` in a string that names a pflow value this step could read (`"${name}".upper()`) fails validation; `f"${total}"` is a dollar sign followed by Python's own interpolation
 - All inputs and `result` MUST have type annotations: `data: list`, `result: dict = ...`
 - Bare vs valued annotations: a top-level **bare** `name: type` (no value) is read as an input declaration and needs a matching `inputs:` entry. An annotated assignment `name: type = value` is a local — so type your intermediates freely (`total: int = sum(...)`). `result`/`next` are the declared output/routing.
-- Upstream JSON is auto-parsed before your code runs — if source is JSON, declare `dict`/`list` not `str`
+- Upstream JSON object/array text is parsed before your code runs — declare `dict`/`list` to get the structure; a `str` annotation (or `str | None`) receives the text as is. A workflow input declared with a type other than `any` arrives as that type, never parsed
 - Use `Any` as the type when you don't want type validation (see syntax table below — auto-injected, no import needed)
 - Single output via `result` variable — use dict for structured output
 - `${node.stdout}`/`${node.stderr}` hold what the code itself prints (per batch item); prints from threads the code starts (`threading.Thread`, `ThreadPoolExecutor`, `run_in_executor`) are not captured and go to pflow's stderr — return thread output through `result`. Never use `contextlib.redirect_stdout` (process-wide; misroutes parallel batch output)
@@ -483,6 +483,10 @@ interface for standard nodes and from the code-block `result:` annotation for
 upstream code nodes (including batch code nodes — enrichment flows through
 `results[0].result` access paths). Use `Any` when you want to accept any
 upstream type deliberately.
+
+A workflow input declared `- type: string` bound to a `dict`/`list` annotation is
+the same error: a declared input is never JSON-parsed. Declare it `- type: object`
+(or `array`), or annotate `str` to receive the text.
 
 ### Type annotation syntax
 
@@ -1683,9 +1687,9 @@ curl -s "https://api.example.com/$ENDPOINT?limit=$LIMIT"
 A `${…}` in the command that names a pflow value this step could read — a workflow input, a step output such as `${fetch.stdout}`, the batch `${item}`, an `inputs:` key — fails validation with the `env:` line to add. So does `$${`.
 
 - **Names**: UPPER_SNAKE, chosen for the content (`ISSUE_BODY`, not `X`) — letters, digits and underscores, not starting with a digit. Write `${ISSUE_BODY}` only where a letter, digit or `_` follows the name. Names the shell itself relies on (`PATH`, `HOME`, `IFS`, …) get a validation warning. On Windows, Git Bash imports Windows path variables such as `PATH` and `TEMP` upper-cased, with their values converted to POSIX paths — use another name for data.
-- **Every value binds as text** — exactly the text `${x}` produces inside a string: a number `3`, a boolean `True`/`False`, null empty, an object or array as JSON (`{"a": 1}`). A string bound directly (`DATA: ${fetch.stdout}`) arrives unchanged, JSON-looking or not; a value that first passes through an `inputs:` map (the step's own, a loop carry, a sub-workflow's inputs) is JSON-parsed there and re-serialized (`{"a":1}` → `{"a": 1}`), and a `key=value` given on the command line is typed first (`007` → `7`) — bind directly in `env:` when the bytes matter. Literal YAML values follow the same rule: `DEBUG: true` binds `True`, `VERSION: 1.10` binds `1.1`, `MODE: 0755` binds `493` — quote a value whose exact text matters (`VERSION: "1.10"`).
+- **Every value binds as text** — exactly the text `${x}` produces inside a string: a number `3`, a boolean `True`/`False`, null empty, an object or array as JSON (`{"a": 1}`). A string bound directly (`DATA: ${fetch.stdout}`) arrives unchanged, JSON-looking or not; a step output that first passes through an `inputs:` map (the step's own, or a loop carry) is JSON-parsed there and re-serialized (`{"a":1}` → `{"a": 1}`) — bind directly in `env:` when the bytes matter. A workflow input typed other than `any` is never re-parsed: a `- type: string` input arrives byte for byte (`02134` stays `02134`), an `integer` given `007` binds `7`. Literal YAML values follow the same rule: `DEBUG: true` binds `True`, `VERSION: 1.10` binds `1.1`, `MODE: 0755` binds `493` — quote a value whose exact text matters (`VERSION: "1.10"`).
 - **Large values go through `stdin:`**: the operating system limits the environment — on macOS about 1 MB for the arguments and the whole environment together; on Linux at most 128 KiB for one value (on Windows a 200 KB value binds). A value over the limit, or one containing a NUL byte, fails before the command starts. `- stdin: ${fetch.response}` pipes a value of any size or shape to the command (`jq`, `wc`, `cat`); objects and arrays arrive as JSON. A `stdin:` value with invalid Unicode (a surrogate UTF-8 cannot encode) also fails before the command starts.
-- **Masking follows the name**: approval previews, the web UI, error output and `pflow report` hide a value whose name contains one of the words `TOKEN`, `SECRET`, `PASSWORD`, `AUTH`, `CREDENTIAL` or `API_KEY`. Name secrets that way (`GITHUB_TOKEN`), and keep those words out of ordinary data — `TOKEN_LIMIT: "5"` shows as `<REDACTED>`, so the person approving the step cannot see it.
+- **Masking follows the name**: approval previews, the web UI, error output and `pflow report` hide a value whose name contains one of the words `TOKEN`, `SECRET`, `PASSWORD`, `AUTH`, `CREDENTIAL`, `COOKIE` or `API_KEY`. Name secrets that way (`GITHUB_TOKEN`), and keep those words out of ordinary data — `TOKEN_LIMIT: "5"` shows as `<REDACTED>`, so the person approving the step cannot see it.
 
 **`inputs:` on a shell step** is the namespace `env:`, `stdin` and `cwd` read from, and where a loop `carry:` lands — the command never sees it. Bind each key you need in `env:` (`env: {STATE: ${state}}`, then `"$STATE"`); an `inputs:` key no other param reads gets a warning.
 
@@ -1738,6 +1742,7 @@ curl -s "https://example.com/api" | head -20
 - `workflow:` accepts a file path (`./child.pflow.md`), a saved workflow name (`my-saved-workflow`), or a template that resolves to one at runtime (see Dynamic Child Selection below)
 - Nesting depth limited to 10 levels (configurable via `max_depth` param)
 - Parent→child boundary is strict — every key in `inputs:` must be declared on the child's `## Inputs`; typos are rejected at parse time
+- Each value is typed by the child's declared `## Inputs` type, per call and per batch item — the parent does not parse it: an upstream's text reaches a child `string` input unchanged (JSON-looking or not), JSON text into a child `object`/`array` is parsed, and an `any` input receives the value as passed. A value that does not fit fails that step (or only that item, under `error_handling: continue`)
 
 ### When to Use Sub-Workflows
 
