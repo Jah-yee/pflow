@@ -1127,3 +1127,98 @@ lens). Each finding verified against code by the planner before folding:
 - **Disputed:** C2 (batch memo served across the change) — pre-existing: the batch memo key never included
   non-item params (Task 170 task-review follow-ups); not widened by this task; the D14 claim is corrected and
   the hand-back names the user-side remedy.
+
+---
+
+## 10. Addendum (task orchestrator, 2026-10-12) — PG: rulings H1, W1, #790
+
+Written after the completion gate. User rulings (2026-10-11, via the main orchestrator; progress log [01:10] and next
+entry): **H1 → B**, **W1 → A in this task**, **#790 → fold in**. The user's standing instruction governs: close the
+CLASS, and resolve every ambiguity and assumption before committing. One phase, **PG**: Opus · high, ENGINE CONTACT,
+followed by a targeted re-review.
+
+### D15 — W1: a binding to a declared input inherits its protection (binding provenance, from the authored template)
+- **Rule.** A *binding* (a step's own `inputs:` key, static or template, or a batch alias) whose AUTHORED value is
+  exactly ONE reference (a single Expression, the whole value: no surrounding text, no `??` operands, no `|json`) rooted
+  in a declared non-`any` input inherits that input's never-re-parsed protection under the binding's name. It is NOT
+  value tagging (ADR-0017 rejects that): it is read from the authored template, and a node output never inherits it.
+  - What the new name inherits:
+    - **Whole-root reference** (`${v}`): the input's own canonical type. The validator's rules (b)/(c)/(d) then apply
+      to the new name exactly as to the input.
+    - **Path reference** (`${d.payload}`, `${rows[0]}`): *protection only*. The value is a descendant of a declared
+      root; ruling (i) makes it never re-parsed, but its type is unknown. The runtime protects it; the validator applies
+      no type rule (`declared_root_type` → `None`). Represent this as one named constant beside
+      `DECLARED_INPUT_TYPES_KEY` in `core/templates.py` (a map VALUE meaning "protected, type unknown"). `_declared_typed`
+      treats it as typed. No second map and no second key.
+    - **Batch alias over a declared root** (`items: ${rows}` on a declared `array`, or `items: ${d.list}`): the alias
+      is protection-only (element type unknown).
+    - **Batch alias over an INLINE list**: per item, when that element's authored text is a single reference to a
+      declared root, it follows the two rules above; otherwise local, as today.
+  - Excluded, by the ruled text "whole value is one reference":
+    - `${v ?? up.out}` (mixed provenance) and any text around a reference: local output semantics, as today.
+    - Whole-map `inputs: ${m}`: keys known only at run time; keep today's behaviour.
+    - **Loop carry:** a carried key replaced by an upstream output in iteration ≥2 is local. Provenance comes from the
+      template that actually supplied the value in that iteration. The authored `inputs:` value counts only when no
+      carry override replaced it.
+- **Runtime sites** (every place the map is built or rewritten; grep `DECLARED_INPUT_TYPES_KEY`):
+  - `template_resolution._bind_locally` at BOTH merge points: instead of only dropping a shadowed name, set each bound
+    name's entry by the rule. An inherited entry is added even when no workflow input shares the name, and a binding
+    that inherits nothing is dropped.
+  - The per-item batch contexts in `batch_executor.py`: the alias entry, where `item_shared[batch_config.item_alias]`
+    is set, in all three places including the pre-warm `temp_shared`.
+  - The dry-run planner's per-item context (`execution/plan.py`).
+  - Check the analyzer's synthetic contexts (`prompt_cache_analysis/context.py:178`, `token_estimation.py`). Mirror the
+    rule there if they resolve step-local bindings; otherwise state why not.
+- **Validator mirror.** `core/workflow/declared_inputs.declared_root_type` (and `step_scope`'s owner kinds if needed):
+  for a surface where the active binding of `root` is a step `inputs:` key or the alias, return the inherited type by
+  the same rule, or `None` for protection-only and non-inheriting bindings. The existing rules then fire on
+  `${doc.a}` where `doc: ${v}` and `v: string`. Keep ONE helper that decides "what does this binding inherit", shared
+  by runtime and validator if a clean shared home exists (`core/workflow/template_surfaces.py` or `core/templates.py`);
+  otherwise two thin callers of one pure function. No duplicated rule text.
+- **Tests must catch** (presence pairs everywhere):
+  - The falsifier's probes now behave as the rule says: `scratchpads/task-120/falsifier/w/alias3.pflow.md`
+    (`${item}` and `${rows[0]}` get the SAME treatment) and `agent2.pflow.md` (`${doc.a}` is a validation error AND
+    unresolved at run time, as `${v.a}` is).
+  - A non-inheriting binding keeps output semantics: `inputs: {doc: ${up.stdout}}` → `${doc.a}` resolves.
+  - `${v ?? up.out}` is excluded.
+  - Loop carry: iteration 1 is protected; iteration 2 holds a carried output and is local.
+  - Inline batch items per element.
+  - The dry-run planner and the run agree (`test_plan_drift.py`).
+  - Parity-corpus rows for the inherited and the non-inherited binding (`test_template_parity.py`).
+  - Mutation-check every site.
+- **Blast radius** (G1 scan, `scratchpads/task-120/gate2/scan_w1.txt`): 168 in-tree rebindings; the 11 path reads are
+  `${item.text}` over arrays of objects, which are unchanged. Re-run that scan on the built code and confirm 0
+  behaviour changes. A non-zero result is a hand-back.
+- **ADR-0017.** The main orchestrator writes the amendment on main. Give me the one line in your handback (decision
+  sentence "…never JSON-parsed" gains "…, nor is a name bound to one by a single whole reference (a step `inputs:` key or
+  a batch alias)"; adjust to the built rule).
+
+### D16 — H1: a required child input with no default comes from the parent
+- At the child boundary (`prepare_inputs` called with the child placement, `type_child_inputs`):
+  - An input that is `required` (the default) AND has no `default`, and is not supplied by the parent, is the
+    child-named "requires input" error. Env and settings are NOT consulted for it.
+  - Optional inputs and inputs with a `default` keep the order env → settings → default (f₂).
+  - The ROOT boundary is unchanged: env/settings may supply a required root input.
+- Static and run-time-chosen children then agree, and match `origin/main`. Verify the validator's
+  `_check_required_inputs` already refuses this case (it did, per G1); keep both verdicts pinned.
+- The message names the remedy for the child case, since the environment no longer satisfies it. Suggested:
+  `→ Pass it under step 'call' inputs: (a required sub-workflow input is never read from the environment or settings)`.
+  Keep it in the existing child-named message shape (PD dev 6); grep for the one home of that text.
+- **Tests:** a run-time-chosen child with `n` exported and not passed → refused at run time, routable (batch
+  `continue` fails only that item); the static twin → refused at validation (pinned); presence: an optional/defaulted
+  child input still takes env over default. Flip any PD fallback test that asserted env satisfies a required child input
+  (name each in the log).
+
+### D17 — #790: a container default is fresh on every resolution
+- `ir_preparation._fallback_value` returns a fresh value: `copy.deepcopy` of a container `default:`. Class: every
+  resolution of a declared default yields an independent value, at every boundary (root compile, per-item child `prep`,
+  dry-run). Check that no other site hands out the IR's default object itself (grep `"default"` reads in the boundary
+  and validator paths).
+- **Test:** the falsifier's `w/pmut.pflow.md` + `w/cmut.pflow.md` shape. A child mutates its `object` default; a batch
+  of three gives `seen` 1, 1, 1 (it was 1, 2, 3).
+
+### PG gate
+`make check` + `make test` green. Then, as the gate-runner, a targeted re-review through the pflow fan-out (codex) on
+the PG diff only: `review-validation-consistency` (D15 runtime ↔ validator mirror) and `review-feature-interactions`
+(batch × loop carry × nested × dry-run × `??`). Disposition every finding, naming the class each fix closes. Re-run the
+falsifier's W1 probes with `scratchpads/task-120/falsifier/p.sh`. Run Task-159 `verify.sh` if guide text moved.
