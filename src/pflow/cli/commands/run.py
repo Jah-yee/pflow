@@ -533,12 +533,12 @@ def _display_denied_result(ctx: click.Context, result: Any, output_format: str) 
         # emits {success, status, error, errors, diagnostics, ...}) — agents that
         # branch on success==false and iterate .diagnostics/.errors must find the
         # denial there, not only in the bespoke `gate` key.
-        diagnostics = [d.to_dict() for d in result.diagnostics]
+        diagnostics = [d.to_output_dict() for d in result.diagnostics]
         document = {
             "success": False,
             "status": "denied",
             "error": message,
-            "errors": [d.to_dict() for d in result.errors],
+            "errors": [d.to_output_dict() for d in result.errors],
             "diagnostics": diagnostics,
             "gate": gate_diag.context.get("gate") if gate_diag else None,
         }
@@ -691,7 +691,7 @@ def _display_paused_result(result: Any, output_format: str) -> None:
             "gate_request": masked_request,
             "resume_command": resume_command,
             "errors": [],
-            "diagnostics": [diagnostic.to_dict() for diagnostic in surfaced],
+            "diagnostics": [diagnostic.to_output_dict() for diagnostic in surfaced],
         }
         click.echo(json.dumps(document, indent=2, default=str))
         return
@@ -742,9 +742,9 @@ def _display_validation_result(
         output = {
             "success": vresult.valid,
             "validated_only": True,
-            "errors": [e.to_display_dict() for e in vresult.errors],
-            "warnings": [warning.to_display_dict() for warning in vresult.warnings],
-            "diagnostics": [d.to_dict() for d in vresult.diagnostics],
+            "errors": [e.to_output_dict() for e in vresult.errors],
+            "warnings": [warning.to_output_dict() for warning in vresult.warnings],
+            "diagnostics": [d.to_output_dict() for d in vresult.diagnostics],
         }
         click.echo(json.dumps(output, indent=2, default=str))
     else:
@@ -990,8 +990,8 @@ def _route_stdin_to_params(
         raise UserFriendlyError(
             title="Piped input cannot be routed to workflow",
             explanation=(
-                'This workflow has no input marked with "stdin": true.\n'
-                'To accept piped data, add "stdin": true to one input declaration.\n\n'
+                "This workflow has no input marked with `- stdin: true`.\n"
+                "To accept piped data, add `- stdin: true` to one input declaration.\n\n"
                 "Example (.pflow.md format):\n"
                 "  ### data\n\n"
                 "  Input data piped via stdin.\n\n"
@@ -999,7 +999,7 @@ def _route_stdin_to_params(
                 "  - required: true\n"
                 "  - stdin: true"
             ),
-            suggestions=['Add "stdin": true to the input that should receive piped data'],
+            suggestions=["Add `- stdin: true` to the input that should receive piped data"],
         )
 
     if target_input in params:
