@@ -161,12 +161,8 @@ jobs:
   # text and verify.sh is bash — tests-windows is the platform gate.
   baseline-oracle:
     runs-on: ubuntu-latest
-    # A full run measures ~TBD on a runner; the cap stops a hung case burning the 6h default.
+    # A full run measured 4m24s on a runner; the cap stops a hung case burning the 6h default.
     timeout-minutes: 20
-    strategy:
-      matrix:
-        python-version: ["3.13", "3.14"]
-      fail-fast: false
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -174,7 +170,7 @@ jobs:
       - name: Set up the environment
         uses: ./.github/actions/setup-python-env
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.13"
 
       - name: Verify recorded outputs
         run: ./.taskmaster/tasks/task_159/baseline/verify.sh
