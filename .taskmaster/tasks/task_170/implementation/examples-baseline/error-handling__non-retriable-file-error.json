@@ -77,7 +77,6 @@
   "total_cost_usd": 0.0,
   "warnings": [
     {
-      "category": "node_action_error",
       "context": {
         "category": "node_action_error",
         "type": "on_error_recovery"
@@ -85,8 +84,7 @@
       "message": "Node 'copy-directory' failed \u2014 on-error \u2192 'report-error'",
       "node_id": "copy-directory",
       "severity": "warning",
-      "source": "runtime",
-      "type": "on_error_recovery"
+      "source": "runtime"
     }
   ],
   "workflow": {

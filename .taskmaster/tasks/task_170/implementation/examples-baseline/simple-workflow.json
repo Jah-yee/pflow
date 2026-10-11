@@ -38,7 +38,7 @@
   },
   "nodes_executed": 1,
   "result": {
-    "stdout": "Hello from pflow! Running on Darwin arm64"
+    "stdout": "Hello from pflow! Running on <OS> <ARCH>"
   },
   "status": "success",
   "success": true,
