@@ -358,7 +358,9 @@ class TestWorkflowSaveCLI:
         # Should fail
         assert result.exit_code != 0, "Should reject overwrite without --force"
         assert "already exists" in result.output.lower()
-        assert "--force" in result.output.lower()
+        # One remedy, in the CLI's own spelling — the service's `force=True` no longer leaks (#739).
+        assert "Use --force to overwrite, or choose a different name." in result.output
+        assert "force=True" not in result.output
 
     def test_workflow_save_handles_missing_draft(self, runner: click.testing.CliRunner, tmp_path: Any) -> None:
         """Should show helpful error for nonexistent draft file."""

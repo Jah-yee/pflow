@@ -146,6 +146,10 @@ class TestWorkflowValidator:
         assert any("stdin" in d.message.lower() for d in errors)
         assert any("data1" in d.message for d in errors)
         assert any("data2" in d.message for d in errors)
+        # Named in the `.pflow.md` line the author wrote, not as a JSON key (#700).
+        stdin_diag = next(d for d in errors if "stdin" in d.message)
+        assert stdin_diag.message.startswith("Multiple inputs marked `- stdin: true`: data1, data2.")
+        assert stdin_diag.suggestions == ["Keep `- stdin: true` on only one workflow input."]
 
     def test_single_stdin_input_valid(self):
         """Test that a single stdin: true input is valid."""
@@ -183,6 +187,8 @@ class TestWorkflowValidator:
 
         stdout_diag = next(d for d in errors if "stdout" in d.message.lower())
         assert "a" in stdout_diag.message and "b" in stdout_diag.message
+        assert stdout_diag.message.startswith("Multiple outputs marked `- stdout: true`: a, b.")
+        assert stdout_diag.suggestions == ["Keep `- stdout: true` on only one workflow output."]
 
     def test_single_stdout_output_valid(self):
         """A single output marked stdout: true is valid."""

@@ -38,6 +38,11 @@ the node translated (`http/http.py:exec_fallback`). Agent params keep
 for the node's own `exec_fallback` to dispatch on (`file/`) are not vanilla in
 this sense.
 
+A remedy names the step line the author types — `` `- overwrite: true` ``, not
+`"overwrite": true` or `overwrite=True`; a name bound through `inputs:`/`env:` goes
+through `core/workflow/data_flow.py:binding_phrase`.
+`tests/test_remedy_syntax_hygiene.py` fails on JSON-key and Python-kwarg remedies.
+
 ## Navigation
 
 | Concern | Owner |

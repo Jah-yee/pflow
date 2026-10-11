@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from pflow.core.exceptions import MarkdownParseError, WorkflowValidationError
+from pflow.core.exceptions import MarkdownParseError, WorkflowExistsError, WorkflowValidationError
 
 
 @click.command(name="save")
@@ -51,9 +51,9 @@ def save_cmd(file_path: str, name: str, delete_draft: bool, force: bool) -> None
             metadata=metadata,
             source_path=path,
         )
-    except FileExistsError as exception:
+    except WorkflowExistsError as exception:
         click.echo(f"Error: {exception}", err=True)
-        click.echo("  Use --force to overwrite.", err=True)
+        click.echo("  Use --force to overwrite, or choose a different name.", err=True)
         sys.exit(1)
     except WorkflowValidationError as exception:
         if exception.validation_errors:
