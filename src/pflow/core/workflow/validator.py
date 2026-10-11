@@ -466,10 +466,10 @@ class WorkflowValidator:
                     source="validator",
                     title="Validation Error",
                     message=(
-                        f'Multiple inputs marked with "stdin": true: {", ".join(stdin_inputs)}. '
+                        f"Multiple inputs marked `- stdin: true`: {', '.join(stdin_inputs)}. "
                         "Only one input can receive piped stdin."
                     ),
-                    suggestions=["Mark only one workflow input with stdin: true."],
+                    suggestions=["Keep `- stdin: true` on only one workflow input."],
                     context={"category": "validation", "path": "inputs"},
                 )
             ]
@@ -501,10 +501,10 @@ class WorkflowValidator:
                     source="validator",
                     title="Validation Error",
                     message=(
-                        f'Multiple outputs marked with "stdout": true: {", ".join(stdout_outputs)}. '
+                        f"Multiple outputs marked `- stdout: true`: {', '.join(stdout_outputs)}. "
                         "Only one output can stream to stdout."
                     ),
-                    suggestions=["Mark only one workflow output with stdout: true."],
+                    suggestions=["Keep `- stdout: true` on only one workflow output."],
                     context={"category": "validation", "path": "outputs"},
                 )
             ]
@@ -1927,7 +1927,7 @@ class WorkflowValidator:
                         f"{step_locator}: 'inputs:' on workflow node '{ref_label}' must be a dict "
                         f"of child inputs, got {type_name}."
                     ),
-                    suggestions=["Use a mapping: ``- inputs:\\n    key: value``"],
+                    suggestions=["Use a mapping of child inputs: `- inputs: {name: value}`"],
                     context={
                         "category": "validation",
                         "sub_workflow_path": ref_label,

@@ -221,7 +221,8 @@ merged PR and point the packet there instead; almost all recent tasks have revie
    `-f` blind: `-f` discards the tree's local state (it prints the dirty paths it drops) but still
    verifies the merge and deletes the branch only when the merged head equals the tip — otherwise
    it keeps the branch and says why; its reason goes in the session log.
-7. **Parallel tasks** require the collision analysis below; at most one in-flight task may need a
+7. **Parallel tasks** require the collision analysis below; on one machine run at most one build plus three lanes, and
+   launch nothing new while the load average is above ~40 (timing tests flake and measurements lie); at most one in-flight task may need a
    live `pflow ui` server; prefer a no-checkpoint task as the parallel companion (checkpoints
    serialize on the user's attention).
 

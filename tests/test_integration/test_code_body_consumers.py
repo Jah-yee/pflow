@@ -32,8 +32,8 @@ from pflow.runtime.template_validation import validate_workflow_templates
 
 
 @pytest.fixture(scope="module")
-def registry() -> Registry:
-    reg = Registry()
+def registry(tmp_path_factory: pytest.TempPathFactory) -> Registry:
+    reg = Registry(tmp_path_factory.mktemp("registry") / "registry.json")
     reg.load()
     return reg
 

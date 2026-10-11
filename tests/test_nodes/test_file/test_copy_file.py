@@ -86,6 +86,8 @@ class TestCopyFileNode:
 
             assert action == "error"
             assert "exists" in shared["error"].lower()
+            # The fix is the step line the author types, not a Python kwarg (#739).
+            assert "Set `- overwrite: true` on the step" in shared["error"]
 
             # BEHAVIOR: Destination should not be overwritten
             with open(dest_path, encoding="utf-8") as f:

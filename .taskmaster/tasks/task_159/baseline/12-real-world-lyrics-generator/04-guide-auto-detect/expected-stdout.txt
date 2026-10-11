@@ -457,12 +457,13 @@ Three code-node input errors are caught at validate time (`pflow
    - **bound elsewhere** (a later `helper = ...` or `def helper(): ...`) → the
      bare annotation is redundant, so removing it is safe. Offers both, local
      first: `Remove the annotation 'helper: Any' — 'helper' is assigned in the
-     code, so it's a local variable` *or* `add 'helper' to the inputs dict` (if
-     it was meant as an input). To keep a type on a local, use the value form
+     code, so it's a local variable` *or* bind it as an input (if it was meant
+     as one). To keep a type on a local, use the value form
      (`helper: Any = ...`).
    - **read but not bound** (`y: list` + `len(y)`) → removing would leave
-     `y` unbound, so the only fix is `Add 'y' to the inputs dict` (or `Rename
-     the annotation to 'items'` for a fuzzy-matched typo).
+     `y` unbound, so the only fix is to bind it as an input
+     (`- inputs: {y: ${<source>}}` on the step), or `Rename the annotation to
+     'items'` for a fuzzy-matched typo.
    - **neither read nor bound** → dead annotation: `Remove the annotation
      'y: list' — it is never read in the code`.
 3. **Type mismatch** — `x: dict` bound to `${upstream.result}` that declares
@@ -477,12 +478,12 @@ Three code-node input errors are caught at validate time (`pflow
       3. Or accept any type (in params.code): x: Any
     ```
 
-Suggestions include locality hints (`in params.code` vs `in params.inputs`) so
-agents know which section to edit. Upstream type is read from the registry
-interface for standard nodes and from the code-block `result:` annotation for
-upstream code nodes (including batch code nodes — enrichment flows through
-`results[0].result` access paths). Use `Any` when you want to accept any
-upstream type deliberately.
+Annotation fixes carry the hint `in params.code`; binding fixes name the
+step's `- inputs:` line, so agents know which section to edit. Upstream type
+is read from the registry interface for standard nodes and from the code-block
+`result:` annotation for upstream code nodes (including batch code nodes —
+enrichment flows through `results[0].result` access paths). Use `Any` when you
+want to accept any upstream type deliberately.
 
 A workflow input declared `- type: string` bound to a `dict`/`list` annotation is
 the same error: a declared input is never JSON-parsed. Declare it `- type: object`

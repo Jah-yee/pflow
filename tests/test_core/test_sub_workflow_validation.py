@@ -1384,6 +1384,8 @@ class TestNonDictInputsShape:
         assert "str" in diagnostic.message, f"Error should name the actual type: {diagnostic.message}"
         assert diagnostic.context is not None
         assert diagnostic.context.get("actual_type") == "str"
+        # One pasteable line, not a literal backslash-n inside the suggestion (#700).
+        assert diagnostic.suggestions == ["Use a mapping of child inputs: `- inputs: {name: value}`"]
 
     def test_non_dict_inputs_list_rejected(self, tmp_path: Path) -> None:
         """A list in place of the ``inputs:`` dict is a shape error."""
