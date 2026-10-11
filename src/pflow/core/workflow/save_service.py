@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from pflow.core.diagnostic import Severity
-from pflow.core.exceptions import MarkdownParseError, WorkflowValidationError
+from pflow.core.exceptions import MarkdownParseError, WorkflowExistsError, WorkflowValidationError
 from pflow.core.ir_schema import normalize_ir, validate_ir
 from pflow.core.markdown_parser import parse_markdown
 from pflow.core.workflow.manager import WorkflowManager
@@ -438,7 +438,7 @@ def save_workflow_with_options(
 
     Raises:
         MarkdownParseError: If markdown_content cannot be parsed
-        FileExistsError: If workflow exists and force=False
+        WorkflowExistsError: If workflow exists and force=False
         WorkflowValidationError: If validation or save fails
     """
     result = parse_markdown(markdown_content)
@@ -454,9 +454,8 @@ def save_workflow_with_options(
     # Check existence
     if manager.exists(name):
         if not force:
-            raise FileExistsError(
-                f"Workflow '{name}' already exists. Use force=True to overwrite or choose a different name."
-            )
+            # No remedy here: each surface names its own overwrite switch (CLI --force, MCP force).
+            raise WorkflowExistsError(f"Workflow '{name}' already exists.")
 
         # Delete existing workflow before saving
         try:

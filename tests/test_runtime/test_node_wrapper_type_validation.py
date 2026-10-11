@@ -393,3 +393,32 @@ class TestValidateResolvedType:
         expected_types = {"known": "str"}
         result = validate_resolved_type("unknown", {"key": "value"}, "${data}", expected_types, "strict")
         assert result is None
+
+
+def test_unserializable_dict_for_str_param_names_the_cause_and_working_fixes():
+    """A dict JSON cannot encode (here: it holds a set) reaching a str param (#700).
+
+    Coercion already tried json.dumps, so quoting the template is no fix — the message names the
+    real cause and only fixes that work, each as a `- param:` step line.
+    """
+    interface = {"inputs": [{"key": "content", "type": "str"}], "params": []}
+    with pytest.raises(ValueError) as exc_info:
+        _resolve({"content": "${make.result}"}, {"make": {"result": {"a": {1, 2}}}}, interface)
+    message = str(exc_info.value)
+    assert message.startswith(
+        "Parameter 'content' expects str but ${make.result} resolved to a dict that cannot be written as JSON text"
+    )
+    assert "  - Read only the field you need: `- content: ${make.result.field_name}`\n" in message
+    assert '  - Embed it in text (written in Python notation): `- content: "Summary: ${make.result}"`\n' in message
+    assert "Serialize to JSON" not in message
+
+
+def test_shape_error_preview_redacts_sensitive_named_keys():
+    """The other-container-shape message previews the value — never a sensitive-named key's value."""
+    interface = {"inputs": [{"key": "items", "type": "list"}], "params": []}
+    shared = {"cfg": {"result": {"api_key": "sk-live-SECRET", "region": "eu-north"}}}
+    with pytest.raises(ValueError) as exc_info:
+        _resolve({"items": "${cfg.result}"}, shared, interface)
+    message = str(exc_info.value)
+    assert 'Value preview: {"api_key": "<REDACTED>", "region": "eu-north"}' in message
+    assert "sk-live-SECRET" not in message

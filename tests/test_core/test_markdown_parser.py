@@ -5473,3 +5473,23 @@ echo hi
         # Heading is the line "### echo-step"; expect a positive line number
         # well past the workflow header.
         assert node["_source_line"] > 5
+
+
+def test_cache_syntax_hint_example_parses() -> None:
+    """The ## Cache syntax hint's example is pasteable: the parser accepts it verbatim (#700).
+
+    It once carried a trailing `# optional…` comment on its `- ttl:` line, which the TTL check rejects.
+    """
+    from pflow.core.markdown_parser import _SECTION_SYNTAX_HINTS, _SectionType
+
+    hint = _SECTION_SYNTAX_HINTS[_SectionType.CACHE]
+    example = textwrap.dedent("\n".join(line for line in hint.splitlines() if line.startswith("    ")))
+    assert example.startswith("## Cache\n")
+    markdown = (
+        "# Hint\n\nExample.\n\n"
+        "## Inputs\n\n### concept\n\nA concept.\n\n- type: string\n\n"
+        "### concept_brief\n\nA brief.\n\n- type: string\n\n"
+        f"{example}\n\n"
+        "## Steps\n\n### s\n\nSay hi.\n\n- type: shell\n\n```shell command\necho hi\n```\n"
+    )
+    assert parse_markdown(markdown).ir["cache"]["ttl"] == "5m"

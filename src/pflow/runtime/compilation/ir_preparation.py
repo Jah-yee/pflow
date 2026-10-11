@@ -282,7 +282,7 @@ def prepare_inputs(
     if len(stdin_inputs) > 1:
         errors.append(
             caller.error(
-                f'Multiple inputs marked with "stdin": true: {", ".join(stdin_inputs)}',
+                f"Multiple inputs marked `- stdin: true`: {', '.join(stdin_inputs)}",
                 "inputs",
                 "Only one input can receive piped stdin",
             )

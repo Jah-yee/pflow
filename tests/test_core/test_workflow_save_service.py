@@ -22,7 +22,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from pflow.core.exceptions import WorkflowValidationError
+from pflow.core.exceptions import WorkflowExistsError, WorkflowValidationError
 from pflow.core.workflow.save_service import (
     RESERVED_WORKFLOW_NAMES,
     delete_draft_safely,
@@ -458,8 +458,10 @@ class TestSaveWorkflowWithOptions:
             mock_wm_class.return_value = mock_wm
 
             # Try to save without force - should fail
-            with pytest.raises(FileExistsError, match="already exists"):
+            with pytest.raises(WorkflowExistsError) as exc_info:
                 save_workflow_with_options("existing", markdown_content, force=False)
+            # No remedy at the service: each surface names its own overwrite switch (#739).
+            assert str(exc_info.value) == "Workflow 'existing' already exists."
 
             # Verify existence was checked
             mock_wm.exists.assert_called_once_with("existing")

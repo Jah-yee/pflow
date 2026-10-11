@@ -48,43 +48,14 @@ proof.
 - a mid-session USER edit to a tracked file read as a subagent overstepping its brief and was
   reverted without asking (the searcher's `effort` value) — an uncommitted change with no author
   is indistinguishable from a leaf's; ask before reverting anything you did not make | s07 | n=1
-- host load from many parallel agents on one machine (lanes + lenses + planner; load average
-  140–217 measured s08; 50–76 with 1 build + 3 lanes s13) makes timing tests flake and timing
-  measurements meaningless — recognition would cap concurrent local agents in ORCHESTRATION
-  "Parallel tasks" (s13 ran 1 build + 3 lanes as the cap) | s08, s13 | n=2 → PROPOSED (promote now:
-  one sentence in ORCHESTRATION step 7 — at most 1 build + 3 lanes; nothing new above load ~40)
 - a lane squash-merged after `origin/main` moved past its last merge-of-main without
   re-gating (CI on the push to main caught it green) — the lane def's merged-result gate runs
   before the PR, not again before the merge click; recognition would add "re-check origin/main
   right before merging; if it moved, repeat the gate" | s08 | n=1
-- a durable doc carried a mechanism written from a SUMMARY instead of the cited code — s08 ADR-0015 ("prose
-  interpolator"), s09 Task 170 spec freeze line, s10 ADR-0016 ("the code body is literal Python"), s11 a
-  DECIDED ledger line + ADR-0016 ("compact JSON" — `to_string` uses default separators) and Task 182 ("SC2154
-  catches it"); each caught by a context-free reader; APPLIED at s11 close as a sentence in ADR-FORMAT.md's
-  "Review before commit" (re-derive every mechanism from the cited code; name the function, not a list of its
-  outputs) | s08, s09, s10, s11, s12, s13 | n=6 → promoted (ratify or revert); s13 instances: the class-name fold ruled
-  from `engine/types.py:23` (the IR type lives on `TemplateConfig`, not `NodeConfig` — the 183 orchestrator found it);
-  a packet path `cli/gate_prompt.py` (it is `execution/`); the #751 "point of use" design (refuted by two searchers)
-- a lane ran `git stash push`/`pop` in a worktree and popped the USER's shared `stash@{0}` (Task 125 WIP) —
-  stashes are repo-wide across worktrees; recognition would add "never `git stash`" to every implementing
-  role's def (packets carried it ad hoc after; no repeat in s10 under the packet line) | s09 | n=1 → PROPOSED
-  (severity override)
-- a reviewer or lane killed a process by NAME (`pkill -f`) — s09 falsifier (`sleep`), s10 falsifier
-  (`sleep 30`, machine-wide), s10 lanes #678 and #627 (their own backgrounded `gh pr checks` pollers);
-  mechanism: a backgrounded poller/sleeper the agent then has to stop; APPLIED at s10 close — PID-only +
-  "never background a poller you will need to kill" written into `review-falsifier.md` and
-  `lane-implementer.md` (trigger-point homes) | s09, s10 | n=4 → promoted (defs edited; ratify or revert)
-- ~~I proposed an interim without stating the final shape~~ — s09 UI approve-all button; s10 template
-  tolerance (option 2) for shell/code bodies that option 4 then deletes — user: *"isnt the real fix to do
-  4?"*; APPLIED at s10 close as a role-prompt sentence (start-orchestration "Working with the user") |
-  s09, s10 | n=2 → promoted (ratify or revert)
 - an issue AUDIT judged "still open" from the body alone while an owner COMMENT on the issue said the
   symptom was fixed (#437 → PR #519) — the brief said read bodies; recognition would make "every issue
   read is TWO calls, body + `--comments`" (already the planner rule) the rule for every agent that
   classifies issues | s10 | n=1
-- `gh run list --branch main` returned stale/unrelated runs while the real push run existed (s08 misread
-  "no push CI"; s10 saw September runs for today's commit) — APPLIED at s10 close as a STANDING-KNOWLEDGE
-  §6 line | s08, s10 | n=2 → promoted (ratify or revert)
 - a task orchestrator ran two phase implementers IN PARALLEL in one worktree (179: P3 + P4) to shorten a
   checkpoint wait, against ORCHESTRATION step 2; the predicted side effect occurred (one implementer's
   `make check` regenerated the other's `.agents/` copy), no damage; recognition would add the rule to
@@ -93,10 +64,6 @@ proof.
   note) → the post-merge `git merge --ff-only origin/main` aborted on the local change; the branch already
   carried the note. Recognition: once a task's worktree exists, its spec is edited ONLY on the branch
   (or relayed to the producer) | s10 | n=1
-- a finished lane left a process with its cwd inside its worktree, so `./scripts/worktree rm` refused at
-  teardown — s11 #696 lane (`ugrep … | wc -l` reading stdin, 44 min) and #690 lane (`eza -t`, the shell's `ls`
-  alias, hung 1h39m); killed by PID by the main orchestrator; APPLIED at s11 close as a sentence in
-  `lane-implementer.md` Ship step 4 | s11 | n=2 → promoted (ratify or revert)
 - `pflow-codebase-searcher` agents REFUSE to write report files (their def forbids it) while the orchestrator's
   brief asked for one — four briefs in s10 asked, four returned inline; recognition: briefs to searchers ask
   for an inline report, never a file | s10 | n=1
@@ -104,13 +71,6 @@ proof.
   from the dogfood summary and refuted by the verifier (mis-coercion at template resolution, #686) — same
   family as the n=3 entry above but for a SPEC EVIDENCE block written from a producer's summary before the
   verification pass | s10 | n=1
-- a REWRITTEN spec contradicted the user's ruled sentence and only a SECOND context-free reader caught it — s11 (118
-  rewrite moved the dict/list block onto `env:` against the ruling), s12 (120 Design narrowed protection to `string`
-  roots against the ruled "declared non-`any`"); recognition: a rewrite gets its own fresh reader before any planner,
-  separate from the battery that produced it | s11, s12 | n=2 → PROPOSED (promote now: role prompt step 3)
-- the shell's `ls` is aliased to `eza`, which hangs on large dirs and prints a different format — s11 (`eza -t` hung
-  1h39m in a lane's tree), s12 (`$(ls -t …)` returned junk in my probe; the #720 lane advised `/bin/ls`); recognition:
-  scripts and probes use `/bin/ls` | s11, s12 | n=2 → PROPOSED (promote now: STANDING-KNOWLEDGE §6 gotcha)
 - a `gh` WRITE with stderr suppressed failed silently (`gh issue comment … -q 2>/dev/null` — `-q` is not a flag; both
   comments never posted, caught only by reading them back); recognition: never suppress stderr on a write, and read
   back every external write | s12 | n=1
@@ -118,14 +78,12 @@ proof.
   and `test_cache.py::test_concurrent_access` (s12), `tests-windows-mcp-smoke` 60 s request timeout on main `f0b39c5c` and
   PR #764 (s13; #685 family); recognition: the third distinct one has now happened → file one de-flake issue for timing
   assertions on shared runners | s12, s13 | n=2 → PROPOSED (file the issue next session; not a rule)
-- a producer's TESTS wrote to the user's real `~/.pflow` (Task 181: a fixture ran before the test-home isolation and
-  overwrote the `chrome-devtools` MCP entry on every `make test` for hours), and the producer then repaired the user's
-  HOME itself — recognition: implementer + lane defs say "tests never touch the real HOME; a HOME write you discover is a
-  hand-back, never a self-repair" | s13 | n=1 → PROPOSED (severity override: the next one may hit a secret or a saved
-  workflow)
 - I tore down a worktree whose gitignored scratch held the only evidence a producer cited (181's `*.corrupt.json`
   before-images) — recognition: before `./scripts/worktree rm`, copy any scratch path a hand-back cites into the session
   scratchpad | s13 | n=1
-- a lens re-audit produced a recommendation I presented before verifying its premises (#751 "sync at point of use",
-  refuted the next hour by two searchers); the user had to ask *"verify all assumptions"* — recognition: a re-derived
-  design under the lens goes out labelled HYPOTHESIS until its load-bearing premise is checked | s13 | n=1
+- the codex searcher-offload sandbox cannot reach the GitHub API (`gh issue view` fails; s10 read it as "comments empty") —
+  APPLIED at s14 close as a sentence in `workflows/search/run-searcher.pflow.md`'s `prompt` input (paste issue text inline)
+  | s10, s14 | n=2 → promoted (ratify or revert)
+- an upstream issue number beside a closing keyword in a PR body ("fixes agronholm/anyio#816") parsed by GitHub as a phantom
+  closing reference to THIS repo's #816 (nonexistent, no effect) — the "never place a closing keyword next to a number the PR
+  must not close" trap in a cross-repo form; recognition would extend that ORCHESTRATION sentence to upstream references | s14 | n=1

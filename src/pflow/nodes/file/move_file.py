@@ -125,7 +125,9 @@ class MoveFileNode(Node):
                 extra={"source_path": source_path, "dest_path": dest_path, "phase": "exec"},
             )
             # This is a validation error that won't change with retries
-            raise NonRetriableError(f"Destination file '{dest_path}' already exists. Set overwrite=True to replace it.")
+            raise NonRetriableError(
+                f"Destination file '{dest_path}' already exists. Set `- overwrite: true` on the step to replace it."
+            )
 
     def _ensure_parent_directory(self, dest_path: str) -> None:
         """Create parent directories if needed."""

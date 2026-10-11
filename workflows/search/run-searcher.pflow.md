@@ -13,7 +13,7 @@ Name of the persona to run, resolved to `${cwd}/.claude/agents/{agent}.md` (cano
 
 ### prompt
 
-The search or verification task, phrased exactly as you would brief the native searcher — include DEPTH (quick | medium | thorough) and the report-shape ask (e.g. "report each claim as CONFIRMED (cite file:line) or REFUTED (state what you checked)").
+The search or verification task, phrased exactly as you would brief the native searcher — include DEPTH (quick | medium | thorough), paste any GitHub issue text the task needs (the codex sandbox cannot reach the GitHub API), and the report-shape ask (e.g. "report each claim as CONFIRMED (cite file:line) or REFUTED (state what you checked)").
 
 - type: string
 - required: true
