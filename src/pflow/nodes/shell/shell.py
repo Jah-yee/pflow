@@ -54,9 +54,10 @@ def _stdin_bytes(text: str | None) -> bytes | None:
     if not text:
         return None
     try:
-        return text.encode("utf-8")
+        # surrogateescape gives back the raw bytes Python decoded from pflow's own stdin or argv
+        # (\udc80-\udcff), as os.fsencode does for env:; any other surrogate cannot be encoded.
+        return text.encode("utf-8", errors="surrogateescape")
     except UnicodeEncodeError as exc:
-        # UTF-8 encodes every code point except a surrogate, so that is the only way here.
         raise StdinBindingError(
             # Kept under the 200-character batch error preview, so the fix survives truncation.
             f"The value bound to stdin: contains {text[exc.start]!r} at character {exc.start}, a surrogate UTF-8 "

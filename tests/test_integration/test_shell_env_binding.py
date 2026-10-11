@@ -328,13 +328,13 @@ class TestBindingFailures:
 
     # stdin: is the step's other binding channel (#727): a value UTF-8 cannot encode once failed
     # after spawn as "exit code -2" with a traceback, retried and swallowed by ignore_errors.
-    # stdin: is strict UTF-8, not env:'s os.fsencode — a low surrogate (\udc80) fsencodes on POSIX
-    # but cannot be piped, and a NUL (refused by env:) pipes fine.
+    # Only a surrogate that is not an escaped raw byte fails (\udc80-\udcff pipe as that byte —
+    # see test_shell_stdin.py); a NUL, refused by env:, pipes fine.
     @pytest.mark.parametrize(
         ("type_", "value", "expected"),
         [
             ("string", "cut \ud800", "contains '\\ud800' at character 4,"),
-            ("string", "cut \udc80", "contains '\\udc80' at character 4,"),
+            ("string", "cut \udfff", "contains '\\udfff' at character 4,"),
             ("object", {"s": "cut \ud800"}, "contains '\\ud800' at character 11,"),
         ],
         ids=["high-surrogate", "low-surrogate", "object-as-json"],
