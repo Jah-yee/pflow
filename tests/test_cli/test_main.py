@@ -508,13 +508,12 @@ def test_absolute_path_workflow():
 def test_home_directory_expansion(monkeypatch, tmp_path: Path):
     """Test that ~ expands to home directory in workflow paths."""
     runner = click.testing.CliRunner()
-    from pathlib import Path
 
     from tests.shared.markdown_utils import ir_to_markdown
 
     monkeypatch.setenv("HOME", str(tmp_path))
-    home = Path.home()
-    test_file = home / ".test_workflow_temp.pflow.md"
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Windows expands ~ from USERPROFILE
+    test_file = tmp_path / ".test_workflow_temp.pflow.md"
     try:
         workflow = {
             "ir_version": "0.1.0",
@@ -525,8 +524,8 @@ def test_home_directory_expansion(monkeypatch, tmp_path: Path):
 
         # Run with ~ path
         result = runner.invoke(main, ["~/.test_workflow_temp.pflow.md"])
-        # Should execute or show not found if home expansion fails
-        assert "home test" in result.output or "Workflow executed" in result.output or "not found" in result.output
+        assert result.exit_code == 0, result.output
+        assert "home test" in result.output
     finally:
         # Clean up
         if test_file.exists():
