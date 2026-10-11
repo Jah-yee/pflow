@@ -16,20 +16,15 @@ from typing import Any
 
 from click.testing import CliRunner
 
+from pflow.cli.error_output import format_error_json
 from pflow.cli.main import main
-from pflow.core.diagnostic import exception_to_diagnostics
 from tests.shared.markdown_utils import write_workflow_file
 
 
 def _exception_to_errors(exception: Exception) -> tuple[str, list[dict[str, Any]]]:
-    """Test helper: convert exception to (summary, errors_list) via shared diagnostics."""
-    diagnostics = exception_to_diagnostics(exception)
-    errors = [d.to_display_dict() for d in diagnostics]
-    if len(errors) == 1:
-        summary = errors[0].get("title") or errors[0].get("message") or str(exception)
-    else:
-        summary = getattr(exception, "summary", None) or f"Workflow execution failed ({len(errors)} errors)"
-    return summary, errors
+    """Test helper: the (summary, errors) pair the JSON failure document carries for an exception."""
+    document = format_error_json(exception=exception)
+    return document["error"], document["errors"]
 
 
 # ---------------------------------------------------------------------------
@@ -91,14 +86,13 @@ def _assert_unified_shape(output: dict[str, Any]) -> None:
     assert isinstance(output["errors"], list), "errors must be a list"
     assert len(output["errors"]) > 0, "errors list must not be empty"
 
-    # Each error entry must have message and category
+    # Each error entry must have message and category, in the same form diagnostics[] carries it
     for i, err in enumerate(output["errors"]):
         assert isinstance(err, dict), f"errors[{i}] must be a dict"
         assert "message" in err, f"errors[{i}] missing 'message'"
-        assert "category" in err, f"errors[{i}] missing 'category'"
-        assert err["category"] in VALID_CATEGORIES, (
-            f"errors[{i}]['category'] = {err['category']!r} not in valid categories"
-        )
+        category = err["context"]["category"]
+        assert category in VALID_CATEGORIES, f"errors[{i}] category = {category!r} not in valid categories"
+        assert err in output["diagnostics"], f"errors[{i}] differs from its diagnostics[] entry"
 
     # Workflow metadata
     assert isinstance(output["workflow"], dict), "workflow must be a dict"
@@ -129,7 +123,7 @@ class TestUnifiedErrorJsonShape:
         output = _parse_json_output(result)
         _assert_unified_shape(output)
 
-        assert output["errors"][0]["category"] == "not_found"
+        assert output["errors"][0]["context"]["category"] == "not_found"
 
     def test_parse_error(self, tmp_path: Path) -> None:
         """A malformed .pflow.md file (no ## Steps) produces parse_error category."""
@@ -143,7 +137,7 @@ class TestUnifiedErrorJsonShape:
         output = _parse_json_output(result)
         _assert_unified_shape(output)
 
-        assert output["errors"][0]["category"] == "parse_error"
+        assert output["errors"][0]["context"]["category"] == "parse_error"
 
     def test_validation_error(self, tmp_path: Path) -> None:
         """A workflow with an unknown node type produces a validation error."""
@@ -168,7 +162,7 @@ class TestUnifiedErrorJsonShape:
         _assert_unified_shape(output)
 
         # Should be a validation or compilation error about unknown node type
-        categories = {err["category"] for err in output["errors"]}
+        categories = {err["context"]["category"] for err in output["errors"]}
         assert categories & {"validation", "compilation"}, (
             f"Expected validation or compilation error, got categories: {categories}"
         )
@@ -205,7 +199,7 @@ class TestUnifiedErrorJsonShape:
         output = _parse_json_output(result)
         _assert_unified_shape(output)
 
-        assert output["errors"][0]["category"] == "not_found"
+        assert output["errors"][0]["context"]["category"] == "not_found"
 
 
 # ---------------------------------------------------------------------------
@@ -225,10 +219,8 @@ class TestStructuredFieldPreservation:
 
         assert len(errors) == 1
         err = errors[0]
-        assert err["category"] == "max_visits"
         assert err["node_id"] == "loop-node"
-        assert err["visit_count"] == 100
-        assert err["max_visits"] == 50
+        assert err["context"] == {"category": "max_visits", "visit_count": 100, "max_visits": 50}
         assert isinstance(summary, str)
         assert len(summary) > 0
 
@@ -245,8 +237,8 @@ class TestStructuredFieldPreservation:
 
         assert len(errors) == 1
         err = errors[0]
-        assert err["category"] == "validation"
-        assert err["path"] == "nodes[0].type"
+        assert err["context"]["category"] == "validation"
+        assert err["context"]["path"] == "nodes[0].type"
         # suggestion is now a list: suggestions=["Did you mean 'file'?"]
         assert "suggestions" in err, f"Expected 'suggestions' field, got keys: {list(err.keys())}"
         assert "Did you mean 'file'?" in err["suggestions"]
@@ -265,12 +257,12 @@ class TestStructuredFieldPreservation:
 
         assert len(errors) == 1
         err = errors[0]
-        assert err["category"] == "not_found"
+        assert err["context"]["category"] == "not_found"
         assert "title" in err
         # suggestions is now a list; similar_names are in context, not suggestions
         assert "suggestions" in err, f"Expected 'suggestions' field, got keys: {list(err.keys())}"
         # The similar_names are available in context for rendering
-        assert err["similar_names"] == ["my-workflow", "my-workflow-v2"]
+        assert err["context"]["similar_names"] == ["my-workflow", "my-workflow-v2"]
 
     def test_missing_required_input_preserves_path_and_suggestion(self, tmp_path: Path) -> None:
         """Missing required input produces JSON with path and suggestion fields.
@@ -302,10 +294,10 @@ class TestStructuredFieldPreservation:
 
         # THE critical assertion: path survives from prepare_inputs() tuples
         err = output["errors"][0]
-        assert err["category"] == "validation"
+        assert err["context"]["category"] == "validation"
         assert "data" in err["message"].lower(), f"Error should mention the missing input 'data': {err['message']}"
-        assert "path" in err, f"Missing 'path' field — tuple unpacking broke: {err}"
-        assert "inputs" in err["path"], f"Path should reference the input: {err['path']}"
+        assert "path" in err["context"], f"Missing 'path' field — tuple unpacking broke: {err}"
+        assert "inputs" in err["context"]["path"], f"Path should reference the input: {err['context']['path']}"
 
 
 # ---------------------------------------------------------------------------

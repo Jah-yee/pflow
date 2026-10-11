@@ -285,7 +285,7 @@ class TestEnhancedErrorOutput:
 
         # Verify first error has expected structure
         error = output["errors"][0]
-        assert "category" in error
+        assert "category" in error["context"]
         assert "message" in error
         assert "node_id" in error
 

@@ -8,6 +8,7 @@ is performed by WorkflowRunner._update_metadata().
 import pytest
 import yaml
 
+from pflow.core.security_utils import SENSITIVE_KEYS
 from pflow.core.workflow.manager import WorkflowManager
 from pflow.execution.runner import WorkflowRunner
 from tests.shared.markdown_utils import ir_to_markdown
@@ -165,33 +166,13 @@ class TestParameterSanitization:
         assert frontmatter["last_execution_params"] == {}
 
     def test_all_sensitive_params_patterns(self, executor_service, workflow_manager, temp_workflow_dir):
-        """Verify all 19 sensitive parameter patterns are sanitized."""
+        """Every name in SENSITIVE_KEYS is redacted from the saved last_execution_params."""
         workflow_name = "all-patterns"
         _save_test_workflow(workflow_manager, workflow_name)
 
-        # All sensitive patterns from SENSITIVE_KEYS
-        execution_params = {
-            "password": "secret1",
-            "passwd": "secret2",
-            "pwd": "secret3",
-            "token": "secret4",
-            "api_token": "secret5",
-            "access_token": "secret6",
-            "auth_token": "secret7",
-            "api_key": "secret8",
-            "apikey": "secret9",
-            "api-key": "secret10",
-            "secret": "secret11",
-            "client_secret": "secret12",
-            "private_key": "secret13",
-            "ssh_key": "secret14",
-            "secret_key": "secret15",
-            "credential": "secret16",
-            "credentials": "secret17",
-            "authorization": "secret18",
-            "auth": "secret19",
-            "safe_param": "visible",
-        }
+        # Iterate the live set so a name added to SENSITIVE_KEYS is covered without editing this test
+        execution_params = {name: f"secret-{name}" for name in SENSITIVE_KEYS}
+        execution_params["safe_param"] = "visible"
 
         # Update metadata
         executor_service._update_metadata(

@@ -119,8 +119,7 @@ class TestTheFailureBlockShowsTheBoundValues:
         )
 
         error = _json_error(result)
-        assert error["shell_env"] == {"ENDPOINT": "users", "API_TOKEN": "<REDACTED>"}
-        assert error["context"]["shell_env"] == error["shell_env"]
+        assert error["context"]["shell_env"] == {"ENDPOINT": "users", "API_TOKEN": "<REDACTED>"}
         assert SECRET not in _everything(result)
 
 
@@ -183,7 +182,11 @@ class TestValueLengths:
         as_json = _cli("--output-format", "json", str(path), f"mid={MID}", f"long={LONG}")
 
         assert f"      MID={MID}\n      LONG={LONG_SHOWN}\n      API_TOKEN=<REDACTED>\n" in _everything(text)
-        assert _json_error(as_json)["shell_env"] == {"MID": MID, "LONG": LONG_SHOWN, "API_TOKEN": "<REDACTED>"}
+        assert _json_error(as_json)["context"]["shell_env"] == {
+            "MID": MID,
+            "LONG": LONG_SHOWN,
+            "API_TOKEN": "<REDACTED>",
+        }
 
     @pytest.mark.trace_files
     def test_the_report_holds_the_whole_value(self, tmp_path: Path) -> None:
@@ -196,7 +199,7 @@ class TestValueLengths:
     def test_a_newline_shows_escaped_on_one_line(self, tmp_path: Path) -> None:
         result = _cli("--output-format", "json", str(_write(tmp_path, LONG_VALUES)), "mid=a\nb", "long=x")
 
-        assert _json_error(result)["shell_env"]["MID"] == "a\\nb"
+        assert _json_error(result)["context"]["shell_env"]["MID"] == "a\\nb"
 
 
 BOOLEAN_FLAG = """\

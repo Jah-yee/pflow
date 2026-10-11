@@ -86,8 +86,7 @@ class TestShellStderrDisplay:
         assert len(output["errors"]) > 0
 
         error = output["errors"][0]
-        assert "shell_stderr" in error
-        assert "stderr content here" in error["shell_stderr"]
+        assert "stderr content here" in error["context"]["shell_stderr"]
 
     def test_shell_stderr_truncated_when_long(self, tmp_path):
         """Long stderr should be truncated in verbose output."""

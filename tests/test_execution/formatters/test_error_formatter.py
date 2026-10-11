@@ -3,7 +3,7 @@
 These tests are guardrails for AI-driven development. Each test catches a specific
 bug that could break production:
 
-1. Sanitization bypass (security bug)
+1. Redaction bypass (security bug)
 2. Original data mutation (data corruption bug)
 3. Missing execution state (incorrect agent feedback)
 4. Edge case crashes (production failures)
@@ -12,7 +12,6 @@ If a test passes but the feature is broken, the test failed its purpose.
 """
 
 import json
-from copy import deepcopy
 
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.execution.formatters.error_formatter import format_execution_errors
@@ -54,12 +53,16 @@ class TestSecurityGuardrails:
             shared_after={},
         )
 
-        formatted = format_execution_errors(result, sanitize=True)
+        formatted = format_execution_errors(result)
 
-        # SECURITY REQUIREMENT: Sensitive keys must be redacted
-        assert formatted["errors"][0]["raw_response"]["api_key"] == "<REDACTED>"
-        assert formatted["errors"][0]["raw_response"]["apikey"] == "<REDACTED>"
-        assert formatted["errors"][0]["raw_response"]["error"] == "Invalid request"
+        # SECURITY REQUIREMENT: Sensitive keys must be redacted, and no unredacted copy sits beside them
+        error = formatted["errors"][0]
+        assert error["context"]["raw_response"] == {
+            "api_key": "<REDACTED>",
+            "error": "Invalid request",
+            "apikey": "<REDACTED>",
+        }
+        assert "raw_response" not in error
 
     def test_auth_tokens_must_be_redacted_in_headers(self):
         """SECURITY: Prevent auth token leaks in response headers.
@@ -82,10 +85,10 @@ class TestSecurityGuardrails:
             shared_after={},
         )
 
-        formatted = format_execution_errors(result, sanitize=True)
+        formatted = format_execution_errors(result)
 
         # SECURITY REQUIREMENT: Auth tokens must be redacted
-        headers = formatted["errors"][0]["response_headers"]
+        headers = formatted["errors"][0]["context"]["response_headers"]
         assert headers["Authorization"] == "<REDACTED>"
         assert headers["X-Api-Key"] == "<REDACTED>"
         assert headers["Content-Type"] == "application/json"  # Non-sensitive preserved
@@ -114,10 +117,10 @@ class TestSecurityGuardrails:
             shared_after={},
         )
 
-        formatted = format_execution_errors(result, sanitize=True)
+        formatted = format_execution_errors(result)
 
         # SECURITY REQUIREMENT: Nested secrets must be redacted
-        nested = formatted["errors"][0]["raw_response"]["error"]["details"]
+        nested = formatted["errors"][0]["context"]["raw_response"]["error"]["details"]
         assert nested["password"] == "<REDACTED>"  # noqa: S105 - Testing sanitization output, not hardcoded password
         assert nested["message"] == "Authentication failed"
 
@@ -131,19 +134,13 @@ class TestDataIntegrityGuardrails:
         Real bug this catches: If formatter modifies original errors instead of
         copies, it would corrupt ExecutionResult data used elsewhere in the system.
         """
-        original_context = {"raw_response": {"api_key": "secret", "data": "value"}}
-        result = ExecutionResult(
-            success=False,
-            diagnostics=[_diagnostic("Test error", **deepcopy(original_context))],
-            shared_after={},
-        )
+        diagnostic = _diagnostic("Test error", raw_response={"api_key": "secret", "data": "value"})
+        result = ExecutionResult(success=False, diagnostics=[diagnostic], shared_after={})
 
-        # Run formatter
-        format_execution_errors(result, sanitize=True)
+        format_execution_errors(result)
 
-        # INTEGRITY REQUIREMENT: Original data unchanged
-        assert original_context["raw_response"]["api_key"] == "secret"
-        assert original_context["raw_response"]["data"] == "value"
+        # INTEGRITY REQUIREMENT: the Diagnostic itself keeps the raw value (redaction is output-only)
+        assert diagnostic.context == {"raw_response": {"api_key": "secret", "data": "value"}}
 
     def test_multiple_errors_must_all_be_processed(self):
         """DATA INTEGRITY: All errors must be formatted, not just the first.
@@ -161,7 +158,7 @@ class TestDataIntegrityGuardrails:
             shared_after={},
         )
 
-        formatted = format_execution_errors(result, sanitize=True)
+        formatted = format_execution_errors(result)
 
         # INTEGRITY REQUIREMENT: All errors present and sanitized
         assert len(formatted["errors"]) == 3
@@ -170,7 +167,7 @@ class TestDataIntegrityGuardrails:
         assert formatted["errors"][2]["message"] == "Error 3"
         # All must be sanitized
         for error in formatted["errors"]:
-            assert error["raw_response"]["secret"] == "<REDACTED>"  # noqa: S105 - Testing sanitization output, not hardcoded password
+            assert error["context"]["raw_response"]["secret"] == "<REDACTED>"  # noqa: S105 - Testing sanitization output, not hardcoded password
 
 
 class TestExecutionStateGuardrails:
@@ -301,7 +298,7 @@ class TestRobustnessGuardrails:
             shared_after={},
         )
 
-        formatted = format_execution_errors(result, sanitize=True)
+        formatted = format_execution_errors(result)
 
         # ROBUSTNESS REQUIREMENT: Must not crash
         assert formatted["errors"] == []
@@ -319,11 +316,11 @@ class TestRobustnessGuardrails:
             shared_after={},
         )
 
-        formatted = format_execution_errors(result, sanitize=True)
+        formatted = format_execution_errors(result)
 
         # ROBUSTNESS REQUIREMENT: Must not crash on missing fields
         assert formatted["errors"][0]["message"] == "Simple error"
-        assert "raw_response" not in formatted["errors"][0]
+        assert "context" not in formatted["errors"][0]
 
     def test_must_handle_none_metrics_gracefully(self):
         """ROBUSTNESS: None metrics_collector must not crash formatter.
@@ -362,7 +359,7 @@ class TestRobustnessGuardrails:
             shared_after={},  # No __execution__ key
         )
 
-        formatted = format_execution_errors(result, sanitize=True)
+        formatted = format_execution_errors(result)
 
         # ROBUSTNESS REQUIREMENT: Must not crash on missing checkpoint
         assert formatted["checkpoint"] == {}
@@ -370,23 +367,6 @@ class TestRobustnessGuardrails:
 
 class TestBehaviorContracts:
     """Tests that validate the formatter's behavioral contracts."""
-
-    def test_sanitization_can_be_disabled(self):
-        """CONTRACT: sanitize=False must preserve sensitive data.
-
-        Real bug this catches: If sanitize flag is ignored, CLI text mode
-        (which needs raw data for formatting) would get redacted data.
-        """
-        result = ExecutionResult(
-            success=False,
-            diagnostics=[_diagnostic("Error", raw_response={"api_key": "secret"})],
-            shared_after={},
-        )
-
-        formatted = format_execution_errors(result, sanitize=False)
-
-        # CONTRACT: sanitize=False preserves original data
-        assert formatted["errors"][0]["raw_response"]["api_key"] == "secret"
 
     def test_checkpoint_always_extracted_from_shared_after(self):
         """CONTRACT: Checkpoint must come from shared_after.__execution__.
@@ -446,7 +426,7 @@ def test_formatter_runs_in_under_10ms():
 
     start = time.perf_counter()
     for _ in range(100):  # 100 iterations
-        format_execution_errors(result, sanitize=True)
+        format_execution_errors(result)
     elapsed = time.perf_counter() - start
 
     # 100 iterations should complete in < 1 second (10ms avg per call)
