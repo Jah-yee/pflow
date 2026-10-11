@@ -1329,3 +1329,26 @@ resume path for any successor.
   `make test` + `make test-all-local`, fixed `verify.sh` (all 87 ran), `capture.py --check` vs P0's 5; (3) spec Status
   done + Completed; `create-task-review`; `create-pr` closing #686 #687 #188 #790 (Refs #297 #742 #743); check
   `closingIssuesReferences`; `gh pr checks` incl. `tests-windows`.
+
+## [2026-10-11 17:30] task-orchestrator — real-HOME ruling applied; main merged; final gates green; close-out
+- **Timestamp correction:** my task-orchestrator entries headed 20:40 → 02:30 (and "2026-10-12") carry invented clock
+  labels — the real clock was ~13:xx–17:2x on 2026-10-11 (`date` now: 17:29). Their ORDER in this file is correct;
+  read their headers as sequence labels, not times. Implementers' headers are their own clocks.
+- Ruling (main orchestrator): the real `~/.pflow/registry.json` rewrite is the registry's own path re-scan when another
+  checkout runs pflow (MCP entries intact) — benign class; (a) the suspected test writer is ROUTED to its own issue, not
+  this PR; (b) tests resumed — a real-HOME touch is logged by mtime, an MCP entry changing/vanishing stays a hard stop.
+  Smaller: C2 → evidence posted on **#675** (read back); I5's two new message shapes ACCEPTED (2/5); the two
+  out-of-§10 changes ACCEPTED, named in the PR body as pre-existing-on-main with their pinning tests.
+- Did: merged `origin/main` `e0f3af7d` (#783, fixed `verify.sh`, `baseline-oracle` CI job) → `7a125a09`, no conflict;
+  `regenerate.sh 12-real-world-lyrics-generator/04-guide-auto-detect` → no change (the merged recording already carries
+  BOTH causes: this task's guide text + #775's `COOKIE`). Spec `## Status: done`, `## Completed: 2026-10-11`.
+- Verified (final head before the close-out commit): `make check` rc 0; `make test-all-local` **11588 passed, 2 skipped**
+  (4 third-party starlette warnings); fixed `verify.sh` **87 passed / 0 drifted / 0 harness errors** (all cases ran);
+  `capture.py --check` → 29 examples, **12 differing — byte-identical output to the same check run on a clean export of
+  `origin/main` `e0f3af7d`** (so 0 differences are this task's; P0's 5 + 7 from main's #787 flattened-copy removal etc.;
+  main's Task-170 capture baseline is stale — routed up). Real HOME: `registry.json` mtime 17:24:38 → 17:26:28 across
+  `make test-all-local`; MCP tool counts unchanged (chrome 59, heptabase 20, hokuz 2, notebooklm 53, playwright 62,
+  resend 106, sentry 8); the 11 built-in paths point at the main checkout — benign class per ruling.
+- Assumptions: none open — the [11:45]…[17:19] `Assumed:` items are resolved by G1's audit (a)–(e), PF's real-form run,
+  and I5's entry ("Assumed: nothing" after its own verification); I5's real-HOME lead is routed, not assumed.
+- Next: `create-task-review`; `create-pr` closing #686 #687 #188 #790 (Refs #297 #742 #743).

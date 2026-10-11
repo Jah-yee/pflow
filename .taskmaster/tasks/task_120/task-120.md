@@ -10,7 +10,10 @@ value crosses: decide the type once, where the value enters, from the declaratio
 it; fail with an actionable error; never re-infer it downstream.
 
 ## Status
-not started
+done
+
+## Completed
+2026-10-11
 
 ## Priority
 
