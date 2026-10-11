@@ -11,8 +11,8 @@ whole session:
    the real home travels to them in ``PFLOW_TEST_REAL_HOME``.
 2. An audit hook refuses any in-process file operation under a directory pflow
    owns in the real home, and any spawn whose env lacks an isolated home. The
-   refusal is recorded and fails the test whose phase triggered it, even if the
-   code under test swallows the exception.
+   refusal is recorded and fails the test (or collected module) whose phase
+   triggered it, even if the code under test swallows the exception.
 """
 
 from __future__ import annotations
@@ -61,15 +61,13 @@ class RealHomeAccessError(RuntimeError):
 
 @dataclass
 class _State:
-    active: bool = False
     real_home: str = ""
     session_home: str = ""
     protected_roots: tuple[str, ...] = ()
-    saved_env: dict[str, str | None] = field(default_factory=dict)
     violations: list[str] = field(default_factory=list)
 
 
-_state = _State()  # one per process; the audit hook outlives the session, so it checks ``active``
+_state = _State()  # one per process: what the audit hook guards and what it has refused so far
 
 
 def _norm(path: str) -> str:
@@ -107,11 +105,9 @@ def _spawn_env_problem(env: Mapping[Any, Any]) -> str | None:
 
 
 def _audit(event: str, args: tuple[Any, ...]) -> None:
-    if not _state.active:
-        return
     if event == "subprocess.Popen":
         _executable, argv, _cwd, env = args
-        problem = None if env is None else _spawn_env_problem(env)
+        problem = _spawn_env_problem(os.environ if env is None else env)
         if problem:
             _refuse(f"spawned {argv!r}, but {problem}. Build the env with tests.conftest.set_isolated_home")
         return
@@ -130,44 +126,54 @@ def _refuse(what: str) -> None:
     raise RealHomeAccessError(f"test touched the developer's real home: {message}")
 
 
+def _drain_violations(nodeid: str, when: str) -> str | None:
+    pending, _state.violations = _state.violations, []  # appends racing this swap land in ``pending``
+    if not pending:
+        return None
+    return "\n".join([
+        f"{nodeid} touched the developer's real home ({_state.real_home}) during {when}:",
+        *(f"  - {violation}" for violation in pending),
+        "Resolve paths through Path.home()/$HOME at use time; give a wider-scoped fixture an explicit tmp path.",
+    ])
+
+
+def _fail_report(report: pytest.TestReport | pytest.CollectReport, text: str) -> None:
+    if report.failed and report.longrepr is not None:
+        report.sections.append(("real home guard", text))
+    else:
+        report.outcome = "failed"
+        report.longrepr = text
+
+
 def pytest_configure(config: pytest.Config) -> None:
     real_home = os.environ.get(REAL_HOME_ENV) or str(Path.home())
-    _state.saved_env = {var: os.environ.get(var) for var in (*_HOME_VARS, REAL_HOME_ENV)}
     _state.session_home = tempfile.mkdtemp(prefix="pflow-test-home-")
     os.environ[REAL_HOME_ENV] = real_home
     for var in _HOME_VARS:
         os.environ[var] = _state.session_home
     _state.real_home = real_home
     _state.protected_roots = _protected_roots(Path(real_home))
-    _state.violations.clear()
-    _state.active = True
+    # Never removed or disabled: a thread a test leaves running (a timed-out code node's worker)
+    # can still touch the home after the session ends, and the refusal must still hold then.
     sys.addaudithook(_audit)
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
-    _state.active = False
-    for var, value in _state.saved_env.items():
-        if value is None:
-            os.environ.pop(var, None)
-        else:
-            os.environ[var] = value
     shutil.rmtree(_state.session_home, ignore_errors=True)
 
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> Generator[None, Any, None]:
     outcome = yield
-    if not _state.violations:
-        return
     report: pytest.TestReport = outcome.get_result()
-    text = "\n".join([
-        f"{item.nodeid} touched the developer's real home ({_state.real_home}) during {report.when}:",
-        *(f"  - {violation}" for violation in _state.violations),
-        "Resolve paths through Path.home()/$HOME at use time; give a wider-scoped fixture an explicit tmp path.",
-    ])
-    _state.violations.clear()
-    if report.failed and report.longrepr is not None:
-        report.sections.append(("real home guard", text))
-    else:
-        report.outcome = "failed"
-        report.longrepr = text
+    text = _drain_violations(item.nodeid, report.when)
+    if text:
+        _fail_report(report, text)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_make_collect_report(collector: pytest.Collector) -> Generator[None, Any, None]:
+    outcome = yield
+    text = _drain_violations(collector.nodeid, "collection")
+    if text:
+        _fail_report(outcome.get_result(), text)
