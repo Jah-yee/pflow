@@ -762,8 +762,16 @@ class WorkflowExecutor(BaseNode):
             return {}
         if isinstance(inputs, dict):
             return dict(inputs)
-        type_name = type(inputs).__name__
-        raise ValueError(f"Workflow node's 'inputs:' resolved to {type_name}, expected dict of child inputs.")
+        step = f"Step '{self.node_id}'" if self.node_id else "This step"
+        if isinstance(inputs, str):  # text is never parsed into the map: the child types each VALUE (ADR-0017)
+            reason = (
+                "resolved to text, expected a map of child inputs. If the text is JSON, have the producing step "
+                "emit a structured value (code `result: dict`) or list the inputs as keys under 'inputs:'."
+            )
+        else:
+            reason = f"resolved to {type(inputs).__name__}, expected a map of child inputs."
+        # ValueError, not TypeError: prep's recoverable set routes it (``_PREP_RECOVERABLE``).
+        raise ValueError(f"{step}: 'inputs:' {reason}")
 
     def _load_workflow(
         self, shared: dict[str, Any], execution_stack: list[str]

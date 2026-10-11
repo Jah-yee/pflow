@@ -7,10 +7,15 @@ Pass 9: Validates code-node input annotations against template source types.
 from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
-from pflow.core.templates import TemplateResolver, is_type_compatible
+from pflow.core.templates import CONTAINER_TYPES, LIST_TYPES, Reference, TemplateResolver, is_type_compatible, parse
+from pflow.core.types import outer_base_type
 from pflow.core.workflow.template_surfaces import param_mode, template_params
 from pflow.registry import Registry
-from pflow.runtime.template_validation.type_checker import get_parameter_type, infer_template_type
+from pflow.runtime.template_validation.type_checker import (
+    declared_root_type,
+    get_parameter_type,
+    infer_template_type,
+)
 
 # ---------------------------------------------------------------------------
 # Pass 6: Type matching
@@ -40,6 +45,20 @@ def validate_template_types(
             if param_mode(node_type, param_name) == "embedded":
                 continue  # embedded code is always text: an insert's source type is irrelevant
             expected_type = get_parameter_type(node_type, param_name, registry)
+            if isinstance(param_value, str) and expected_type and "|" not in expected_type:
+                shape = _container_shape(expected_type)
+                if shape is not None:
+                    diagnostics.extend(
+                        _declared_text_into_container(
+                            workflow_ir,
+                            node,
+                            param_name,
+                            param_value,
+                            shape,
+                            feeds=f"param '{param_name}' (type {expected_type})",
+                            path=f"nodes[id={node_id}].params.{param_name}",
+                        )
+                    )
             _check_param_type(param_name, param_value, expected_type, node_id, workflow_ir, node_outputs, diagnostics)
 
     return diagnostics
@@ -109,6 +128,68 @@ def _check_string_template_types(
                     },
                 )
             )
+
+
+# ---------------------------------------------------------------------------
+# A declared ``string`` input into a container (ADR-0017): its text is never parsed
+# ---------------------------------------------------------------------------
+
+
+def _container_shape(type_name: str) -> str | None:
+    """``"object"``/``"array"`` for a dict/list target (generics by their outer type, as the
+    runtime's parse gate reads them; a union is never parsed), else ``None``."""
+    base = outer_base_type(type_name)
+    if base not in CONTAINER_TYPES:
+        return None
+    return "array" if base in LIST_TYPES else "object"
+
+
+def _declared_text_into_container(
+    workflow_ir: dict[str, Any],
+    node: dict[str, Any],
+    param_key: str,
+    value: str,
+    shape: str,
+    *,
+    feeds: str,
+    path: str,
+    text_fix: str = "",
+) -> list[Diagnostic]:
+    """An ERROR per whole-root operand of the simple template ``value`` bound to a declared
+    ``string`` input: the resolver hands its text on unparsed, so a container target fails at
+    run time. The type matrix cannot see it — its ``string`` row (shared with code
+    ``result: str`` and child outputs) lets text into containers because those ARE parsed."""
+    template = parse(value)
+    if not template.is_simple:
+        return []
+    roots = [
+        operand.root
+        for operand in template.expressions[0].operands
+        if isinstance(operand, Reference)
+        and not operand.path
+        and declared_root_type(workflow_ir, node, operand.root, surface_kind="param", param_key=param_key) == "string"
+    ]
+    return [
+        Diagnostic(
+            severity=Severity.ERROR,
+            source="validator",
+            title="Validation Error",
+            node_id=node.get("id"),
+            message=(
+                f"`{value}` feeds {feeds}, but input '{root}' is declared `- type: string` and is never JSON-parsed."
+            ),
+            suggestions=[f"Declare `- type: {shape}` for '{root}'{text_fix}."],
+            context={
+                "category": "validation",
+                "path": path,
+                "input": root,
+                "declared_type": "string",
+                "template": value,
+                "expected_type": shape,
+            },
+        )
+        for root in dict.fromkeys(roots)
+    ]
 
 
 def _infer_missing_annotation_type(
@@ -317,9 +398,10 @@ def _build_simple_template_mismatch_diagnostic(
     # to change a non-existent upstream node wastes cycles.
     root = TemplateResolver.extract_root_node_id(template)
     if root in workflow_inputs:
+        # ``## Inputs`` speaks the canonical vocabulary (``object``, never ``dict``).
         source_fix = (
             f"Or change the workflow input declaration for '{root}' "
-            f"to '- type: {display_expected}' (currently {display_inferred})"
+            f"to '- type: {expected_canonical}' (currently {inferred_type})"
         )
     else:
         source_fix = f"Or change ${{{template}}} to return {annotation_str}"
@@ -403,7 +485,7 @@ def _build_complex_template_str_coercion_diagnostic(
 
 
 def _check_one_code_input_binding(
-    node_id: str,
+    node: dict[str, Any],
     workflow_ir: dict[str, Any],
     node_outputs: dict[str, Any],
     code: str,
@@ -430,6 +512,7 @@ def _check_one_code_input_binding(
     expected_canonical = extract_code_annotation_type(code, key)
     if expected_canonical is None:
         return []
+    node_id = node.get("id", "unknown")
     annotation_is_optional = _is_optional_type(annotation_str)
 
     # Complex templates coerce to str at runtime — handle at the value level
@@ -441,6 +524,19 @@ def _check_one_code_input_binding(
         return [diag] if diag is not None else []
 
     out: list[Diagnostic] = []
+    if expected_canonical in ("object", "array"):
+        out.extend(
+            _declared_text_into_container(
+                workflow_ir,
+                node,
+                "inputs",
+                value,
+                expected_canonical,
+                feeds=f"inputs.{key} (annotated {annotation_str})",
+                path=f"nodes[id={node_id}].params.inputs.{key}",
+                text_fix=f", or annotate `{key}: str` to receive the text",
+            )
+        )
     for template in TemplateResolver.extract_variables(value):
         inferred_type = infer_template_type(template, workflow_ir, node_outputs)
         if not inferred_type or inferred_type == "any":
@@ -463,7 +559,7 @@ def _check_one_code_input_binding(
 
 
 def _build_code_annotation_type_diagnostics(
-    node_id: str,
+    node: dict[str, Any],
     workflow_ir: dict[str, Any],
     node_outputs: dict[str, Any],
     code: str,
@@ -480,7 +576,7 @@ def _build_code_annotation_type_diagnostics(
             continue
         diagnostics.extend(
             _check_one_code_input_binding(
-                node_id, workflow_ir, node_outputs, code, key, value, annotations[key], workflow_inputs
+                node, workflow_ir, node_outputs, code, key, value, annotations[key], workflow_inputs
             )
         )
     return diagnostics
@@ -662,7 +758,7 @@ def validate_code_node_input_annotations(workflow_ir: dict[str, Any], node_outpu
         )
         diagnostics.extend(
             _build_code_annotation_type_diagnostics(
-                node_id,
+                node,
                 workflow_ir,
                 node_outputs,
                 code,

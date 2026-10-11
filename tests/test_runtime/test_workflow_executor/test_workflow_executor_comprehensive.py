@@ -1110,8 +1110,10 @@ class TestWorkflowExecutorComprehensive:
             "workflow": "./child.pflow.md",
             "inputs": ["not", "a", "dict"],
         }
-        with pytest.raises(ValueError, match=r"resolved to list, expected dict"):
+        executor.node_id = "call"
+        with pytest.raises(ValueError) as exc_info:
             executor._extract_child_inputs()
+        assert str(exc_info.value) == "Step 'call': 'inputs:' resolved to list, expected a map of child inputs."
 
     def test_inputs_none_treated_as_no_inputs(self):
         """``inputs: null`` or missing ``inputs:`` key both mean no-inputs-provided."""

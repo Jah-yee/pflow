@@ -7,7 +7,10 @@ ensuring that resolved values match expected parameter types.
 from collections.abc import Sequence
 from typing import Any
 
+from pflow.core.ir_schema import declared_input_types
 from pflow.core.templates import TRUSTED_TRAVERSABLE_TYPES, Field, Segment, parse_path
+from pflow.core.workflow.data_flow import step_scope
+from pflow.core.workflow.template_surfaces import SurfaceKind
 from pflow.registry.registry import Registry
 
 from .utils import descend_index
@@ -56,6 +59,33 @@ def infer_template_type(template: str, workflow_ir: dict[str, Any], node_outputs
 
     # Cannot infer (unknown variable)
     return None
+
+
+def declared_root_type(
+    workflow_ir: dict[str, Any],
+    node: dict[str, Any] | None,
+    root: str,
+    *,
+    surface_kind: SurfaceKind,
+    param_key: str | None = None,
+) -> str | None:
+    """The declared type of workflow input ``root`` where that input is the ACTIVE binding of
+    ``root`` on this surface — ``None`` when it is not, or when it is ``any``/untyped (the
+    inputs the resolver never re-parses: ``templates._declared_typed``).
+
+    Bindings follow the runtime's merge points (``template_resolution._bind_locally``): a
+    step's own ``inputs:`` values resolve before its keys are bound, so the workflow input owns
+    the root there unless the batch alias holds it; every other param of the step reads its own
+    ``inputs:`` key or alias first (``data_flow.step_scope``). ``batch.items``, loop fields and
+    workflow-level surfaces resolve against the store itself.
+    """
+    declared = declared_input_types(workflow_ir).get(root, "any")
+    if declared == "any":
+        return None
+    if node is None or surface_kind != "param":
+        return declared
+    owners = ("input", "inputs_key") if param_key == "inputs" else ("input",)
+    return declared if step_scope(workflow_ir, node).kind(root, has_path=False) in owners else None
 
 
 def _infer_nested_type(segments: Sequence[Segment], output_info: dict[str, Any]) -> str | None:

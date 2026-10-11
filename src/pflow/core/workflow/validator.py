@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity, deduplicate_diagnostics, format_child_provenance
-from pflow.core.exceptions import SchemaValidationError, WorkflowValidationError
+from pflow.core.exceptions import InputTypeError, SchemaValidationError, WorkflowValidationError
+from pflow.core.param_coercion import coerce_declared_input
 from pflow.core.templates import TemplateResolver, parse, resolve
 from pflow.registry import Registry
 
@@ -303,6 +304,8 @@ class WorkflowValidator:
         # become unreachable in templates after Optional A (${true} resolves to
         # the boolean literal). Reject loudly rather than fail silently.
         diagnostics.extend(WorkflowValidator._reject_reserved_literal_names(workflow_ir))
+        diagnostics.extend(WorkflowValidator._check_input_defaults(workflow_ir))
+        diagnostics.extend(WorkflowValidator._reject_inputs_named_like_batch_aliases(workflow_ir))
 
         # 2. Stdin input validation (ALWAYS run - only one stdin: true allowed)
         diagnostics.extend(WorkflowValidator._validate_stdin_inputs(workflow_ir))
@@ -424,6 +427,55 @@ class WorkflowValidator:
             if node_id in WorkflowValidator._RESERVED_LITERAL_NAMES:
                 diagnostics.append(_diag(node_id, "Node", f"nodes[id={node_id}]"))
 
+        return diagnostics
+
+    @staticmethod
+    def _check_input_defaults(workflow_ir: dict[str, Any]) -> list[Diagnostic]:
+        """Every declared ``default:`` typed by its input's declaration, as the input boundary
+        will type it when the default is used (``prepare_inputs``) — checked whether or not a
+        run supplies the input. ``default: null`` is no value (D2)."""
+        diagnostics: list[Diagnostic] = []
+        for name, spec in (workflow_ir.get("inputs") or {}).items():
+            if not isinstance(spec, dict) or spec.get("default") is None:
+                continue
+            try:
+                coerce_declared_input(name, spec.get("type"), spec["default"], source="default")
+            except InputTypeError as e:
+                diagnostics.extend(e.to_diagnostics())
+        return diagnostics
+
+    @staticmethod
+    def _reject_inputs_named_like_batch_aliases(workflow_ir: dict[str, Any]) -> list[Diagnostic]:
+        """One name, one owner: inside a batched step its alias (``batch.as``, default ``item``)
+        IS the batch item, so a same-named input is unreachable there — and its declared type
+        would be applied to the item (``templates.DECLARED_INPUT_TYPES_KEY`` is keyed by name)."""
+        inputs = workflow_ir.get("inputs") or {}
+        diagnostics: list[Diagnostic] = []
+        for node in workflow_ir.get("nodes", []):
+            batch = node.get("batch")
+            if not isinstance(batch, dict):
+                continue
+            alias = batch.get("as") if isinstance(batch.get("as"), str) and batch.get("as") else "item"
+            if alias not in inputs:
+                continue
+            rename = next(n for n in ("entry", f"{alias}_item", f"{alias}_entry") if n not in inputs)
+            step = node.get("id")
+            diagnostics.append(
+                Diagnostic(
+                    severity=Severity.ERROR,
+                    source="validator",
+                    title="Validation Error",
+                    message=(
+                        f"Input '{alias}' has the same name as the batch alias of step '{step}' — inside "
+                        f"that step `${{{alias}…}}` is the batch item, never the input."
+                    ),
+                    suggestions=[
+                        f"Rename the input, or set `as: {rename}` under the step's `batch:` "
+                        "and update its item references."
+                    ],
+                    context={"category": "validation", "path": f"inputs.{alias}", "input": alias, "step": step},
+                )
+            )
         return diagnostics
 
     @staticmethod
@@ -1971,6 +2023,37 @@ class WorkflowValidator:
                     )
                 )
 
+        diagnostics.extend(
+            WorkflowValidator._check_literal_input_types(
+                node_id, ref_label, inputs_value, child_inputs, inputs_path_root, item_context
+            )
+        )
+        return diagnostics
+
+    @staticmethod
+    def _check_literal_input_types(
+        node_id: str,
+        ref_label: str,
+        inputs_value: dict[str, Any] | None,
+        child_inputs: dict[str, Any],
+        inputs_path_root: str,
+        item_context: dict[str, Any],
+    ) -> list[Diagnostic]:
+        """Every AUTHORED value a parent passes — a literal, or one an inline batch item supplied —
+        typed by the child's declaration as the child's boundary will type it
+        (``workflow_executor.type_child_inputs``). A value from a template is typed there, per
+        item, as a routable error."""
+        diagnostics: list[Diagnostic] = []
+        for name, value in (inputs_value or {}).items():
+            spec = child_inputs.get(name)
+            if not isinstance(spec, dict) or (isinstance(value, str) and TemplateResolver.has_templates(value)):
+                continue
+            try:
+                coerce_declared_input(name, spec.get("type"), value, source="parent")
+            except InputTypeError as e:
+                diagnostic = e.located(step=node_id, sub_workflow_path=ref_label).to_diagnostics()[0]
+                context = {**(diagnostic.context or {}), "path": f"{inputs_path_root}.{name}", **item_context}
+                diagnostics.append(replace(diagnostic, node_id=node_id, context=context))
         return diagnostics
 
     @staticmethod

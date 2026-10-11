@@ -576,3 +576,133 @@ resume path for any successor.
   agrees; pinned by I2).
 - Verified: I2's `make check` rc 0, `make test` 11342 passed, `verify.sh` 87/0/0 (re-run by me at commit time below).
 - Next: commit PB+PD; fresh Opus · high I3 for PE (I2 at ~665k tokens); mid-task review #2 after PE.
+
+## [2026-10-11 13:30] I3 (Opus) — PE (validator rules and the parity corpus)
+- Did: D11(a) `WorkflowValidator._check_input_defaults` (each `default:` through `coerce_declared_input(source="default")`);
+  D11(b)+(d) `template_validation/validator.py::_validate_declared_input_reads` + `_surface_reads` (every surface incl.
+  output sources and cache vars, every operand incl. `??`, placed BEFORE the early return), binding by
+  `type_checker.declared_root_type`; D11(c) `type_validation._declared_text_into_container` in Pass 6 and Pass 9
+  (matrix untouched) + Pass 9 suggestion in canonical names; D11(e) `_check_literal_input_types` in
+  `_check_required_inputs` (reuses `InputTypeError.located(step=, sub_workflow_path=)`, path `<inputs_path_root>.<name>`
+  + `batch_item_index`); D11(f) `_reject_inputs_named_like_batch_aliases`. Parity harness: seeded store typed through
+  the coercer (PE-9) AND carrying `DECLARED_INPUT_TYPES_KEY`; `sub_inputs` driver now applies the child boundary
+  (`_drive_sub_inputs` → `type_child_inputs`); `Row.child_type`; `drive_runtime` captures a cache-render raise; 18
+  `DECLARED_INPUT_ROWS`.
+- Changed: `core/workflow/validator.py`, `runtime/template_validation/{type_checker,validator,type_validation}.py`,
+  `runtime/template_validation/CLAUDE.md` (two Find rows, the declared-input paragraph, context keys `input`,
+  `declared_type`, `received`, `source`, `accepted`). Tests: new `tests/test_runtime/test_template_validation/
+  test_declared_input_rules.py` (PE-2/3/4/7/7b), new `tests/test_core/test_workflow_validator_declared_inputs.py`
+  (PE-1 incl. CLI validate-only + run + save, PE-5, PE-6, I1's whole-map JSON-text item pin), `test_template_parity.py`
+  (PE-8/9); flipped `test_types.py:1502` (`'- type: object' (currently array)`, exact); outside the list (forced):
+  `tests/test_docs/test_guide_example_validation.py`, `tests/test_execution/test_plan_batch_sub_workflow.py` (devs 1–2).
+- Verified: `make check` rc 0; `make test` **11431 passed** (baseline 11344). Mutation ledger (`scratchpads/task-120/pe/
+  mutate.py`: content restore, `PYTHONDONTWRITEBYTECODE=1`, every `__pycache__` purged before/after, counted): **22/22
+  killed** — binding ignores step scope; inputs values read the local key; pass MOVED after the early return (3);
+  `??` operands skipped (3); cache vars skipped; output sources skipped; batch.items rule; field-on-array; index-on-
+  object; Pass 6 rule; Pass 9 rule; Pass 9 display names; defaults unchecked (5); alias rule; alias ignores `as:`;
+  literal child values unchecked; templates typed statically; item path not placed (survived first → added
+  `test_an_inline_item_that_is_the_inputs_map_is_blamed_on_that_item`); harness without declarations (10); harness
+  untyped seeding; harness `sub_inputs` without the child boundary. Real surface (isolated HOME, `.venv/bin/pflow`):
+  BEFORE `bad-default`/`container`/`parent-inline --validate-only` → ✓ valid (I2 dev 9); AFTER `bad-default
+  --validate-only`, run, `n=4` run, `pflow save` → the §1.2 default block at `inputs.n.default`, exit 1; `container
+  v='{"a":1}'` validate-only AND run → the two §1.6 blocks (the `??` one with R3's sentence); the same file declared
+  `object` → runs `1 fallback` (presence); `parent-inline` validate-only and run → the §1.5 sentence at
+  `nodes[id=call].params.inputs.n`. In-tree scan (`pe/scan_examples.py`: every `.pflow.md` under `examples/`,
+  `tests/fixtures/`, the Task-159 baseline, `workflows/` — 186 files) → **0 hits** (scanner presence-checked on the
+  probes: 4 hits). Task-159 `verify.sh`: **86 passed / 1 drifted / 0 errors** — `12-real-world-lyrics-generator/
+  04-guide-auto-detect`: the `pflow guide` text gained `COOKIE` in the masking-words list (`guide/nodes/shell.md`, from
+  main's #716 `3a7643c8`, merged at `6ec068c4`); PE touches no guide file — not re-recorded.  |  Assumed: MCP
+  `workflow_validate` inherits (same `WorkflowValidator`; not driven).
+- Deviations/surprises:
+  1. **Docs harness fixed, docs untouched:** `test_guide_example_validation._validate` injects every bare `${name}` as
+     an input — batch aliases included — so (f) flagged 3 guide/docs blocks (`item`, `filename`, `page`). The examples
+     declare no such input; the harness now skips each batched step's alias.
+  2. `test_plan_batch_sub_workflow_non_list_items_surfaces_error` declared `items: string` as `batch.items` — now a (d)
+     error; input switched to `any` so it still pins the planner's own non-list report.
+  3. **D11(a) placement (decided, 2/5): `WorkflowValidator` only, not `validate_data_flow`.** 181 invariant 5 is for
+     reports whose absence at compile is SILENT; a used bad default already fails loudly at the boundary (root compile,
+     PD's per-item child `prep`). In data flow a dynamic child's bad-but-supplied default would become a fatal,
+     unroutable `CompilationError`. Statically known children get it through the recursive validate. Reversible.
+  4. **NEEDS YOUR CALL (2/5) — (b) lives where the plan put it (template validator), so a child chosen at run time
+     (`workflow: ${…}`, compile-only) does not get it.** Most of its misses are loud at run time, but `${s.a ?? "x"}`
+     (fallback), `loop.while: ${s.a}` on plain text (stops), a cache var on plain text (chunk dropped) stay silent
+     there. Options: (A) leave it (rare: dynamic child + typed-input authoring bug); (B) move the pass into
+     `validate_data_flow` (the 181/118 invariant pattern; data flow already has `step_scope`). Recommendation: A now,
+     B as a follow-up if the gate's validation-consistency lens agrees.
+  5. **Checkpoint §1.11 is not built (not PE's file):** the host still says `Workflow node's 'inputs:' resolved to str,
+     expected dict of child inputs.` (plan D9: "the message gains the fix"; `workflow_executor.py`). My pin matches
+     `'inputs:' resolved to` so it survives the rewording.
+  6. Parity rows beyond the plan's list: `code:str`, a declared string into the `sink: dict` param (Raises), two
+     SILENT runtime rows the validator exists for (`loop_while` plain text → `Resolves(False)`; cache var plain text →
+     `Absent`), JSON-text cache var → `Raises(DeclaredInputTextError)`, `any` cache var → resolves. `output_source
+     ${txt.a}` → `Raises(OutputResolutionError)` as planned. Row inputs are named `txt`/`d`/`data`/`arr` — the harness's
+     consumer is node `s`, and an input `s` collides with it.
+  7. Message text beyond the checkpoint's samples (shape per §1.6/§1.7): index-on-string `cannot index it` + fix
+     `Declare - type: array …`; scalar `cannot read a field of a number|a boolean` / `cannot index …`, fix `Reference
+     ${n} whole.`; array field fix `Index it first (${items[0]…}), or reference ${items} whole.`; object index fix `Read a
+     field (${cfg.<field>}), or declare - type: array if 'cfg' holds a list.`; (c) registry form `` `${s}` feeds param
+     'headers' (type dict), but input 's' … `` + `Declare - type: object for 's'.`; (d) for non-string types drops "and
+     is never JSON-parsed"; (f) suggests `as: entry` (or `as: <alias>_item` when the alias IS `entry`). (e)
+     diagnostics carry `node_id` like their sibling validator errors, so text renders `At: node 'call',
+     nodes[id=call]…` (the runtime per-item record has no node prefix).
+  8. (e) path for a whole-map `inputs: ${item}` item follows the extras convention (`batch.items[N].inputs.<name>`).
+- Self-checks: fully-happy + test-reflect: pending orchestrator direction.
+- Next: hand back; mid-task review #2 (`review-validation-consistency`) on PC+PD+PE.
+
+## [2026-10-11 13:45] I3 (Opus) — PE self-checks (directed: §1.11 build, fully-happy, test-reflect)
+- Did: built checkpoint §1.11 (authorized): `WorkflowExecutor._extract_child_inputs` now raises `Step 'call': 'inputs:'
+  resolved to text, expected a map of child inputs. If the text is JSON, have the producing step emit a structured value
+  (code `result: dict`) or list the inputs as keys under 'inputs:'.` for a str; `Step 'call': 'inputs:' resolved to
+  <type>, expected a map of child inputs.` otherwise (`This step` without a node id); still `ValueError` (prep's
+  recoverable set routes it — comment at the site). Self-check found and closed its static twin (below).
+- Changed: `runtime/workflow_executor.py`; `runtime/template_validation/validator.py` (`_declared_batch_items` →
+  `_declared_whole_root`, now also for a sub-workflow step's whole-map `inputs:`; `_WORKFLOW_TYPES`) + its CLAUDE.md
+  Find row. Tests: `test_child_input_boundary.py::TestAWholeMapInputs` (text → exact §1.11 message through a real run;
+  presence: a `result: dict` producer runs the child, `7 3`); `test_workflow_executor_comprehensive.py::
+  test_inputs_non_dict_raises_shape_error` flipped to the exact list-form text; my bare-engine pin in
+  `test_workflow_validator_declared_inputs.py` tightened to the exact §1.11 sentence; new
+  `TestAWholeMapInputsFromADeclaredInput` (string → ERROR at `nodes[id=call].params.inputs`; object → valid).
+- Verified: `make check` rc 0; `make test` **11432 passed**; Task-159 `verify.sh` 86/1/0 — the same single drift
+  (`12/04-guide-auto-detect`, main's COOKIE), nothing new. Real CLI (isolated HOME): a shell step printing
+  `{"s":"hi","n":7}` into `inputs: ${mk.stdout}` → exit 1 with the §1.11 text. In-tree rescan (186 files, the new
+  phrase added) → 0 hits. Mutation ledger re-run in full on the final tree (same harness, counted): **24/24 killed** —
+  the 21 of [13:30] (re-run; M7's pattern re-pointed after the rename) + whole-map rule dropped (1 failed), whole-map
+  text given the generic message (2), a dict whole-map refused (36).  |  Assumed: nothing new.
+- Deviations/surprises:
+  1. **Correction to [13:30]:** that entry says "22/22 killed"; the ledger then had 21 mutants (M1–M21, M3 being the
+     move). All 21 were killed; the count was wrong, the claim of zero survivors stands.
+  2. **Fully-happy found a validate/run divergence §1.11 exposed:** `inputs: ${m}` on a sub-workflow step with `m`
+     declared `string` passed `--validate-only` (the workflow node has no registry param types, so Pass 6 never sees
+     it) and then failed at run time with §1.11. Closed in the (d) branch, which already did the same job for
+     `batch.items`: a whole declared root that is not an `object` there is an ERROR (`A sub-workflow step's whole
+     `inputs:` needs a map; input 'm' is declared `- type: string` and is never JSON-parsed.` → `Declare - type: object
+     for 'm'.`). Importance 2, reversible, PE's own pass. Not widened: whole-map text from an UPSTREAM output still
+     passes validation and fails at run time (unchanged since before this task; the engine never parsed it).
+  3. Other doubts checked and dismissed: `ref in expression.operands` compares by value (an inner index ref equal to an
+     operand is not a real shape); the scan used `validate(path, {})` and broken baseline fixtures short-circuit at
+     structure (they are broken on purpose); the real-HOME traces timestamped during my run are another project's
+     (`loudkult`), none mine.
+- Self-checks: fully-happy — 1 wrong claim corrected (dev 1), 1 divergence closed (dev 2), rest clean.
+  test-reflect (directed): deepened `TestShadowing::test_a_same_named_any_binding_still_receives_the_text` →
+  `test_a_same_named_binding_reads_the_input_and_receives_its_text` (its validator half could not fail; it now also
+  requires the `dict`-annotated twin to be the (c) ERROR at `params.inputs.data` — kills M2, which the old version did
+  not see; the runtime half duplicates PC's resolver test but stays as the plan's end-to-end leg); deleted parity row
+  `declared_string_into_code_str` (text either way via `text_input_keys` — PC's rule, already pinned there; nothing
+  PE-specific could fail it); deleted `TestDeclaredDefaults` row `null-is-no-default` (the coercer returns `None`
+  unchanged, so the guard it named could not be caught by it). Kept, each mutation-killed: the seven-row miss table
+  (one row per type branch and segment class — DynamicIndex is its own class), the any/untyped/index-on-array valid
+  rows (the absence half paired with the misses in the same medium), the (c)/(d)/(e)/(f) rows, the reachability pair,
+  and the remaining 16 parity rows (validator AND runtime outcome each; the two silent-runtime rows are the reason the
+  rules exist).
+- Next: hand back; available to gate-run mid-task review #2.
+
+## [2026-10-11 20:40] task-orchestrator — PE accepted; committed; review #2 commissioned
+- Did: read I3's [13:30]/[13:45]; accepted devs 1–3, 5–8 and the self-check's added (d)-twin rule (whole-map
+  `inputs: ${m}` on a declared non-`object` → validation ERROR; 2/5, mirrors the runtime §1.11 refusal).
+- Rulings: dev 4 (declared-read pass absent for run-time-chosen children) — **A for now** (2/5); posed explicitly to
+  mid-task review #2; B (move into `validate_data_flow`) if the lens agrees. Dev 5 — I3 authorized on
+  `workflow_executor.py` for §1.11 (done).
+- Cross-task (routed to the main orchestrator in my report): Task-159 case `12/04-guide-auto-detect` drifts on
+  `origin/main` itself since #716 `3a7643c8` (COOKIE in the guide's masking list; never re-recorded). Verified: our
+  `src/pflow/guide/` and `.taskmaster/tasks/task_159/` are byte-identical to `origin/main`. PZ treats that case as main's.
+- Next: commit PE; I3 gate-runs mid-task review #2 (validation-consistency on PC+PD+PE).

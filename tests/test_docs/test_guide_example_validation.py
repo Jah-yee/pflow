@@ -163,12 +163,16 @@ def _validate(path: Path, registry: Registry) -> list:
     pattern-teaching excerpts that omit ``## Inputs`` validate structurally;
     dotted node refs are left alone so typos/phantom children still fail. Only
     template surfaces are read: a shell command's ``${HOME}`` is sh's, never an input.
-    Returns ERROR-severity diagnostics.
+    A batch alias (``batch.as``, default ``item``) is the step's item, never an input
+    (an input of that name is a validation error). Returns ERROR-severity diagnostics.
     """
     ir = parse_markdown(path.read_text(encoding="utf-8")).ir
     normalize_ir(ir)
 
-    node_ids = {n.get("id") for n in ir.get("nodes", [])}
+    nodes = ir.get("nodes", [])
+    not_inputs = {n.get("id") for n in nodes} | {
+        n["batch"].get("as") or "item" for n in nodes if isinstance(n.get("batch"), dict)
+    }
     inputs = ir.setdefault("inputs", {})
     bare_names = {
         ref.root
@@ -178,7 +182,7 @@ def _validate(path: Path, registry: Registry) -> list:
         if not ref.path
     }
     for var in bare_names:
-        if var in node_ids or var in inputs:
+        if var in not_inputs or var in inputs:
             continue
         inputs[var] = {"type": "string", "required": False, "default": "dummy"}
 

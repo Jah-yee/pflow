@@ -298,6 +298,56 @@ Call the child.
         assert "To resume from the failed step: pflow resume " in as_text.stderr
 
 
+WHOLE_MAP_PARENT = """# Parent
+
+Make the child's inputs as one value, then pass it whole.
+
+## Steps
+
+### mk
+
+Make the inputs.
+
+- type: code
+
+```python code
+result: {annotation} = {value}
+```
+
+### call
+
+Call the child with the whole map.
+
+- type: workflow
+- workflow: ./child.pflow.md
+- inputs: ${{mk.result}}
+"""
+
+
+class TestAWholeMapInputs:
+    """``inputs: ${x}`` must resolve to a map: JSON TEXT is never parsed into one (the child types VALUES, ADR-0017)."""
+
+    def test_text_is_refused_with_the_fix(self, tmp_path: Path) -> None:
+        _child(tmp_path)
+        parent = tmp_path / "parent.pflow.md"
+        parent.write_text(WHOLE_MAP_PARENT.format(annotation="str", value="'{\"n\": 7}'"), encoding="utf-8")
+        result = _run(parent)
+        assert not result.success
+        assert [d.message for d in result.errors] == [
+            "Step 'call': 'inputs:' resolved to text, expected a map of child inputs. If the text is JSON, have the "
+            "producing step emit a structured value (code `result: dict`) or list the inputs as keys under 'inputs:'."
+        ]
+
+    def test_a_map_runs(self, tmp_path: Path) -> None:
+        """Presence half: the same step whose producer emits a dict runs the child with it."""
+        _child(tmp_path)
+        parent = tmp_path / "parent.pflow.md"
+        parent.write_text(WHOLE_MAP_PARENT.format(annotation="dict", value="{'n': 7}"), encoding="utf-8")
+        result = _run(parent)
+        assert result.success, [d.message for d in result.errors]
+        assert result.shared_after["call"]["out"] == "7 3"
+
+
 def test_a_parent_string_reaches_a_child_object_parsed_and_a_child_string_as_text(tmp_path: Path) -> None:
     """Ruling (ii) and #686's child half (break 10): the child's declaration decides."""
     (tmp_path / "child.pflow.md").write_text(

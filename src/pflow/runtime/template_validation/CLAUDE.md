@@ -15,6 +15,8 @@ run these passes.
 | Parameter type, code-input annotation | `type_validation.py` |
 | `${item.field}` against inferred item structure | `batch_item_validation.py` |
 | Type inference (compatibility: `core/templates.py::is_type_compatible`) | `type_checker.py` |
+| A read certain to miss on a declared input (path on a scalar, field on an `array`, index on an `object`, non-`array` `batch.items`, non-`object` whole-map sub-workflow `inputs:`) | `validator.py::_validate_declared_input_reads`; the root's binding is `type_checker.py::declared_root_type` |
+| A declared `string` into a container param/annotation | `type_validation.py::_declared_text_into_container` (Passes 6, 9) |
 | Index into declared structure, dotted display, safe display | `utils.py::descend_index`, `dotted_parts`, `sanitize_for_display` |
 | Output metadata or child workflow output discovery | `validator.py::extract_node_outputs`, `_resolve_child_workflow_outputs` |
 | Paths shown by node-output formatters | `utils.py::flatten_output_structure` |
@@ -107,6 +109,8 @@ suggestions, and available fields. Rendering belongs to `core/diagnostic_render.
 | `available_fields`, `available_fields_total` | Available values and full count |
 | `available_fields_label` | Explicit noun such as outputs/inputs; omission becomes generic “fields” |
 | `template` | Reference carried to structured consumers |
+| `input`, `declared_type` | The declared workflow input a rule is about, and its canonical type (shared with the input boundary and Task 112) |
+| `received`, `source`, `accepted` | Input-boundary errors only (`InputTypeError`): the value as shown (masked, cut at 80), where it entered, the accepted spelling |
 
 Do not populate keys that trigger another subsystem's blocks: compiler `phase`,
 runtime `exception_type`, HTTP `raw_response`, MCP `mcp_error`, parser `line`, or
@@ -135,3 +139,14 @@ Type compatibility is `core/templates.is_type_compatible` (template flow, not a
 literal-value check): string → dict/list is allowed because runtime parses JSON
 containers, string → numeric/bool is not; a source union needs every member to
 fit, a target union any. Parameterized collections compare outer types only.
+
+**A declared input is never re-parsed** (ADR-0017), so its rules key on the
+reference's ROOT, never on the matrix (whose `string` row is shared with code
+`result: str` and child outputs, which ARE parsed). `declared_root_type` answers
+"is this root the declared input here": it follows the runtime's binding — a
+step's own `inputs:` values, `batch.items`, loop fields and workflow-level
+surfaces read the input; a step's other params read its own `inputs:` key or
+batch alias first (`data_flow.step_scope`). The certain-miss pass runs before
+the early return (output-only workflows, cache vars) and over `??` operands,
+where a miss is a silent fallback. A miss that depends on the VALUE (a JSON-text
+descendant of an `object`) is the runtime's report (`unparsed_declared_text`).

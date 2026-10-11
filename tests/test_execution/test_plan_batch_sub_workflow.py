@@ -229,7 +229,9 @@ def test_plan_batch_sub_workflow_non_list_items_surfaces_error(tmp_path) -> None
     )
     write_workflow_file(
         {
-            "inputs": {"items": {"type": "string"}},
+            # `any`: a declared `string` as `batch.items` is a validation error (Task 120), and
+            # this pins the planner's own report of a non-list value.
+            "inputs": {"items": {"type": "any"}},
             "nodes": [
                 {
                     "id": "fanout",
