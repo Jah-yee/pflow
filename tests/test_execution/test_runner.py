@@ -5,6 +5,7 @@ workflow runs through the full pipeline producing structured results.
 """
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -677,7 +678,7 @@ class TestExceptionToResultCategorization:
     def _run(self, exception):
         """Helper to call _exception_to_result with minimal args."""
         runner = WorkflowRunner()
-        return runner._exception_to_result(exception, 0.0, None)
+        return runner._exception_to_result(exception, 0.0, None, metrics_collector=None)
 
     def test_valueerror_with_node_annotation_is_execution_failure(self):
         """ValueError from node execution (annotated) -> execution_failure."""
@@ -1448,3 +1449,103 @@ LLM node using a routed-Anthropic model identifier.
             f"INFO advisory must reach the trace warnings surface (not filtered out). "
             f"Got execution_warnings ids: {ids_in_trace}"
         )
+
+
+class TestResultCarriesRunMetrics:
+    """Both runner exits build ``ExecutionResult`` the same way: the run's own
+    ``MetricsCollector`` rides the result whenever the run got far enough to
+    create one (#699) — and only then.
+    """
+
+    @pytest.fixture
+    def created_collectors(self, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+        """Record every ``MetricsCollector`` the runner constructs (behaviour unchanged)."""
+        import pflow.core.metrics as metrics_module
+
+        created: list[Any] = []
+        original = metrics_module.MetricsCollector
+
+        class RecordingCollector(original):  # type: ignore[valid-type,misc]  # dynamic subclass of the real collector
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                created.append(self)
+
+        monkeypatch.setattr(metrics_module, "MetricsCollector", RecordingCollector)
+        return created
+
+    def test_normal_return_carries_the_runs_collector(self, created_collectors: list[Any]) -> None:
+        ir = {"nodes": [{"id": "only", "type": "shell", "params": {"command": "echo ok"}}], "edges": []}
+
+        result = WorkflowRunner().run(ir, {}, RunnerConfig())
+
+        assert result.success is True
+        assert len(created_collectors) == 1
+        assert result.metrics is created_collectors[0]
+
+    def test_node_exception_carries_metrics_naming_the_completed_step(self, created_collectors: list[Any]) -> None:
+        """A step that raises out of the engine (strict template resolution — #699's own
+        example) ends via ``_exception_to_result``. A ``code`` step that raises would NOT
+        do: the node converts it into an ``error`` action and the run returns normally."""
+        ir = {
+            "nodes": [
+                {"id": "first", "type": "shell", "params": {"command": "echo '{\"a\": 1}'"}},
+                {
+                    "id": "second",
+                    "type": "shell",
+                    "params": {"command": 'echo "$X"', "env": {"X": "${first.stdout.b}"}},
+                },
+            ],
+            "edges": [{"from": "first", "to": "second"}],
+        }
+
+        result = WorkflowRunner().run(ir, {}, RunnerConfig())
+
+        assert result.status is WorkflowStatus.FAILED
+        assert [error.node_id for error in result.errors] == ["second"]
+        assert "Unresolved variables" in result.errors[0].message
+        assert len(created_collectors) == 1
+        assert result.metrics is created_collectors[0]
+        assert "first" in result.metrics.workflow_nodes
+
+    def test_validator_error_predates_the_collector(self, created_collectors: list[Any]) -> None:
+        """A ``_prepare_workflow`` failure has no metrics and no trace — the boundary
+        that keeps pre-collector failures rendering exactly as before."""
+        ir = {
+            "nodes": [{"id": "a", "type": "shell", "params": {"command": "echo a"}}],
+            "edges": [{"from": "a", "to": "nowhere"}],
+        }
+
+        result = WorkflowRunner().run(ir, {}, RunnerConfig())
+
+        assert result.status is WorkflowStatus.FAILED
+        assert "nowhere" in str(result.errors)
+        assert created_collectors == []
+        assert result.metrics is None
+        assert result.trace is None
+
+    @pytest.mark.trace_files
+    def test_compile_time_failure_has_no_trace_path_until_finalize(self, created_collectors: list[Any]) -> None:
+        """A missing required input fails at compile time — after the collectors exist,
+        before the engine opens the stream. With the CLI's ``finalize_trace=False`` the
+        trace has no path yet; ``finalize()`` is what creates the file."""
+        ir = {
+            "inputs": {"topic": {"type": "string", "required": True, "description": "the topic"}},
+            "nodes": [{"id": "say", "type": "shell", "params": {"command": 'echo "$T"', "env": {"T": "${topic}"}}}],
+            "edges": [],
+        }
+
+        result = WorkflowRunner().run(ir, {}, RunnerConfig(finalize_trace=False))
+
+        assert result.status is WorkflowStatus.FAILED
+        assert "topic" in str(result.errors)
+        assert len(created_collectors) == 1
+        assert result.metrics is created_collectors[0]
+        assert result.metrics.workflow_nodes == {}
+        assert result.trace is not None
+        assert result.trace.trace_path is None
+
+        finalized = result.trace.finalize()
+
+        assert finalized is not None
+        assert finalized.is_file()
+        assert result.trace.trace_path == finalized

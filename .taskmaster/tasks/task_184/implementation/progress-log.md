@@ -91,3 +91,50 @@ Append-only. Spec: `../task-184.md` · Plan: `implementation-plan.md` · Checkpo
 - Ordering predicate: P1 starts only after `gh issue view 799` prints CLOSED, then a second `git merge origin/main`; P1 builds
   on the PRINTING compactor. #799 OPEN at 20:05.
 - Next: P0 to implementer I1 (Opus, medium).
+
+## [2026-10-11 22:50] implementer I1 (Opus) — P0: the result carries metrics on the exception path
+- Did: `_exception_to_result` gained keyword-only `metrics_collector: Any = None` and passes it as `ExecutionResult(metrics=…)`;
+  the one call site in `run()`'s `except Exception` passes `metrics_collector` (still `None` when `_prepare_workflow` raised —
+  the collector is created after it, unchanged). The two construction sites now differ only in `success`/`status`/
+  `shared_after` source/`diagnostics` (same `trace=`, `metrics=` wiring).
+- Changed: `src/pflow/execution/runner.py` (call site ~:263, signature ~:881, construction ~:957 — main moved; re-verified);
+  `tests/test_execution/test_runner.py` (new `TestResultCarriesRunMetrics`, 4 tests);
+  `tests/test_integration/test_failed_node_invariant.py:707` (one-line fix — see Deviations).
+- Verified: tests (a)–(d) green; with the runner diff reverted (`git apply -R`) (a) and (d) FAIL (`metrics is None`) and (b)/(c)
+  pass — expected, they pin the boundary and the unchanged normal path. The tests use a `created_collectors` fixture: a
+  recording subclass of the real `MetricsCollector` swapped in at `pflow.core.metrics` (behaviour untouched), so (a)/(c)/(d)
+  assert `result.metrics is` THE collector the run built and (b) asserts none was ever built. (d) runs under `trace_files` with
+  `RunnerConfig(finalize_trace=False)` (the CLI's config): `trace_path is None`, then `finalize()` returns a path that
+  `is_file()` and equals `trace_path` — the `None` can't come from a disabled stream. `make check` green; `make test`
+  **11569 passed** (baseline 11565 + 4 new). Real surface (HOME → scratchpad): a template-resolution failure via
+  `uv run pflow fail.pflow.md` now prints `❌ Workflow failed after 0.020s` (absent before — #699's CLI half lands already) and the
+  `--output-format json` document gains `duration_ms`/`metrics`/`total_cost_usd`/`nodes_executed`. Baseline oracle
+  `verify.sh` 01-parser-errors (10/10), 02-validator-errors (8/8), 15-run-flag-interactions (5/5) PASS — the five
+  `_prepare_workflow` failing cases stay `❌`-less as §1 predicted. | Assumed: nothing else in the baseline moves (only those
+  three dirs run; the full `verify.sh` is the completion gate's).
+- Deviations/surprises: (1) **Plan P0 (a)'s suggested fixture is wrong:** a `code` step that raises does NOT reach
+  `_exception_to_result` — the node converts it to an `error` action and the run returns through the normal path (proved by the
+  revert run: the code-raise variant passed with the fix reverted). Used a strict template-resolution failure
+  (`${first.stdout.b}` on non-matching JSON → `ValueError` "Template Resolution Failed" out of the engine) — #699's own example,
+  deterministic, no network (the plan's other option, the HTTP timeout, also reaches the exception path but costs 1s and a
+  routable-blackhole assumption). The existing `test_node_valueerror_categorized_as_execution_failure` docstring
+  (test_runner.py ~:771) claims that code-raise goes through `_exception_to_result` — stale; NOT edited (outside P0's ask), flag
+  for P1/P2 test rewrites. (2) **Plan P0 (d)'s "missing required input" fixture must not reference the input in a shell
+  `command`** — `echo ${topic}` is a validator error (shell commands are plain sh) and fails in `_prepare_workflow`, no collector;
+  used `env: {T: ${topic}}`. (3) **File outside P0's stated area:** `tests/test_integration/test_failed_node_invariant.py:707`
+  went red — it called `result.metrics.get_summary()` with no `llm_calls` arg, a latent bug in a branch that was dead while the
+  exception path dropped metrics. Fixed to mirror production (`get_summary(result.trace.collect_llm_calls())`, the
+  `error_formatter.py:51-53` shape) with an `assert result.metrics is not None` so the branch can't go dead again. One line, no
+  behaviour change; reported here because the plan's file list didn't name it. (4) P0 is NOT invisible to users: the CLI failure
+  path already reads `result.metrics` (`run.py` `_emit_failure_tag` + `output_error(metrics_collector=…)`), so the `❌` line and
+  JSON metrics block appear on CLI exception failures from this phase on (P1/P2 re-home the rendering). MCP's
+  `_build_error_text` does not read metrics (`metrics_summary=None`), so MCP failure text is unchanged until P3. No existing test pinned their absence.
+- Self-checks: fully happy — doubts raised: whether (b)/(c) are padding (they pass with and without the fix). Kept: (b) is the
+  plan-mandated boundary pin (a future "create the collector earlier" change would flip the baseline's five cases) and (c) is
+  the `is`-identity half the plan asks for; neither duplicates an existing test (`test_successful_workflow_runs_through_full_pipeline`
+  only asserts `metrics is not None`). The `# type: ignore[valid-type,misc]` on the dynamic subclass carries a coded reason.
+  test-reflect: not needed — (d)'s state assertion is paired with a real-file `finalize()` under `trace_files`, so a disabled
+  or never-opened stream can't fake-pass it; (a)/(d) were proven to fail on the reverted runner.
+  Follow-up (orchestrator-directed): doubt → fixed: kwarg made required (`metrics_collector` keyword-only, no default, so a new
+  call site cannot silently drop metrics); direct callers `test_runner.py:681` and `test_cli/test_agent_ux_fixes.py:398` pass `None`.
+- Next: P1 — gated on #799 CLOSED + a second `git merge origin/main` (orchestrator).
