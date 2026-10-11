@@ -131,3 +131,19 @@ def test_only_the_entry_reads_the_raw_diagnostic_context() -> None:
     }
 
     assert readers == {"format_diagnostic"}
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        _failed_reference_diagnostic(
+            FAILURE_CATEGORY_MCP, {"server": "srv", "tool": "t", "error_details": {"hint": "m" * 10_000}}
+        ),
+        Diagnostic(severity=Severity.ERROR, message="failed", context={"mcp_error_details": {"hint": "m" * 10_000}}),
+    ],
+    ids=["failed-reference-mcp", "mcp-error-details"],
+)
+def test_mcp_details_line_is_capped(diagnostic: Diagnostic) -> None:
+    details = [line.strip() for line in format_diagnostic(diagnostic).splitlines() if "Details:" in line]
+
+    assert details == ["Details: " + str({"hint": "m" * 10_000})[:300] + "..."]
