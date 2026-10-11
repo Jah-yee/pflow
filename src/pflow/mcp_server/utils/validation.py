@@ -1,66 +1,32 @@
-"""Input validation utilities for MCP server.
+"""Structural checks on MCP execution parameters.
 
-This module provides validation functions for security and correctness.
-
-Note: generate_dummy_parameters has been moved to pflow.core.validation_utils
-for reuse across CLI and MCP.
+Values are not inspected, so MCP accepts the values the CLI accepts (#722): pflow never
+evaluates an input value (code bodies are never template-resolved, ADR-0016), and a
+single-node run's code params are code its caller may run anyway, as with `pflow probe`.
 """
 
-import logging
-import re
+import json
 from typing import Any
 
-from pflow.core.validation_utils import generate_dummy_parameters  # noqa: F401 - Re-export for compatibility
+from pflow.core.validation_utils import get_parameter_validation_error, is_valid_parameter_name
 
-logger = logging.getLogger(__name__)
+_MAX_PARAMS_BYTES = 1024 * 1024
 
 
 def validate_execution_parameters(params: dict[str, Any]) -> tuple[bool, str | None]:
-    """Validate execution parameters for safety.
-
-    Checks for:
-    - Parameter name security (shell-safe characters)
-    - Reasonable parameter sizes
-    - No code injection attempts
-    - Valid data types
-
-    Args:
-        params: Execution parameters to validate
+    """Check parameter names, JSON-serialisability, and the 1MB serialized size.
 
     Returns:
         Tuple of (is_valid, error_message)
     """
-    # Check parameter names for security (prevents shell injection via parameter names)
-    from pflow.core.validation_utils import get_parameter_validation_error, is_valid_parameter_name
-
     for key in params:
         if not is_valid_parameter_name(key):
-            error_msg = get_parameter_validation_error(key, "parameter")
-            return False, error_msg
-
-    # Check total size (prevent memory attacks)
-    import json
+            return False, get_parameter_validation_error(key, "parameter")
 
     try:
-        param_str = json.dumps(params)
-        if len(param_str) > 1024 * 1024:  # 1MB limit
-            return False, "Parameters too large (max 1MB)"
+        serialized = json.dumps(params)
     except Exception as e:
         return False, f"Parameters not JSON serializable: {e}"
-
-    # Check for suspicious patterns (basic code injection prevention)
-    suspicious_patterns = [
-        r"__import__",
-        r"eval\s*\(",
-        r"exec\s*\(",
-        r"compile\s*\(",
-        r"globals\s*\(",
-        r"locals\s*\(",
-    ]
-
-    param_str = str(params)
-    for pattern in suspicious_patterns:
-        if re.search(pattern, param_str, re.IGNORECASE):
-            return False, f"Suspicious pattern detected: {pattern}"
-
+    if len(serialized) > _MAX_PARAMS_BYTES:
+        return False, "Parameters too large (max 1MB)"
     return True, None
