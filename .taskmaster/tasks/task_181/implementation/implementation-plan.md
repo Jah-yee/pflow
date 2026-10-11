@@ -46,7 +46,9 @@ ordering call for the main orchestrator, not this plan.
 **Re-verify at build (P0).** Each is a named check. A mismatch is a hand-back, not an adaptation:
 1. `param_mode(node_type: str | None, key: str) -> ParamMode` exists in
    `core/workflow/template_surfaces.py`. It is a function, not a table looked up at call sites, and
-   its callers compare `== "body"` (118 D1).
+   its callers compare `== "body"` (118 D1). *(Re-verified 2026-10-11 on 24386bfe: the shipped callers
+   compare `!= "body"` — `template_params`, `react_flow._param`, `execution_service` registry_run,
+   `split_params`; `file_resolver` uses `== "body"`. Same effect for a third mode: embedded is "not a body".)*
 2. `TemplateConfig.node_type` exists and the compiler fills it (118 D2).
 3. `split_params(params, expected_types, node_type)` exists and consults `param_mode` before
    `has_templates` (118 PB).

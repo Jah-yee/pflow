@@ -193,6 +193,24 @@ GRAMMAR_ROWS: tuple[G, ...] = (
     # Rows the table grew while measuring (not in the first probe list).
     G('${x} ${missing} ${x}', ('${x}', '${missing}', '${x}'), ('${x}', '${missing}', '${x}'), True, False,
       frozenset({'x', 'missing'}), 'hi ${missing} hi'),
+    # Task 181: the JSON insert. `resolved` is ordinary (non-embedded) resolution, where an
+    # insert is kept as written like an Issue; `test_templates.py` pins embedded resolution.
+    G('${x|json}', ('${x|json}',), ('${x|json}',), True, False, frozenset({'x'}), '${x|json}',
+      why='a JSON insert: an Expression, never simple, verbatim outside embedded code'),
+    G('${x | json}', ('${x | json}',), ('${x | json}',), True, False, frozenset({'x'}), '${x | json}',
+      why='spaces around `|` as around `??`'),
+    G('${a.b[0]|json}', ('${a.b[0]|json}',), ('${a.b[0]|json}',), True, False, frozenset({'a.b[0]'}), '${a.b[0]|json}'),
+    G('${a[${i}].b|json}', ('${a[${i}].b|json}',), ('${a[${i}].b|json}',), True, False, frozenset({'a[${i}].b'}),
+      '${a[${i}].b|json}', why='the suffix applies to the whole reference, dynamic index included'),
+    G('${a ?? "d"|json}', ('${a ?? "d"|json}',), ('${a ?? "d"|json}',), True, False, frozenset({'a'}), '${a ?? "d"|json}',
+      why='the suffix applies to the whole coalesce'),
+    G('${a ?? "x|json"}', ('${a ?? "x|json"}',), ('${a ?? "x|json"}',), True, True, frozenset({'a'}), [{'x': 'v'}],
+      why='`|json` inside a string literal is the literal, not an insert'),
+    G('${x|jsn}', (), (), False, False, frozenset(), '${x|jsn}', why='one fixed word: an Issue'),
+    G('${x|json }', (), (), False, False, frozenset(), '${x|json }', why='a space before `}` is an Issue, like `${ x }`'),
+    G('${ x|json}', (), (), False, False, frozenset(), '${ x|json}', why='a space after `${` is an Issue'),
+    G('$${x|json}', (), (), True, False, frozenset(), '${x|json}', why='an escape, like any `$${`'),
+    G('${x||json}', (), (), False, False, frozenset(), '${x||json}'),
 )
 # fmt: on
 
@@ -205,7 +223,7 @@ def test_grammar_row(row: G) -> None:
 def test_grammar_table_size_and_uniqueness() -> None:
     templates = [row.template for row in GRAMMAR_ROWS]
     assert len(templates) == len(set(templates))
-    assert len(templates) == 76
+    assert len(templates) == 87
 
 
 _OPEN = re.compile(r"(?<!\$)\$\{")
@@ -244,7 +262,7 @@ def test_parse_covers_every_open_and_reassembles_losslessly() -> None:
             expected = f"${{{tok.raw}}}" if isinstance(tok, Expression) else tok.raw
             assert source[tok.span[0] : tok.span[1]] == expected, source
         covered += len(opens)
-    assert covered == 82
+    assert covered == 93
 
 
 # ---------------------------------------------------------------------------

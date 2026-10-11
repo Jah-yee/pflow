@@ -47,7 +47,7 @@ export function producedTypeOf(
 // Template-ref extraction for the param-read scan — mirrors scope.py's
 // refs_with_path_in, i.e. `parse(text).references` in src/pflow/core/templates.py.
 // The regex strings below are copies of that module's grammar (`_IDENT`,
-// `_VAR_NAME_PATTERN`, `_SEGMENT`, `_LITERAL_PATTERN`, `_EXPRESSION`, `_SCAN`): keep
+// `_VAR_NAME_PATTERN`, `_SEGMENT`, `_LITERAL_PATTERN`, `_EXPRESSION`, `_JSON_INSERT`, `_SCAN`): keep
 // them in step, so a read here is exactly a Reference the runtime would resolve.
 // One left-to-right scan: an escape `$${…}` (brace-balanced body) is literal text; an
 // unescaped `${` either opens an Expression (its non-literal operands are references,
@@ -61,7 +61,8 @@ const SEGMENT = String.raw`${IDENT}(?:\[(?:[0-9]+|\$\{${STATIC_PATH}\})\])?`;
 const PATH = String.raw`${SEGMENT}(?:\.${SEGMENT})*`;
 const LITERAL = String.raw`(?:"(?:[^"\\?\x00-\x1f]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4}|\?(?!\?))*"|\btrue\b|\bfalse\b|\bnull\b|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?|\[\]|\{\})`;
 const OPERAND = `(?:${LITERAL}|${PATH})`;
-const EXPRESSION_AT = String.raw`\$\{(${OPERAND}(?:\s*\?\?\s*${OPERAND})*)\}`;
+const JSON_INSERT = String.raw`\s*\|\s*json`;
+const EXPRESSION_AT = String.raw`\$\{(${OPERAND}(?:\s*\?\?\s*${OPERAND})*)(${JSON_INSERT})?\}`;
 const SCAN = String.raw`(\$\$\{(?:[^{}]|\{[^{}]*\})*\}|\$\$\{)|(?<!\$)\$\{`;
 const SEGMENT_AT = String.raw`(${IDENT})(?:\[(?:[0-9]+|\$\{(${STATIC_PATH})\})\])?`;
 const LITERAL_FULL_RE = new RegExp(`^${LITERAL}$`);

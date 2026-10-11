@@ -26,7 +26,10 @@ from pflow.core.templates import (
     Template,
     TemplateResolver,
     Text,
+    embedded_code,
+    hidden_inserts,
     lookup,
+    near_miss_insert,
     parse,
     parse_path,
     resolve,
@@ -90,6 +93,19 @@ SHAPES: tuple[tuple[str, tuple[Any, ...], bool], ...] = (
     ("${0}", (Expression((Literal("0"),), "0", (0, 4)),), False),
     ("${true}", (Expression((Literal("true"),), "true", (0, 7)),), False),
     ("${truthy}", (Expression((Reference("truthy", (), "truthy"),), "truthy", (0, 9)),), False),
+    # A JSON insert: `raw` keeps the suffix (the span reassembles), `as_json` marks it.
+    ("${x|json}", (Expression((Reference("x", (), "x"),), "x|json", (0, 9), as_json=True),), False),
+    (
+        '${a ?? "d" | json}!',
+        (Expression((Reference("a", (), "a"), Literal('"d"')), 'a ?? "d" | json', (0, 18), as_json=True), Text("!")),
+        False,
+    ),
+    (
+        '${a ?? "x|json"}',
+        (Expression((Reference("a", (), "a"), Literal('"x|json"')), 'a ?? "x|json"', (0, 16)),),
+        False,
+    ),
+    ("${x|JSON}", (Issue("${x|JSON}", (0, 9), "malformed"),), False),
 )
 
 
@@ -110,6 +126,8 @@ def test_views() -> None:
     assert parse("${a[${i}].x}").is_simple
     assert not parse("${c.x.0}").needs_resolution  # an Issue-only value is static
     assert parse("$${x}").needs_resolution and not parse("$${x}").expressions
+    # A JSON insert is never simple, so resolution never preserves (or auto-parses) its value.
+    assert parse("${x}").is_simple and not parse("${x|json}").is_simple and not parse("${x|json}\n").is_simple
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +162,7 @@ def test_parse_cache_is_bounded() -> None:
 # Totality: parse and resolve never raise
 # ---------------------------------------------------------------------------
 
-_TOKENS = ("$", "{", "}", "${", "$${", "a", ".", "[", "]", "??", "0", '"', " ", "é")
+_TOKENS = ("$", "{", "}", "${", "$${", "a", ".", "[", "]", "??", "0", '"', " ", "é", "|json")
 _FIXED = (
     "${a[${i}].x}",
     "${a[${i}].x ?? b}",
@@ -186,22 +204,42 @@ _FIXED = (
     "${" * 20,
     "}" * 20,
     "${a}" * 50,
+    "${a|json} ${a}",
+    "$${a|json}",
+    "${${a|json} + 1}",
+    "$${x ${a|json}}",
+    "${a|json }",
+    "${a|JSON}",
+    "${a[${i}]|json}",
+    "'${a|json}'",
 )
 FUZZ: tuple[str, ...] = tuple("".join(p) for p in itertools.product(_TOKENS, repeat=2)) + _FIXED
 
 
 def test_fuzz_set_size() -> None:
-    assert len(FUZZ) == 14 * 14 + 40
+    assert len(FUZZ) == 15 * 15 + 48
 
 
 @pytest.mark.parametrize("source", FUZZ)
 def test_parse_and_resolve_never_raise(source: str) -> None:
     template = parse(source)
     assert isinstance(template, Template)
-    assert isinstance(resolve(source, {"a": [1], "i": 0, "b": "B"}), Resolution)
+    context = {"a": [1], "i": 0, "b": "B"}
+    assert isinstance(resolve(source, context), Resolution)
+    assert isinstance(resolve(source, context, embedded=True), Resolution)
+    for issue in template.issues:
+        near_miss_insert(issue)
     # The uncached scans agree with the cached parse.
     assert TemplateResolver.has_templates(source) is template.needs_resolution
     assert TemplateResolver.has_references(source) is bool(template.expressions)
+    # The embedded view is lossless: its Text plus its inserts' source spans are the source.
+    view = embedded_code(template)
+    rejoined = "".join(
+        seg.text if isinstance(seg, Text) else source[seg.span[0] : seg.span[1]] for seg in view.segments
+    )
+    assert rejoined == source
+    assert TemplateResolver.has_templates(source, embedded=True) is bool(view.expressions)
+    assert all(source[start:end].endswith("json}") for start, end in hidden_inserts(template))
 
 
 _OVERSIZED = "9" * 5000  # past Python's default int-string conversion limit (4300 digits)
@@ -388,3 +426,126 @@ def test_one_trailing_newline_keeps_a_template_simple() -> None:
     # Only one newline: anything more is complex text.
     assert resolve("${p.items}\n\n", context) == Resolution("[1, 2]\n\n")
     assert not parse(" ${p.items}").is_simple and not parse("${p.items} ").is_simple
+
+
+# ---------------------------------------------------------------------------
+# JSON inserts and the embedded-code view (Task 181)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "inserted"),
+    [
+        ("Don't Stop", '"Don\'t Stop"'),
+        (True, "true"),
+        (None, "null"),
+        (3, "3"),
+        ({"a": [1, 2]}, '{"a": [1, 2]}'),
+        ("é", '"é"'),
+        ("42\n", '"42\\n"'),  # text stays a string — never re-parsed
+        ('{"a":1}', '"{\\"a\\":1}"'),  # JSON text is a string too
+        ({1}, '"{1}"'),  # JSON cannot encode a set: the JSON string of its text
+    ],
+    ids=["apostrophe", "true", "null", "int", "object", "non-ascii", "text", "json-text", "set"],
+)
+def test_a_json_insert_enters_its_value_as_a_json_literal(value: Any, inserted: str) -> None:
+    assert resolve("const v = ${v|json};", {"v": value}, embedded=True) == Resolution(f"const v = {inserted};")
+    # A whole-value insert is text too: never type-preserved, never auto-parsed.
+    assert resolve("${v|json}", {"v": value}, auto_parse=True, embedded=True) == Resolution(inserted)
+
+
+def test_a_json_insert_of_a_coalesce_encodes_the_winning_operand() -> None:
+    assert resolve('${missing ?? "x" | json}', {}, embedded=True) == Resolution('"x"')
+    assert resolve("${missing ?? b|json}", {"b": False}, embedded=True) == Resolution("false")
+    assert resolve("${a[${i}].x|json}", {"a": [{"x": "v"}], "i": 0}, embedded=True) == Resolution('"v"')
+
+
+def test_an_unresolved_insert_stays_literal_in_the_unresolved_channel() -> None:
+    assert resolve("f(${up.missing|json})", {"up": {}}, embedded=True) == Resolution(
+        "f(${up.missing|json})", unresolved=frozenset({"up.missing|json"})
+    )
+
+
+def test_a_json_insert_outside_embedded_code_is_kept_as_written_like_an_issue() -> None:
+    """D4: ordinary resolution never fills a JSON insert in — the validator rejects it there,
+    and a run that skipped validation must not run what validation rejects."""
+    assert resolve("say ${x|json} ${x}", {"x": 1}) == Resolution("say ${x|json} 1", issues=frozenset({"${x|json}"}))
+    assert resolve("${x|json}", {"x": 1}, auto_parse=True) == Resolution("${x|json}", issues=frozenset({"${x|json}"}))
+
+
+_JS = "`${a + b}` $${p} ${user.name} ${t|json} '${x}'"
+
+
+def test_the_embedded_view_keeps_only_json_inserts_and_cuts_the_rest_from_the_source() -> None:
+    view = embedded_code(parse(_JS))
+    assert [(e.raw, e.span) for e in view.expressions] == [("t|json", (30, 39))]
+    assert [seg.text for seg in view.segments if isinstance(seg, Text)] == [_JS[:30], _JS[39:]]
+    assert not view.issues and not view.escaped
+
+
+def test_embedded_resolution_fills_only_the_insert() -> None:
+    context = {"t": "it's", "user": {"name": "N"}, "p": "P", "x": "X"}
+    assert resolve(_JS, context, embedded=True) == Resolution("`${a + b}` $${p} ${user.name} \"it's\" '${x}'")
+    # Presence pair: ordinary resolution of the same text does fill `${user.name}`.
+    assert "N" in resolve(_JS, context).value
+    # A container's leaves are read the same way.
+    assert resolve({"f": ["${user.name} ${t|json}"]}, context, embedded=True).value == {"f": ['${user.name} "it\'s"']}
+
+
+@pytest.mark.parametrize(
+    ("value", "ordinary", "embedded"),
+    [
+        ("`$${p}`", True, False),  # an escape is not one in embedded code: static, both `$` kept
+        ("${user.name}", True, False),  # a bare `${…}` is JavaScript
+        ("${t|json}", True, True),
+        ({"k": ["x", "${t|json}"]}, True, True),
+        ("${a + b}", False, False),
+    ],
+)
+def test_has_templates_in_embedded_code_counts_only_json_inserts(value: Any, ordinary: bool, embedded: bool) -> None:
+    assert TemplateResolver.has_templates(value) is ordinary
+    assert TemplateResolver.has_templates(value, embedded=True) is embedded
+
+
+@pytest.mark.parametrize(
+    ("source", "hidden"),
+    [
+        ("`cost: $${count|json}`", ["${count|json}"]),  # inside an escape
+        ("$${foo ${x|json}}", ["${x|json}"]),  # inside an escape's body
+        ("`${${x|json} + 1}`", ["${x|json}"]),  # swallowed by an Issue
+        ("${x|json}", []),
+        ("`$${price}`", []),
+        ("${a + b}", []),
+        ("${x|json} $${y|json}", ["${y|json}"]),  # a visible insert beside a hidden one
+    ],
+)
+def test_hidden_inserts_are_the_inserts_the_parse_could_not_see(source: str, hidden: list[str]) -> None:
+    spans = hidden_inserts(parse(source))
+    assert [source[start:end] for start, end in spans] == hidden
+    assert all(source.index(text) == start for text, (start, _) in zip(hidden, spans, strict=True))
+
+
+@pytest.mark.parametrize(
+    ("source", "meant"),
+    [
+        ("${x|json }", "${x|json}"),
+        ("${ x|json}", "${x|json}"),
+        ("${x|JSON}", "${x|json}"),
+        ('${ a ?? "d" | Json }', '${a ?? "d"|json}'),
+        ("${x|jsn}", None),  # a different word: in JavaScript a bitwise or
+        ("${a + b}", None),
+        ("${ x }", None),
+        ("${x|json", None),  # unclosed
+    ],
+)
+def test_near_miss_insert_names_the_insert_an_issue_was_meant_to_be(source: str, meant: str | None) -> None:
+    (issue,) = parse(source).issues
+    assert near_miss_insert(issue) == meant
+
+
+def test_the_lexical_patterns_read_an_insert_as_its_expression() -> None:
+    match = TemplateResolver.TEMPLATE_PATTERN.search("x ${a.b|json} y")
+    assert match is not None and match.group(1) == "a.b" and match.group(0) == "${a.b|json}"
+    # One group: `findall` consumers (prompt refs, token estimation) still get strings.
+    assert TemplateResolver.TEMPLATE_PATTERN.findall("${a ?? b|json} ${c}") == ["a ?? b", "c"]
+    assert TemplateResolver.SIMPLE_TEMPLATE_PATTERN.match("${a.b|json}") is None

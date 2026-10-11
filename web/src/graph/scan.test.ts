@@ -224,6 +224,10 @@ describe("consumedReadPaths — runtime parity (mirrors scope.py)", () => {
     ["an escaped dynamic index reads nothing", "$${gen.result[${idx.result}]}", {}],
     ["multi-index is an Issue, not a read", "${gen.result[0][1]}", {}],
     ["an Issue runs through its first brace", "${gen.result[${idx.result ?? 0}]}", {}],
+    ["a JSON insert reads its expression", "${gen.result.ok|json}", { gen: ["result.ok"] }],
+    ["a JSON insert of a coalesce reads each reference", '${gen.result ?? idx.result | json}', { gen: ["result"], idx: ["result"] }],
+    ["a misspelled insert word is an Issue", "${gen.result|jsn}", {}],
+    ["a space before the brace is an Issue", "${gen.result|json }", {}],
   ])("%s: %s", (_label, value, expected) => {
     expect(readsOf(value)).toEqual(expected);
   });
