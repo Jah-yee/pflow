@@ -56,6 +56,15 @@ def test_verify_runs_every_case_when_cases_read_stdin(baseline: Path) -> None:
     assert "summary: 3 passed, 0 drifted, 0 harness errors" in result.stdout
 
 
+def test_verify_fails_and_names_a_drifted_case(baseline: Path) -> None:
+    record(baseline)
+    (baseline / "c2" / "expected-stdout.txt").write_text("recorded text\n", encoding="utf-8")
+    result = run(baseline, "verify.sh")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "DRIFT c2" in result.stdout
+    assert "summary: 2 passed, 1 drifted, 0 harness errors" in result.stdout
+
+
 def test_regenerate_records_every_case_when_cases_read_stdin(baseline: Path) -> None:
     result = run(baseline, "regenerate.sh")
     assert result.returncode == 0, result.stdout + result.stderr
