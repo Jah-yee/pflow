@@ -643,14 +643,12 @@ def _render_failure_data_block(category: str, data: dict[str, Any]) -> list[str]
 def _render_shell_failure_block(data: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     if command := data.get("command"):
-        cmd_preview = command[:200] + "..." if len(command) > 200 else command
-        lines.append(f"        Command: {cmd_preview}")
+        lines.append(f"        Command: {_capped(command, 200)}")
     lines.extend(_format_shell_env_lines(data.get("env"), indent="        "))
     if (exit_code := data.get("exit_code")) is not None:
         lines.append(f"        Exit code: {exit_code}")
     if stderr := data.get("stderr"):
-        stderr_preview = stderr[:200] + "..." if len(stderr) > 200 else stderr
-        lines.append(f"        Stderr: {stderr_preview}")
+        lines.append(f"        Stderr: {head_tail_preview(stderr)}")
     if not lines:
         lines.append("        (no shell details captured — failure may have occurred before command ran)")
     return lines
@@ -726,6 +724,22 @@ def _render_generic_failure_block(data: dict[str, Any]) -> list[str]:
     if not lines:
         lines.append("        (no additional details captured)")
     return lines
+
+
+PREVIEW_HEAD_CHARS = 100
+PREVIEW_TAIL_CHARS = 300
+
+
+def head_tail_preview(text: str) -> str:
+    """A long stdout/stderr cut to its head and tail, the middle replaced by an omitted-count marker.
+
+    Tools write the cause last (a traceback's exception line, ``error:`` after progress
+    noise), so a text-channel preview keeps the tail as well as the head.
+    """
+    if len(text) <= PREVIEW_HEAD_CHARS + PREVIEW_TAIL_CHARS:
+        return text
+    omitted = len(text) - PREVIEW_HEAD_CHARS - PREVIEW_TAIL_CHARS
+    return f"{text[:PREVIEW_HEAD_CHARS]} … [{omitted:,} chars omitted] … {text[-PREVIEW_TAIL_CHARS:]}"
 
 
 def _capped(value: object, limit: int = 300) -> str:
@@ -851,13 +865,10 @@ def _format_shell_error_lines(context: dict[str, Any]) -> list[str]:
     """Render shell command failure details."""
     lines = ["", "  Shell details:"]
     command = context.get("shell_command") or ""
-    command_display = command[:200] + "..." if len(command) > 200 else command
-    lines.append(f"    Command: {command_display}")
+    lines.append(f"    Command: {_capped(command, 200)}")
     lines.extend(_format_shell_env_lines(context.get("shell_env"), indent="    "))
     if stdout := context.get("shell_stdout"):
-        stdout_preview = stdout[:300] + "..." if len(stdout) > 300 else stdout
-        lines.append(f"    Stdout: {stdout_preview}")
+        lines.append(f"    Stdout: {head_tail_preview(stdout)}")
     if stderr := context.get("shell_stderr"):
-        stderr_preview = stderr[:300] + "..." if len(stderr) > 300 else stderr
-        lines.append(f"    Stderr: {stderr_preview}")
+        lines.append(f"    Stderr: {head_tail_preview(stderr)}")
     return lines
