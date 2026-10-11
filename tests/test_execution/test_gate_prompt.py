@@ -241,9 +241,21 @@ class TestPreviewRendering:
         request = build_approval_request(
             "deploy",
             "ShellNode",
-            {"command": "deploy.sh", "env": {"FLAG": True, "NOTHING": None, "LONG": long_value, "AFTER": "tail"}},
+            {
+                "command": "deploy.sh",
+                "env": {
+                    "FLAG": True,
+                    "NOTHING": None,
+                    "LONG": long_value,
+                    "AFTER": "tail",
+                    "CONFIG": {"api_key": "sk-nested-secret", "region": "eu"},
+                },
+            },
         )
         rendered = self._rendered(request, monkeypatch, capsys)
+        # An object value is masked before it becomes text — its nested secret never shows.
+        assert "sk-nested-secret" not in rendered
+        assert '\\"api_key\\": \\"<REDACTED>\\", \\"region\\": \\"eu\\"' in rendered
         assert '"FLAG": "True"' in rendered
         assert '"FLAG": true' not in rendered
         assert '"NOTHING": ""' in rendered

@@ -76,17 +76,11 @@ def build_approval_request(node_id: str, node_type: str, params: Any, *, iterati
 
     ``_``-prefixed keys are parser/engine bookkeeping (``_source_line``, ...), not
     part of the action — filtered here like every other display surface
-    (node_output_formatter / trace_report convention). A shell step's ``env:``
-    values are previewed as the text the command receives (``to_string``,
-    ADR-0016 — ``true`` binds as ``True``, null as empty), not as typed values:
-    the approver consents to what runs, on every surface this payload feeds.
+    (node_output_formatter / trace_report convention).
     """
     if not isinstance(params, dict):
         return GateRequest(node_id=node_id, node_type=node_type, kind=GATE_KIND_APPROVAL, iteration=iteration)
     preview = {key: json_safe(value) for key, value in params.items() if not key.startswith("_")}
-    env = params.get("env")
-    if node_type_tag(node_type) == "shell" and isinstance(env, dict):
-        preview["env"] = json_safe({name: to_string(value) for name, value in env.items()})
     return GateRequest(
         node_id=node_id, node_type=node_type, kind=GATE_KIND_APPROVAL, preview=preview, iteration=iteration
     )
@@ -130,16 +124,21 @@ def option_labels(options: list[dict[str, Any]]) -> list[str]:
     return [str(option.get("label") or f"option {i}") for i, option in enumerate(options, start=1)]
 
 
-def masked_preview(preview: dict[str, Any]) -> dict[str, Any]:
-    """Preview with secret-NAMED values redacted (recursively) — never truncated.
+def masked_preview(preview: dict[str, Any], node_type: str | None) -> dict[str, Any]:
+    """The preview as every gate render surface shows it: what the step will receive.
 
-    THE masking policy for every gate render surface (TTY prompt, error
-    diagnostics); the trace's gate event stays unmasked, consistent with the
-    trace's ``template_resolutions``. Masking only, and no surface truncates an
-    approval preview (#746): the approver consents to the whole value. Routing
-    values through ``sanitize_parameters`` here once cut long non-secret nested
-    values (an http ``json:`` body, a sub-workflow ``inputs:`` field) to ~20
-    chars, blinding the approver to what they were approving (PR #554).
+    THE display policy (TTY prompt, pause output, error diagnostics, web panel);
+    the trace's gate event keeps the raw resolved params, consistent with the
+    trace's ``template_resolutions``.
+
+    - Secret-NAMED values are redacted, recursively.
+    - A shell step's ``env:`` values show as the text the command receives
+      (``to_string``, ADR-0016 — ``true`` as ``True``, null as empty). Masked
+      first, so a secret nested in an object value stays redacted in its text.
+    - Nothing is truncated on any surface: the approver consents to the whole
+      value (#746). Routing values through ``sanitize_parameters`` here once cut
+      long non-secret nested values (an http ``json:`` body, a sub-workflow
+      ``inputs:`` field) to ~20 chars, blinding the approver (PR #554).
     """
 
     def mask(key: str | None, value: Any) -> Any:
@@ -151,18 +150,20 @@ def masked_preview(preview: dict[str, Any]) -> dict[str, Any]:
             return [mask(None, item) for item in value]
         return value
 
-    return {key: mask(key, value) for key, value in preview.items()}
+    masked = {key: mask(key, value) for key, value in preview.items()}
+    env = masked.get("env")
+    if node_type_tag(node_type or "") == "shell" and isinstance(env, dict):
+        masked["env"] = {name: to_string(value) for name, value in env.items()}
+    return masked
 
 
 def masked_gate_dict(payload: dict[str, Any]) -> dict[str, Any]:
-    """A gate-payload DICT with its ``preview`` secret-masked — THE policy for
-    every surface that holds a plain ``GateRequest.to_dict()`` / trailer gate
-    dict rather than a live ``GateRequest``.
+    """A gate-payload DICT with its ``preview`` in display form (``masked_preview``) —
+    THE policy for every surface that holds a plain ``GateRequest.to_dict()`` /
+    trailer gate dict rather than a live ``GateRequest``.
 
-    Mask-only (recursive, never truncated), delegating to ``masked_preview``;
-    the trace's gate event stays unmasked, consistent with
-    ``template_resolutions``. ``exceptions._masked_gate_payload`` is the
-    object-form twin (``request.to_dict()`` → this). One rule, one home, N
-    consumers (the denied/paused JSON docs, ``ResumeAnswerRequiredError``).
+    ``exceptions._masked_gate_payload`` is the object-form twin
+    (``request.to_dict()`` → this). One rule, one home, N consumers (the
+    denied/paused JSON docs, ``ResumeAnswerRequiredError``, the web panel).
     """
-    return {**payload, "preview": masked_preview(payload.get("preview") or {})}
+    return {**payload, "preview": masked_preview(payload.get("preview") or {}, payload.get("node_type"))}
