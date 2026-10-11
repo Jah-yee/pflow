@@ -34,6 +34,37 @@ _GIT_BASH_DEFAULT_PATHS: tuple[str, ...] = (
 )
 
 
+class StdinBindingError(NodeError):
+    """The ``stdin:`` value cannot become the UTF-8 bytes piped to the command.
+
+    Raised in ``prep()``, before the command starts — the ``EnvBindingError`` contract:
+    never an exit code ``ignore_errors`` could swallow, never retried, and a batch item
+    fails without aborting a ``continue`` batch.
+    """
+
+    retriable = False
+    batch_fatal = False
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, param="stdin")
+
+
+def _stdin_bytes(text: str | None) -> bytes | None:
+    """The bytes piped to the command; ``None`` (the command reads EOF) for no or empty stdin."""
+    if not text:
+        return None
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        # UTF-8 encodes every code point except a surrogate. Strict on purpose: surrogateescape would
+        # turn a JSON-escaped \udcXX into an arbitrary byte the command cannot tell from real data.
+        raise StdinBindingError(
+            # Kept under the 200-character batch error preview, so the fix survives truncation.
+            f"The value bound to stdin: contains {text[exc.start]!r} at character {exc.start}, a surrogate UTF-8 "
+            "cannot encode (from a cut \\uXXXX escape or non-UTF-8 input bytes). Repair the value upstream."
+        ) from exc
+
+
 def _git_bash_support_paths(bash_path: str) -> list[str]:
     """Return Git-for-Windows directories that make non-login bash useful.
 
@@ -780,6 +811,7 @@ class ShellNode(Node):
         Raises:
             NodeError: If command, cwd, or timeout is missing or invalid
             EnvBindingError: If an ``env:`` name or value cannot become an environment variable
+            StdinBindingError: If the ``stdin:`` value cannot be encoded as UTF-8
             UserFriendlyError: On Windows when no Git Bash can be resolved (ADR-0013)
         """
         # Get command from params (required)
@@ -806,11 +838,7 @@ class ShellNode(Node):
                     )
                 break  # Only log once per command
 
-        # Get optional stdin from params
-        stdin = self.params.get("stdin")
-
-        # Adapt stdin to string (handle any type from templates)
-        stdin = self._adapt_stdin_to_string(stdin)
+        stdin_bytes = _stdin_bytes(self._adapt_stdin_to_string(self.params.get("stdin")))
 
         # Get optional configuration from params
         cwd = self.params.get("cwd")
@@ -852,7 +880,7 @@ class ShellNode(Node):
 
         return {
             "command": command,
-            "stdin": stdin,
+            "stdin_bytes": stdin_bytes,
             "cwd": cwd,
             "env": env,
             "timeout": timeout,
@@ -871,7 +899,7 @@ class ShellNode(Node):
             Dictionary with execution results
         """
         command = prep_res["command"]
-        stdin = prep_res["stdin"]
+        stdin_bytes = prep_res["stdin_bytes"]
         cwd = prep_res["cwd"]
         env = prep_res["env"]
         timeout = prep_res["timeout"]
@@ -885,9 +913,6 @@ class ShellNode(Node):
         )
 
         try:
-            # Encode stdin to bytes for text=False mode
-            stdin_bytes = stdin.encode("utf-8") if stdin else None
-
             if sys.platform == "win32":
                 # ADR-0013: POSIX sh everywhere — on Windows the command runs
                 # through Git Bash (resolved in prep()), never cmd.exe, so one

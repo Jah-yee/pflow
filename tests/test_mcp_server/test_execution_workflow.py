@@ -315,6 +315,33 @@ class TestExecuteWorkflowPaused:
         # Gate content is rendered — an agent can show its human WHAT is gated.
         assert "do-it" in text
 
+    def test_paused_gate_content_shows_env_as_the_bound_text_in_full(self, tmp_path):
+        """#746: the MCP pause text shows each env value as the text the command receives
+        (`true` binds as `True`) and never cuts a long one."""
+        long_value = "a" * 290 + "END_MARKER"
+        ir = {
+            "nodes": [
+                {
+                    "id": "guarded",
+                    "type": "shell",
+                    "params": {"command": "echo do-it", "env": {"FLAG": True, "LONG": long_value, "AFTER": "tail"}},
+                    "purpose": "Gated step requiring human approval",
+                    "approval": "required",
+                }
+            ],
+            "edges": [],
+        }
+        workflow_path = tmp_path / "gated-env.pflow.md"
+        write_workflow_file(ir, workflow_path)
+
+        text = ExecutionService.execute_workflow(str(workflow_path))
+
+        assert "status: paused" in text
+        assert '"FLAG": "True"' in text
+        assert '"FLAG": true' not in text
+        assert f'"LONG": "{long_value}"' in text
+        assert '"AFTER": "tail"' in text
+
     def test_auto_approved_gate_still_succeeds(self, tmp_path):
         workflow_path = tmp_path / "gated-approved.pflow.md"
         write_workflow_file(dict(GATED_IR), workflow_path)
