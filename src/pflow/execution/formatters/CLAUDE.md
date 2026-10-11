@@ -21,8 +21,8 @@ Shared presentation for CLI and MCP. Return strings/dicts; never print or call
 ## Consumer contracts
 
 Honor declared return types and guard optional metadata: MCP may pass `None`
-where CLI has a dictionary. Keep external error sanitization enabled;
-`error_formatter` sanitizes `raw_response` and `response_headers` by default.
+where CLI has a dictionary. A diagnostic in any JSON document is
+`Diagnostic.to_output_dict()` (redacted; see its docstring), never the raw `to_dict()`/`to_display_dict()`.
 Batch renderers use display-safe item summaries, never raw `errors[].item`.
 
 When extending shared formatter inputs, update both consumers:

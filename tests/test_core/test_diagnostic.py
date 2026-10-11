@@ -64,6 +64,26 @@ def test_diagnostic_identity_ignores_context() -> None:
     assert deduplicate_diagnostics([first, second]) == [first]
 
 
+def test_to_output_dict_redacts_at_any_depth_while_to_dict_stays_raw() -> None:
+    """The printed form masks sensitive-named values; ``to_dict`` is the raw round-trip form (#776)."""
+    context = {
+        "status_code": 401,
+        "failures": [{"response_headers": {"Set-Cookie": "session=s1", "Content-Type": "text/plain"}}],
+        "raw_response": "Unauthorized",
+    }
+    diagnostic = Diagnostic(severity=Severity.ERROR, message="HTTP 401", context=context)
+
+    output = diagnostic.to_output_dict()
+
+    assert output["context"] == {
+        "status_code": 401,
+        "failures": [{"response_headers": {"Set-Cookie": "<REDACTED>", "Content-Type": "text/plain"}}],
+        "raw_response": "Unauthorized",
+    }
+    assert diagnostic.to_dict()["context"] == context
+    assert Diagnostic.from_dict(diagnostic.to_dict()).context == context
+
+
 def test_to_dict_and_to_display_dict_preserve_context_shape() -> None:
     """Structured JSON keeps context nested; display dict flattens context keys."""
     diagnostic = Diagnostic(
