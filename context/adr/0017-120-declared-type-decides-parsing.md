@@ -21,9 +21,12 @@ protection is root-wide: a string descendant of a declared `object`/`array` inpu
 
 - **Exempt declared inputs by NAME on the resolver** (the compiler passes the input names) —
   rejected: `type: any` and untyped inputs rely on the traversal parse (`${data.a}` on a piped
-  JSON string), a node's own `inputs:` keys can shadow a same-named input in the resolution context,
-  and only `string` actually needs the rule once every other declared type is typed at the boundary.
-  The exemption is keyed on "root is a declared `string` input".
+  JSON string), and a node's own `inputs:` keys can shadow a same-named input in the resolution
+  context — a bare name set cannot express either. The chosen carrier is a name→type map of the
+  declared inputs on the shared store (`__pflow_input_types__`, installed where the run starts exactly
+  like `__pflow_prompt_cache__`), read by the leaf rule in `core/templates.resolve`: `any`/untyped roots
+  are simply absent from it, and the per-step shadow rule (a step's own `inputs:` key wins) is applied
+  where the map is consulted. Protection is root-wide for every declared non-`any` type (ruling (i)).
 - **Tag the VALUE at entry** (a `str` subclass the resolver recognises) — rejected: it leaks through
   pass-through outputs (`result: str = s`), so `${code.result}` would silently stop auto-parsing; and every
   JSON round trip (trace, memo cache) drops the tag, so each re-entry point (resume, cache hit) must restore it
@@ -48,4 +51,5 @@ protection is root-wide: a string descendant of a declared `object`/`array` inpu
 - The CLI's `key=value` parser returns raw text for every workflow-input command; type inference
   survives only for `type: any` / untyped inputs (lossless: typed only when the result reads back as
   the same text) and for `pflow probe`'s node params, which have no declaration.
-- Task 181's `${x|json}` and this rule share the one leaf-policy carrier on `core/templates.resolve`.
+- Task 181's `${x|json}` and this rule share the one leaf-policy site in `core/templates.resolve`; the
+  declared types reach it through the shared store, not through a new `resolve()` argument.

@@ -9,6 +9,8 @@ Add validation that checks literal parameter values against node interface metad
 > - **Task 120:** *workflow `## Inputs`* (caller-supplied via CLI/stdin) checked against *declared input types*. Lives in `prepare_inputs()`.
 >
 > They are **not duplicates** (distinct boundary + source of truth) but they **must share one type-compatibility primitive and one error format** — otherwise pflow ends up with two divergent type engines. That primitive is `TypeSpec.accepts` (`src/pflow/core/types.py`) for literal/coerced values. The template-flow matrix (`src/pflow/core/templates.py::is_type_compatible`, Task 84) is **not** a literal-value check — it approves `int`→`str` and `string`→`object` because templates stringify and auto-parse — so it must not decide these checkpoints. **Both checkpoints should call `TypeSpec.accepts`** rather than reimplementing it. If 112 and 120 are scheduled together, consider lifting the shared rules into one small home both call. See Task 120's "Sibling checkpoint" note for the symmetric pointer.
+>
+> **Refreshed 2026-10-10 against Task 120's implementation plan (`feat/task-120-declared-input-types`, plan §8):** both checkpoints use `TypeSpec` on canonical type names — `parse_text` for text, `accepts` for values; 112 translates registry names through `PYTHON_ALIASES_AT_S1` first — and build Diagnostics with the shared context keys `input|param`, `declared_type`, `received`, `accepted`, `path`, so the two boundaries render the same way.
 
 ## Status
 not started

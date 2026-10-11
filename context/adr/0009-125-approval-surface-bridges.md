@@ -14,8 +14,8 @@ human's answer — `pflow resume <execution-id> --approve yes|no`. Every approva
 spawns the CLI, mirroring `/api/run` under ADR-0008's observe-never-host rule).
 
 > **Amendment (2026-07-11, Task 176 plan session):** the web bridge shipped the answer surface as
-> ONE `POST /api/resume` mirroring the CLI verb — `{run, approve?, choose?, force?}` — rather than
-> a separate `/api/approve`; approval delivery is the `approve` body field. The decision (one
+> ONE `POST /api/resume` mirroring the CLI verb — `{run, approve?, choose?, force?, auto_approve?}` — rather than
+> a separate `/api/approve`; approval delivery is the `approve` body field. `auto_approve` (Task 183) is a yes/no flag the server applies to the ONE paused step — argv `--approve yes --auto-approve <that step>` — not the CLI flag's list of step ids; it requires `approve: "yes"` and is a 400 otherwise. The decision (one
 > pre-flight, one spawn path, flag exclusivity mapped 1:1 from the CLI) is ledger #4 in
 > `task-176.md`. The pattern this ADR fixes — payload is the seam, answers only via
 > `pflow resume` — is unchanged.
