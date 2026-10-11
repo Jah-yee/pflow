@@ -1163,11 +1163,11 @@ class TestItemsJsonAutoParsing:
             _run_batch(inner, shared)
 
     def test_json_object_fails_with_type_error(self):
-        """JSON object string (not array) fails at type check."""
+        """JSON object text is parsed like any simple template's JSON, then fails the shape check."""
         inner = MockInnerNode("test_node")
         shared: dict = {"data": '{"key": "value"}'}
 
-        with pytest.raises(TypeError, match="batch items must be an array, got str"):
+        with pytest.raises(TypeError, match="batch items must be an array, got dict"):
             _run_batch(inner, shared)
 
     def test_non_json_string_fails_with_type_error(self):

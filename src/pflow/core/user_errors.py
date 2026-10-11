@@ -184,9 +184,10 @@ def _optional_field_suggestions(output_blocks: list[dict[str, Any]]) -> list[str
 
     Only a ``path_error`` operand qualifies: an absent or failed node is not an
     optional field, a near-miss name (``did_you_mean``) is a typo that ``?? null``
-    would silence for good, and a miss inside a dynamic index (``a[${i.x}]``) is
-    not the expression's value. The fallback goes on the whole expression, so it
-    extends a ``??`` chain.
+    would silence for good, a walk into a declared input's JSON text
+    (``text_not_parsed``) is an author error ``??`` never falls past, and a miss inside
+    a dynamic index (``a[${i.x}]``) is not the expression's value. The fallback goes on
+    the whole expression, so it extends a ``??`` chain.
     """
     from pflow.core.templates import Reference, parse
 
@@ -195,7 +196,7 @@ def _optional_field_suggestions(output_blocks: list[dict[str, Any]]) -> list[str
         misses = {
             ref["var"]
             for ref in block["unresolved_references"]
-            if ref.get("status") == "path_error" and not ref.get("did_you_mean")
+            if ref.get("status") == "path_error" and not ref.get("did_you_mean") and not ref.get("text_not_parsed")
         }
         for expression in parse(block["template"]).expressions:
             operands = {op.raw for op in expression.operands if isinstance(op, Reference)}

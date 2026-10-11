@@ -477,9 +477,10 @@ def build_shared_store_for_refs(
     *,
     use_projection_resolver: bool = False,
 ) -> dict[str, Any]:
-    """Build a synthetic shared store keyed by root node ids for ``refs``."""
+    """Build a synthetic shared store keyed by root node ids for ``refs``, carrying the
+    workflow's declared input types as the run's store does."""
 
-    shared: dict[str, Any] = {}
+    shared: dict[str, Any] = ctx.declared_input_types()
     for ref in refs:
         root = TemplateResolver.extract_root_node_id(ref)
         if not root or root in shared:

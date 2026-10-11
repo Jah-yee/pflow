@@ -42,21 +42,26 @@ from typing import Any
 import pytest
 
 from pflow.core.exceptions import CompilationError
+from pflow.core.ir_schema import declared_input_types
+from pflow.core.param_coercion import coerce_declared_input
 from pflow.core.prompt_cache import CacheRenderContext, build_cache_system_blocks
+from pflow.core.templates import DECLARED_INPUT_TYPES_KEY
 from pflow.execution.result import RunnerConfig
 from pflow.execution.runner import WorkflowRunner
+from pflow.execution.workflow_resolver import resolve_workflow
 from pflow.mcp.manager import MCPServerManager
 from pflow.nodes.shell.env_binding import bind_env
 from pflow.registry import Registry
 from pflow.registry.scanner import extract_metadata
 from pflow.runtime import WorkflowEngine, compile_workflow
-from pflow.runtime.engine.batch_executor import _resolve_and_validate_items, resolve_batch_items
+from pflow.runtime.engine.batch_executor import _resolve_and_validate_items, bind_batch_item, resolve_batch_items
 from pflow.runtime.engine.engine import _resolve_template_string
 from pflow.runtime.engine.loop_control import evaluate_loop_condition, resolve_loop_cap
 from pflow.runtime.engine.plan_node import _render_cache_for_hash
 from pflow.runtime.engine.template_resolution import resolve_templates
 from pflow.runtime.engine.types import LoopConfig
 from pflow.runtime.output_resolver import populate_declared_outputs
+from pflow.runtime.workflow_executor import type_child_inputs
 from tests.shared.markdown_utils import write_workflow_file
 
 # ---------------------------------------------------------------------------
@@ -221,6 +226,8 @@ class Row:
     # When the end-to-end run observes something other than the direct driver
     # (loop iteration counts, a sub-workflow's echoed output), state it here.
     end_to_end: Outcome | None = None
+    # ``sub_inputs`` rows: the declared type of the child's input ``v``.
+    child_type: str = "any"
 
 
 # ---------------------------------------------------------------------------
@@ -274,11 +281,11 @@ def _plain_sink(row: Row, **extra: Any) -> dict[str, Any]:
     return _node("template-corpus-sink", {"sink_any": "${p.out_str}", **row.extra_params}, **extra)
 
 
-def _write_child(tmp_path: Path) -> Path:
-    """A child workflow echoing its input ``v`` as output ``got``."""
+def _write_child(tmp_path: Path, v_type: str = "any") -> Path:
+    """A child workflow echoing its input ``v`` (declared ``v_type``) as output ``got``."""
     child = {
         "ir_version": "0.1.0",
-        "inputs": {"v": {"type": "any", "required": True, "description": "value"}},
+        "inputs": {"v": {"type": v_type, "required": True, "description": "value"}},
         "nodes": [{"id": "c", "type": "code", "purpose": "Echo the input.", "params": _code_params("${v}", "Any")}],
         "edges": [],
         "outputs": {"got": {"source": "${c.result}", "description": "the echoed input"}},
@@ -363,13 +370,24 @@ def _resolved(value: Any) -> RuntimeObservation:
     return RuntimeObservation("resolves", value)
 
 
-def _input_values(row: Row, tmp_path: Path) -> dict[str, Any]:
-    """Declared inputs as the runner seeds them: the given param, else the default."""
+def _declared_inputs(row: Row, tmp_path: Path) -> dict[str, Any]:
     declared = dict(row.declared_inputs)
     if _names_child(row):
         declared["child"] = _child_input_spec(tmp_path)
+    return declared
+
+
+def _input_values(row: Row, tmp_path: Path) -> dict[str, Any]:
+    """Declared inputs as the run seeds them: the given param (a command-line argument), else the
+    default — each typed at the input boundary, as ``prepare_inputs`` types it."""
+    declared = _declared_inputs(row, tmp_path)
     return {
-        name: row.params[name] if name in row.params else spec["default"]
+        name: coerce_declared_input(
+            name,
+            spec.get("type"),
+            row.params[name] if name in row.params else spec["default"],
+            source="argument" if name in row.params else "default",
+        )
         for name, spec in declared.items()
         if name in row.params or "default" in spec
     }
@@ -387,6 +405,8 @@ def seed_shared(row: Row, tmp_path: Path) -> dict[str, Any]:
     shared = dict(result.shared_after)
     require(shared["p"] == dict(row.payload), "producer namespace must equal the payload")
     shared.update(_input_values(row, tmp_path))
+    # The row's declarations ride the store as the run installs them (no re-parse of a declared input).
+    shared[DECLARED_INPUT_TYPES_KEY] = declared_input_types({"inputs": _declared_inputs(row, tmp_path)})
     return shared
 
 
@@ -427,6 +447,17 @@ def _drive_param(row: Row, ir: dict[str, Any], shared: dict[str, Any]) -> Runtim
     return _resolve_param(row, _compile(row, ir).node_configs["s"], shared, _param_key(row))
 
 
+def _drive_sub_inputs(row: Row, ir: dict[str, Any], shared: dict[str, Any]) -> RuntimeObservation:
+    """The parent's resolution of ``inputs.v``, then the child's input boundary — what the child receives."""
+    observed = _drive_param(row, ir, shared)
+    if observed.kind != "resolves":
+        return observed
+    child_path = Path(ir["nodes"][-1]["params"]["workflow"])
+    child_ir = resolve_workflow(str(child_path)).ir
+    typed = type_child_inputs(child_ir, {"v": observed.value}, step="s", sub_workflow_path=str(child_path))
+    return _resolved(typed["v"])
+
+
 def _drive_batch_param(row: Row, ir: dict[str, Any], shared: dict[str, Any]) -> RuntimeObservation:
     """Resolve the param once per item, with the item context the batch executor builds."""
     config = _compile(row, ir).node_configs["s"]
@@ -434,7 +465,9 @@ def _drive_batch_param(row: Row, ir: dict[str, Any], shared: dict[str, Any]) -> 
     require(isinstance(items, list), f"batch items did not resolve: {items!r}")
     values = []
     for index, item in enumerate(items):
-        observed = _resolve_param(row, config, {**shared, "item": item, "__index__": index}, _param_key(row))
+        item_shared = dict(shared)
+        bind_batch_item(item_shared, shared, config.batch_config, item, index)
+        observed = _resolve_param(row, config, item_shared, _param_key(row))
         if observed.kind != "resolves":
             return observed
         values.append(observed.value)
@@ -512,17 +545,25 @@ def _drive_prewarm(row: Row, ir: dict[str, Any], shared: dict[str, Any]) -> Runt
     return RuntimeObservation("absent") if value is None else _resolved(value)
 
 
+def _raised(exc: Exception) -> RuntimeObservation:
+    """An exception as the observation; a ``CompilationError`` also shows the diagnostics it wraps."""
+    message = str(exc)
+    if isinstance(exc, CompilationError) and exc.wrapped_diagnostics:
+        message += " | " + " | ".join(d.message for d in exc.wrapped_diagnostics)
+    return RuntimeObservation("raises", message=message, exc_name=type(exc).__name__)
+
+
 def drive_runtime(row: Row, tmp_path: Path) -> RuntimeObservation:
     """The row's DIRECT runtime driver; any exception it raises is the observation."""
-    if row.surface == "cache":
-        return drive_cache(row, tmp_path)
-    shared = seed_shared(row, tmp_path)
+    shared = None if row.surface == "cache" else seed_shared(row, tmp_path)
     try:
+        if shared is None:
+            return drive_cache(row, tmp_path)
         return SURFACES[row.surface].drive(row, build_ir(row, tmp_path), shared)
     except HarnessError:
         raise
     except Exception as exc:
-        return RuntimeObservation("raises", message=str(exc), exc_name=type(exc).__name__)
+        return _raised(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -604,9 +645,9 @@ SURFACES: Mapping[str, Surface] = MappingProxyType({
     "output_source": Surface(_build_output_source, _drive_output, lambda _row, result: result.shared_after["o"]),
     "sub_inputs": Surface(
         lambda row, tmp_path, _ir: _node(
-            "workflow", {"workflow": str(_write_child(tmp_path)), "inputs": {"v": row.template}}
+            "workflow", {"workflow": str(_write_child(tmp_path, row.child_type)), "inputs": {"v": row.template}}
         ),
-        _drive_param,
+        _drive_sub_inputs,
         lambda _row, result: result.shared_after["s"]["got"],
     ),
     "sub_workflow": Surface(
@@ -701,7 +742,6 @@ def drive_cache(row: Row, tmp_path: Path) -> RuntimeObservation:
     ``Resolves`` carries the rendered ``prose_before + value`` texts in
     ``prompt_cache:`` order; the two render sites must agree byte for byte.
     """
-    from pflow.execution.workflow_resolver import resolve_workflow
     from pflow.runtime.engine.engine import build_prompt_cache_dict
 
     shared = seed_shared(row, tmp_path)
@@ -709,7 +749,7 @@ def drive_cache(row: Row, tmp_path: Path) -> RuntimeObservation:
         ir = resolve_workflow(str(write_cache_workflow(row, tmp_path))).ir
         compiled = compile_workflow(ir, Registry(), initial_params=dict(row.params))
     except Exception as exc:
-        return RuntimeObservation("raises", message=str(exc), exc_name=type(exc).__name__)
+        return _raised(exc)
     chunk_names = {chunk.name for chunk in compiled.cache_block.items} if compiled.cache_block else set()
     require(set(row.prompt_cache) <= chunk_names, f"prompt_cache {row.prompt_cache} names a non-chunk: {chunk_names}")
     shared["__pflow_prompt_cache__"] = MappingProxyType(build_prompt_cache_dict(compiled, shared))
@@ -1951,6 +1991,256 @@ CACHE_ROWS: tuple[Row, ...] = (
     ),
 )
 
+# ---------------------------------------------------------------------------
+# Declared inputs are never re-parsed (Task 120, ADR-0017): validator vs runtime
+# ---------------------------------------------------------------------------
+
+
+def declared(name: str, kind: str) -> Mapping[str, Mapping[str, Any]]:
+    """One optional input of type ``kind``; rows pass its value as a command-line argument (``params``)."""
+    return MappingProxyType({name: {"type": kind, "required": False, "description": f"A {kind} input."}})
+
+
+JSON_TEXT = '{"a":1}'
+
+DECLARED_INPUT_ROWS: tuple[Row, ...] = (
+    Row(
+        "declared_string_json_text_stays_text",
+        "param",
+        "${txt}",
+        Ok(),
+        Resolves(JSON_TEXT),
+        consumer="code",
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+        mutation="the leaf parses a declared input's text (#686)",
+    ),
+    Row(
+        "declared_string_field",
+        "param",
+        "${txt.a}",
+        Error("so `${txt.a}` cannot read a field of it"),
+        # The compiler enforces the certain-miss rule too (validate_data_flow): a child chosen at run time
+        # is only compiled, and refuses this before anything resolves.
+        Raises("CompilationError", "so `${txt.a}` cannot read a field of it"),
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+        mutation="the walk parses a declared input's text mid-path",
+    ),
+    # Root-wide (ruling i): a JSON-text descendant of a declared object stays text — not certain statically
+    # (the validator cannot see the value), so it is reported at run time, never silently.
+    Row(
+        "declared_object_text_descendant",
+        "param",
+        "${d.payload.a}",
+        Ok(),
+        Unresolved(("d.payload.a",)),
+        declared_inputs=declared("d", "object"),
+        params={"d": json.dumps({"payload": JSON_TEXT})},
+    ),
+    Row(
+        "declared_any_keeps_the_traversal_parse",
+        "param",
+        "${data.a}",
+        Ok(),
+        Resolves(1),
+        declared_inputs=declared("data", "any"),
+        params={"data": JSON_TEXT},
+    ),
+    Row(
+        "declared_string_coalesce_whole",
+        "param",
+        '${txt ?? "x"}',
+        Ok(),
+        Resolves(JSON_TEXT),
+        consumer="code",
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+    ),
+    # Without the rule `??` would silently fall through to "x" — refused at compile as at validation.
+    Row(
+        "declared_string_coalesce_field",
+        "param",
+        '${txt.a ?? "x"}',
+        Error("As a ?? operand the fallback would always win."),
+        Raises("CompilationError", "As a ?? operand the fallback would always win."),
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+        mutation="?? operands on a declared root are not checked",
+    ),
+    Row(
+        "declared_string_into_dict_param",
+        "param",
+        "${txt}",
+        Error("feeds param 'sink' (type dict)"),
+        Raises("ValueError", "declared `- type: string`"),
+        consumer="sink",
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+    ),
+    Row(
+        "declared_string_batch_items",
+        "batch_items",
+        "${txt}",
+        Error("`batch.items` needs a list"),
+        Raises("CompilationError", "`batch.items` needs a list"),
+        declared_inputs=declared("txt", "string"),
+        params={"txt": '["a","b"]'},
+    ),
+    Row(
+        "declared_array_batch_items",
+        "batch_items",
+        "${arr}",
+        Ok(),
+        Resolves(["a", "b"]),
+        declared_inputs=declared("arr", "array"),
+        params={"arr": '["a","b"]'},
+    ),
+    # Without the rule, plain text reads as "absent" and the loop silently stops.
+    Row(
+        "declared_string_loop_while_text",
+        "loop_while",
+        "${txt.a}",
+        Error("so `${txt.a}` cannot read a field of it"),
+        Raises("CompilationError", "so `${txt.a}` cannot read a field of it"),
+        declared_inputs=declared("txt", "string"),
+        params={"txt": "hello"},
+    ),
+    Row(
+        "declared_string_output_source",
+        "output_source",
+        "${txt.a}",
+        Error("so `${txt.a}` cannot read a field of it"),
+        Raises("CompilationError", "so `${txt.a}` cannot read a field of it"),
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+        extra_params=MappingProxyType({"sink_str": "${txt}"}),
+    ),
+    Row(
+        "declared_string_into_child_string",
+        "sub_inputs",
+        "${txt}",
+        Ok(),
+        Resolves(JSON_TEXT),
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+        child_type="string",
+        mutation="the parent parses a workflow step's inputs:",
+    ),
+    # Ruling (ii): a declared boundary types text by its own declaration, as a CLI token is typed.
+    Row(
+        "declared_string_into_child_object",
+        "sub_inputs",
+        "${txt}",
+        Ok(),
+        Resolves({"a": 1}),
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+        child_type="object",
+    ),
+    # Without the rule, plain text silently drops the chunk (and its prose).
+    Row(
+        "declared_string_cache_var_text",
+        "cache",
+        "Rules: ${txt.a}",
+        Error("so `${txt.a}` cannot read a field of it"),
+        Raises("CompilationError", "so `${txt.a}` cannot read a field of it"),
+        prompt_cache=("txt.a",),
+        declared_inputs=declared("txt", "string"),
+        params={"txt": "hello"},
+    ),
+    Row(
+        "declared_any_cache_var",
+        "cache",
+        "Rules: ${data.a}",
+        Ok(),
+        Resolves(("Rules: 1",)),
+        prompt_cache=("data.a",),
+        declared_inputs=declared("data", "any"),
+        params={"data": JSON_TEXT},
+    ),
+    # D15: a name bound to ONE whole reference of a declared input (a step `inputs:` key, a batch alias) is that
+    # input for the step — validator and runtime alike; any other binding is local (a node output's rules).
+    Row(
+        "bound_declared_string_field",
+        "param",
+        "${doc.a}",
+        Error("Input 'txt' (as 'doc') is declared `- type: string`, so `${doc.a}` cannot read a field of it"),
+        Raises("CompilationError", "Input 'txt' (as 'doc') is declared `- type: string`"),
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+        extra_params=MappingProxyType({"inputs": {"doc": "${txt}"}}),
+        mutation="a step's inputs: key bound to a declared input drops its protection (W1)",
+    ),
+    Row(
+        "bound_declared_object_descendant",
+        "param",
+        "${doc.a}",
+        Ok(),
+        Unresolved(("doc.a",)),
+        declared_inputs=declared("d", "object"),
+        params={"d": json.dumps({"payload": JSON_TEXT})},
+        extra_params=MappingProxyType({"inputs": {"doc": "${d.payload}"}}),
+        mutation="a binding to text inside a declared input is parsed",
+    ),
+    Row(
+        "bound_node_output_is_local",
+        "param",
+        "${doc.a}",
+        Ok(),
+        Resolves(1),
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+        extra_params=MappingProxyType({"inputs": {"doc": "${p.out.json_str}", "t": "${txt}"}}),
+    ),
+    Row(
+        "bound_coalesce_is_local",
+        "param",
+        "${doc.a}",
+        Ok(),
+        Resolves(1),
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+        extra_params=MappingProxyType({"inputs": {"doc": "${txt ?? p.out.json_str}"}}),
+        mutation="a ?? binding inherits its first operand's protection",
+    ),
+    Row(
+        "alias_of_a_declared_array",
+        "batch_param",
+        "${item}",
+        Ok(),
+        Resolves([JSON_TEXT]),
+        consumer="code",
+        batch_items="${arr}",
+        declared_inputs=declared("arr", "array"),
+        params={"arr": json.dumps([JSON_TEXT])},
+        mutation="the batch alias over a declared input drops its protection (W1)",
+    ),
+    Row(
+        "alias_of_a_declared_array_path",
+        "batch_param",
+        "${item.a}",
+        Ok(),
+        Unresolved(("item.a",)),
+        batch_items="${arr}",
+        declared_inputs=declared("arr", "array"),
+        params={"arr": json.dumps([JSON_TEXT])},
+    ),
+    Row(
+        "alias_inline_follows_each_element",
+        "batch_param",
+        "${item}",
+        Ok(),
+        Resolves([JSON_TEXT, {"a": 1}]),
+        consumer="code",
+        batch_items=["${txt}", "${p.out.json_str}"],
+        declared_inputs=declared("txt", "string"),
+        params={"txt": JSON_TEXT},
+        mutation="an inline element's provenance is not read per item",
+    ),
+)
+
+
 SURFACE_ROWS: tuple[Row, ...] = (
     PARAM_ROWS
     + BATCH_ROWS
@@ -1963,6 +2253,7 @@ SURFACE_ROWS: tuple[Row, ...] = (
     + EMBEDDED_ROWS
     + MISPLACED_INSERT_ROWS
     + CACHE_ROWS
+    + DECLARED_INPUT_ROWS
 )
 
 

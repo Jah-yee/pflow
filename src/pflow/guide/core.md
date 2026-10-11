@@ -295,7 +295,7 @@ Parsed record array from the fetch response.
 - source: ${fetch-records.response.items}
 `````
 
-**Input fields**: `type` (string|number|integer|boolean|array|object|any), `required` (true|false), `default` (only when required: false), `stdin` (true|false — only one input can have this), description as prose.
+**Input fields**: `type` (string|number|integer|boolean|array|object|any — omitted means `any`), `required` (true|false), `default` (fills in when no value arrives, so a defaulted input is never missing; must fit `type`), `stdin` (true|false — only one input can have this), description as prose.
 
 **Output fields**: `source` (required — template expression like `${node.key}`), `type` (optional hint), `stdout` (true|false — at most one output may set this; marks the output that streams to stdout in text mode), description as prose. A `source` that cannot resolve fails the run (exit 1) — for a field that may be absent write `${node.field ?? null}` (a `??` chain whose nodes all never ran omits the output instead); the outputs that did resolve stay in the `--output-format json` failure document's `result`.
 
@@ -438,25 +438,28 @@ In JavaScript passed to an MCP tool (`evaluate_script`'s `function` and the like
 
 #### Critical: Automatic JSON Parsing for Simple Templates
 
-**Simple templates (`${var}`) automatically parse JSON strings.** This enables direct data access without intermediate extraction steps.
+**A simple template (`${var}`) parses JSON object and array text from a step's output** wherever a structure is wanted. This enables direct data access without intermediate extraction steps.
 
-**Two contexts where auto-parsing occurs:**
+**Where parsing happens:**
 
 1. **Path traversal**: `${node.stdout.field}` parses JSON to access nested properties
-2. **Inline objects**: `{"data": "${node.stdout}"}` parses JSON for structured data composition
+2. **Structured values**: inline objects `{"data": "${node.stdout}"}`, a step's `inputs:` map, `batch.items`, and a param that expects a dict or list
 
 **What gets parsed:**
-- All JSON types: objects `{}`, arrays `[]`, numbers, booleans, strings, null
+- JSON objects `{}` and arrays `[]` only — a number, boolean or plain text stays a string (`'42'` stays `'42'`)
 - Shell **stdout** with trailing `\n` is automatically stripped (disable with `strip_newline: false`). stderr is never modified.
-- Plain text and invalid JSON gracefully stay as strings
+- Invalid JSON gracefully stays a string
+
+**What is never parsed** (the value arrives as it is):
+- A workflow input with a declared type other than `any` — `${input}` is exactly what its `## Inputs` type made it, at every step. JSON text inside a declared input stays text, so `${input.field}` cannot reach into it (declare `- type: object` instead). A step's `inputs:` key or a batch alias bound to one whole reference to such an input (`doc: ${input}`, `items: ${input}`) keeps that protection; a binding with `??` or text around the reference is parsed like a step output. An `any` or untyped input is parsed like a step output.
+- A code `inputs:` key annotated `str` (or `str | None`), a shell `env:` value, an http `headers` value, and a sub-workflow step's `inputs:` — the child types each value by its own `## Inputs`
 
 **Concrete examples** (inline object context):
 | Template | Source value | After resolution |
 |----------|--------------|------------------|
 | `{"data": "${shell.stdout}"}` | `'{"items": [1,2,3]}\n'` | `{"data": {"items": [1,2,3]}}` |
 | `{"items": "${mcp-node.result}"}` | `'[{"id": 1}, {"id": 2}]'` | `{"items": [{"id": 1}, {"id": 2}]}` |
-| `{"count": "${shell-node.stdout}"}` | `'42\n'` | `{"count": 42}` |
-| `{"valid": "${check.stdout}"}` | `'true'` | `{"valid": true}` |
+| `{"count": "${shell-node.stdout}"}` | `'42\n'` | `{"count": "42"}` |
 | `{"text": "${any.output}"}` | `'plain text'` | `{"text": "plain text"}` |
 
 **Escape Hatch** (force raw string):
@@ -668,13 +671,15 @@ Workflow `## Inputs` / `## Outputs` use canonical JSON-Schema-style names. Pytho
 
 | Workflow `type:` | Python annotation | Notes |
 |---|---|---|
-| `string` | `str` | |
-| `integer` | `int` | Rejects floats |
-| `number` | `int \| float` or `float` | |
-| `boolean` | `bool` | |
-| `array` | `list` | |
-| `object` | `dict` | Dict only, not wildcard |
-| `any` | `Any` | `Any` is auto-injected in code blocks |
+| `string` | `str` | The text as given, never parsed (`02134` stays `02134`) |
+| `integer` | `int` | Digits with an optional `-` (`007` → 7); rejects `3.0`, `1e3`, `true` |
+| `number` | `int \| float` or `float` | A JSON number: `3`, `2.5`, `1e3`; rejects `007`, `nan`, `1_000` |
+| `boolean` | `bool` | `true`/`false`/`yes`/`no`/`1`/`0`, any case |
+| `array` | `list` | JSON array text |
+| `object` | `dict` | JSON object text; dict only, not wildcard |
+| `any` | `Any` | Not checked. A command-line value is typed only when it reads back unchanged (`42`, `true`, `[1]`; `02134`, `1.10`, `[1, 2]` stay text); MCP values arrive as sent. `Any` is auto-injected in code blocks |
+
+A workflow input's value is typed once, where it enters (command line, stdin, environment, settings, `default:`, MCP, a parent workflow, a resumed run), and a value that does not fit fails with `Invalid input value`, naming where the value came from — before any step runs (a sub-workflow input: at the step that calls it, routable like any step error). Surrounding whitespace is ignored when text is read as `integer`, `number`, `boolean`, `array` or `object`; a `string` keeps it, and so does an `any` value (` 42` stays text). A typed MCP value must fit too: a `string` takes any scalar (`3` → `"3"`), `integer` rejects `3.0` and `true`. An input without `type:` is `any`.
 
 Code blocks follow modern Python syntax — use lowercase generics (`list[T]`, `dict[K, V]`) and pipe unions (`int | str`), not `List[T]` / `Union[A, B]`. See `pflow guide code` for the full type annotation syntax table.
 

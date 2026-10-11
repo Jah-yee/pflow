@@ -4,8 +4,9 @@ from types import SimpleNamespace
 
 import click
 import click.testing
+import pytest
 
-from pflow.cli.param_parsing import infer_type, parse_workflow_params
+from pflow.cli.param_parsing import format_param_value, infer_type, parse_workflow_params
 from pflow.cli.workflow_errors import _display_text_error_details
 from pflow.cli.workflow_output import _display_execution_summary
 from pflow.cli.workflow_resolution import is_likely_workflow_name
@@ -68,37 +69,24 @@ class TestInferType:
 
 
 class TestParseWorkflowParams:
-    """Test parameter parsing from command arguments."""
+    """``name=value`` splitting — the CLI never guesses a workflow input's type."""
 
     def test_single_param(self):
         """Test parsing a single parameter."""
         result = parse_workflow_params(("input_file=data.csv",))
         assert result == {"input_file": "data.csv"}
 
-    def test_multiple_params(self):
-        """Test parsing multiple parameters."""
-        args = ("input_file=data.csv", "output_dir=results/", "limit=100")
-        result = parse_workflow_params(args)
-        assert result == {
-            "input_file": "data.csv",
-            "output_dir": "results/",
-            "limit": 100,  # Note: inferred as int
-        }
-
     def test_no_params(self):
         """Test with no parameters."""
         assert parse_workflow_params(()) == {}
         assert parse_workflow_params(("no-equals-sign",)) == {}
 
-    def test_type_inference_in_params(self):
-        """Test that type inference works in parameter parsing."""
-        args = ("verbose=true", "count=42", "ratio=3.14", "items=[1,2,3]", 'config={"key":"value"}')
-        result = parse_workflow_params(args)
-        assert result["verbose"] is True
-        assert result["count"] == 42
-        assert result["ratio"] == 3.14
-        assert result["items"] == [1, 2, 3]
-        assert result["config"] == {"key": "value"}
+    def test_every_value_stays_the_text_typed(self):
+        """Typing is the declaration's job at the input boundary: a token that LOOKS typed arrives as
+        its exact text (the #687 class — ``02134`` once arrived as ``2134``, ``TRUE`` as ``True``)."""
+        tokens = ["02134", "1.10", "TRUE", "1e3", "42", "true", "[1, 2]", '{"a":1,"b":[1,2]}', "null", " 7 "]
+        result = parse_workflow_params(tuple(f"v{i}={token}" for i, token in enumerate(tokens)))
+        assert result == {f"v{i}": token for i, token in enumerate(tokens)}
 
     def test_empty_value(self):
         """Test parameter with empty value."""
@@ -109,6 +97,70 @@ class TestParseWorkflowParams:
         """Test parameter value containing equals sign."""
         result = parse_workflow_params(("expression=a=b+c",))
         assert result == {"expression": "a=b+c"}
+
+
+class TestFormatParamValue:
+    """Test the format_param_value function that converts Python values to CLI strings."""
+
+    @pytest.mark.parametrize(
+        "input_value,expected",
+        [
+            # Booleans - must be lowercase strings
+            (True, "true"),
+            (False, "false"),
+            # Integers
+            (0, "0"),
+            (42, "42"),
+            (-999, "-999"),
+            (1234567890, "1234567890"),
+            # Floats
+            (3.14, "3.14"),
+            (0.0, "0.0"),
+            (-2.5, "-2.5"),
+            (1.23e10, "12300000000.0"),  # Scientific notation converts to regular
+            # Lists - compact JSON (no spaces)
+            ([], "[]"),
+            ([1], "[1]"),
+            ([1, 2, 3], "[1,2,3]"),
+            (["a", "b"], '["a","b"]'),
+            ([True, False], "[true,false]"),  # Booleans in JSON are lowercase
+            ([1, "two", 3.0], '[1,"two",3.0]'),
+            # Dicts - compact JSON (no spaces after colons)
+            ({}, "{}"),
+            ({"key": "value"}, '{"key":"value"}'),
+            ({"a": 1, "b": 2}, '{"a":1,"b":2}'),
+            ({"nested": {"inner": "value"}}, '{"nested":{"inner":"value"}}'),
+            ({"bool": True, "num": 42}, '{"bool":true,"num":42}'),
+            # Strings - pass through as-is
+            ("", ""),
+            ("hello", "hello"),
+            ("hello world", "hello world"),
+            ("with\nnewlines", "with\nnewlines"),
+            ('with "quotes"', 'with "quotes"'),
+            ("with 'single' quotes", "with 'single' quotes"),
+            ("special$chars&here;|", "special$chars&here;|"),
+            ("path/to/file.txt", "path/to/file.txt"),
+        ],
+    )
+    def test_type_conversions(self, input_value, expected):
+        """Test that all Python types convert to correct CLI strings."""
+        result = format_param_value(input_value)
+        assert result == expected
+
+    def test_none_handling(self):
+        """Test that None values are handled (though typically filtered out)."""
+        # None should fallback to string representation
+        assert format_param_value(None) == "None"
+
+    def test_unsupported_type_fallback(self):
+        """Test that unsupported types fall back to str()."""
+
+        class CustomObject:
+            def __str__(self):
+                return "custom_object"
+
+        obj = CustomObject()
+        assert format_param_value(obj) == "custom_object"
 
 
 class TestIsLikelyWorkflowName:

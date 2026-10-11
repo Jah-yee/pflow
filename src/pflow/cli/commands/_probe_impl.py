@@ -9,7 +9,7 @@ from typing import Any
 
 import click
 
-from pflow.cli.param_parsing import parse_workflow_params
+from pflow.cli.param_parsing import infer_type, parse_workflow_params
 from pflow.core.diagnostic import exception_to_diagnostics
 from pflow.core.diagnostic_render import format_diagnostic
 from pflow.core.execution_cache import ExecutionCache
@@ -49,7 +49,8 @@ def execute_single_node(
 
 
 def _validate_parameters(params: tuple[str, ...]) -> dict[str, Any]:
-    execution_params = parse_workflow_params(params)
+    # A node parameter has no workflow-input declaration, so its token type is guessed here.
+    execution_params = {key: infer_type(value) for key, value in parse_workflow_params(params).items()}
     invalid_keys = [key for key in execution_params if not is_valid_parameter_name(key)]
     if invalid_keys:
         click.echo(f"❌ Invalid parameter name(s): {', '.join(invalid_keys)}", err=True)

@@ -8,6 +8,10 @@ docstrings.
 
 from __future__ import annotations
 
+import json
+import math
+import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Final, NoReturn
 
@@ -31,6 +35,37 @@ PYTHON_ALIASES_AT_S1: Final[dict[str, str]] = {
     "dict": "object",
     "list": "array",
 }
+
+
+# Decision (b)'s accepted text — strict ASCII, matched whole (callers strip surrounding whitespace first).
+_INTEGER_TEXT: Final = re.compile(r"-?[0-9]+")
+_NUMBER_TEXT: Final = re.compile(r"-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?")  # a JSON number
+_BOOLEAN_TEXT: Final[dict[str, bool]] = {"true": True, "false": False, "yes": True, "no": False, "1": True, "0": False}
+_NO_FIT: Final[tuple[bool, Any]] = (False, None)
+
+# Per type, for messages: (what it accepts, the aside shown with it, a canonical example as typed on a command line).
+_ACCEPTED: Final[dict[str, tuple[str, str, str]]] = {
+    "string": ("text", "", "text"),
+    "integer": ("a whole number", "e.g. 3", "3"),
+    "number": ("a number", "e.g. 3, 2.5, 1e3", "3"),
+    "boolean": ("true or false", "also yes/no, 1/0", "true"),
+    "object": ("a JSON object", 'e.g. {"a": 1}', '{"a": 1}'),
+    "array": ("a JSON array", 'e.g. ["a", "b"]', '["a", "b"]'),
+    "any": ("any value", "", ""),
+}
+
+
+def _reject_constant(name: str) -> NoReturn:
+    raise ValueError(f"{name} is not JSON")
+
+
+def _read_number(read: Callable[[str], Any], text: str) -> tuple[bool, Any]:
+    """``read(text)`` for grammar-matched digits: an int, or a finite float (``1e999`` overflows to inf)."""
+    try:
+        value = read(text)
+    except ValueError:  # beyond Python's int digit limit
+        return _NO_FIT
+    return (True, value) if isinstance(value, int) or math.isfinite(value) else _NO_FIT
 
 
 def outer_base_type(type_str: str) -> str:
@@ -129,6 +164,49 @@ class TypeSpec:
         if self.name == "object":
             return isinstance(value, dict)
         return False
+
+    def parse_text(self, text: str) -> tuple[bool, Any]:
+        """Read ``text`` as this type under decision (b)'s strict ASCII grammar.
+
+        integer ``-?[0-9]+`` (``007`` → 7); number = a JSON number, an ``int`` without
+        fraction or exponent, else a finite ``float`` (``007``, ``nan``, ``inf``, ``1_000``
+        do not fit); boolean = true/false/yes/no/1/0, case-insensitive; object/array =
+        JSON text of that shape; string and any = the text itself. ``(False, None)``
+        when the text does not fit. Callers strip surrounding whitespace first for
+        every type but string.
+        """
+        match self.name:
+            case "string" | "any":
+                return True, text
+            case "integer":
+                return _read_number(int, text) if _INTEGER_TEXT.fullmatch(text) else _NO_FIT
+            case "number":
+                return _read_number(json.loads, text) if _NUMBER_TEXT.fullmatch(text) else _NO_FIT
+            case "boolean":
+                key = text.lower()
+                return (True, _BOOLEAN_TEXT[key]) if key in _BOOLEAN_TEXT else _NO_FIT
+            case _:  # object, array
+                try:
+                    parsed = json.loads(text, parse_constant=_reject_constant)
+                except ValueError:  # JSONDecodeError, NaN/Infinity, int digit limit
+                    return _NO_FIT
+                return (True, parsed) if self.accepts(parsed) else _NO_FIT
+
+    @property
+    def accepted_noun(self) -> str:
+        """What this type accepts, for messages: ``"a whole number"``."""
+        return _ACCEPTED[self.name][0]
+
+    @property
+    def accepted_text(self) -> str:
+        """The noun with its aside: ``"a whole number (e.g. 3)"``, ``"true or false (also yes/no, 1/0)"``."""
+        noun, aside, _ = _ACCEPTED[self.name]
+        return f"{noun} ({aside})" if aside else noun
+
+    @property
+    def example_text(self) -> str:
+        """A canonical accepted value as typed on a command line: ``"3"``, ``'["a", "b"]'``."""
+        return _ACCEPTED[self.name][2]
 
     def is_wildcard(self) -> bool:
         """Return True only for the explicit wildcard type."""

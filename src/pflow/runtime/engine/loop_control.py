@@ -20,7 +20,7 @@ from dataclasses import replace
 from typing import Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
-from pflow.core.exceptions import LoopCarryError, LoopConditionError
+from pflow.core.exceptions import DeclaredInputTextError, LoopCarryError, LoopConditionError
 from pflow.core.templates import TemplateResolver, parse, resolve
 
 from . import instrumentation
@@ -142,7 +142,10 @@ def evaluate_loop_condition(
         # malformed `until:` would stop on pass 1 (the "runs once and exits" bug).
         return False
 
-    resolution = resolve(condition_template, dict(shared))
+    context = dict(shared)
+    resolution = resolve(condition_template, context)
+    if not resolution.ok:  # absent stops the loop — but a declared input's unread text is an author error
+        DeclaredInputTextError.raise_for(resolution, context, where=f"Node '{node_id}' loop condition", node_id=node_id)
     value = resolution.value if resolution.ok else None
 
     if isinstance(value, str):

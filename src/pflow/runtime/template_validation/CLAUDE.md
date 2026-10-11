@@ -15,6 +15,7 @@ run these passes.
 | Parameter type, code-input annotation | `type_validation.py` |
 | `${item.field}` against inferred item structure | `batch_item_validation.py` |
 | Type inference (compatibility: `core/templates.py::is_type_compatible`) | `type_checker.py` |
+| A declared `string` into a container param/annotation | `type_validation.py::_declared_text_into_container` (Passes 6, 9) |
 | Index into declared structure, dotted display, safe display | `utils.py::descend_index`, `dotted_parts`, `sanitize_for_display` |
 | Output metadata or child workflow output discovery | `validator.py::extract_node_outputs`, `_resolve_child_workflow_outputs` |
 | Paths shown by node-output formatters | `utils.py::flatten_output_structure` |
@@ -107,6 +108,8 @@ suggestions, and available fields. Rendering belongs to `core/diagnostic_render.
 | `available_fields`, `available_fields_total` | Available values and full count |
 | `available_fields_label` | Explicit noun such as outputs/inputs; omission becomes generic “fields” |
 | `template` | Reference carried to structured consumers |
+| `input`, `declared_type` | The declared workflow input a rule is about, and its canonical type (shared with the input boundary and Task 112) |
+| `received`, `source`, `accepted` | Input-boundary errors only (`InputTypeError`): the value as shown (masked, cut at 80), where it entered, the accepted spelling |
 
 Do not populate keys that trigger another subsystem's blocks: compiler `phase`,
 runtime `exception_type`, HTTP `raw_response`, MCP `mcp_error`, parser `line`, or
@@ -135,3 +138,12 @@ Type compatibility is `core/templates.is_type_compatible` (template flow, not a
 literal-value check): string → dict/list is allowed because runtime parses JSON
 containers, string → numeric/bool is not; a source union needs every member to
 fit, a target union any. Parameterized collections compare outer types only.
+
+**A declared input is never re-parsed** (ADR-0017). The certain misses that rule
+creates (a path on a scalar, a non-`array` `batch.items`, …) and the input-vs-batch-alias
+rule are NOT here: they live in `core/workflow/declared_inputs.py`, run by
+`validate_data_flow`, because the compiler must enforce them too (a child chosen at run
+time is only compiled, and those misses are silent at run time). This package's one rule
+is the container check (Passes 6, 9): keyed on the reference's ROOT through
+`declared_inputs.declared_root`, never on the matrix (whose `string` row is shared
+with code `result: str` and child outputs, which ARE parsed).

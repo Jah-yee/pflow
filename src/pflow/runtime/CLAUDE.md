@@ -42,10 +42,11 @@ state through `new_execution_state`, not a copied dictionary literal.
 | Services propagated into children | `WorkflowExecutor._PROPAGATED_KEYS`; inspect this list before adding a cross-workflow service |
 | Child-local state | Execution, cache-hit, failure, template-error, and prompt-cache maps must not leak from parent to child |
 | Prompt-cache render context | `engine/engine.py::build_prompt_cache_dict` and `WorkflowEngine.run` install/save/restore `__pflow_prompt_cache__` per workflow; absent restores to an empty frozen map, not `None` |
+| Declared input types | `CompiledWorkflow.input_types` under `core/templates.DECLARED_INPUT_TYPES_KEY`: installed/restored like the prompt-cache map by `WorkflowEngine.run`, and also by `plan.create_planner_shared` and the runner's root store (post-run `-o` readers) |
 
 Internal `__*__` keys are reserved. The child propagation list deliberately
-excludes `__failures__` and `__pflow_prompt_cache__`: parent node IDs and cache
-chunks are not valid in the child's scope.
+excludes `__failures__`, `__pflow_prompt_cache__` and the declared-input map:
+parent node IDs, cache chunks and input declarations are not valid in the child's scope.
 
 ## Template resolution
 
@@ -53,7 +54,8 @@ The language lives in `core/templates.py` (rules and gotchas: `core/CLAUDE.md` �
 **Template language**). Simple `${var}` templates preserve the value's type;
 complex interpolation such as `"Hello ${name}"` always produces a string. Path
 traversal auto-parses JSON containers but keeps numeric identifier strings intact
-(`architecture/core-concepts/data-type-coercion.md`).
+(`architecture/core-concepts/data-type-coercion.md`) — except under a declared
+input's root, which is never re-parsed.
 
 `has_templates` counts an escape, so `engine/template_resolution.py::split_params`
 routes escape-only params through resolution. Unresolved references stay literal
@@ -61,6 +63,9 @@ at the resolver layer; strict/permissive handling is the engine's
 (`engine/CLAUDE.md` → **Parameters, reuse, and templates**). Every runtime consumer
 — strict check, Optional-input `None` injection, loop carry, declared outputs,
 batch items, the prewarm `system`, cache chunks — reads the `Resolution` channels.
+A consumer that reads "unresolved" as "absent" (a loop condition, batch items, a
+cache chunk) first calls `DeclaredInputTextError.raise_for`: a reference stopped at
+a declared input's JSON text is an author error, never an absent value.
 
 Carried loop inputs must affect both resolution and cache hashing. Their shared
 entry is `engine/plan_node.py::plan_node`, using
@@ -69,9 +74,16 @@ entry is `engine/plan_node.py::plan_node`, using
 ## Nested workflows
 
 `WorkflowExecutor` owns the child boundary. Consult `ALLOWED_PARAMS` for the
-accepted host parameters and `_validate_child_params` for declared-input checks.
-`workflow` accepts a path or saved name; relative paths use the parent workflow
-file. `_pflow_stack` and `_pflow_depth` guard cycles/depth.
+accepted host parameters. `type_child_inputs` is the child's input boundary,
+called in `prep` for EVERY call (each batch item): the parent's unparsed values
+typed by the child's `## Inputs`, absent inputs resolved env → settings →
+default (a required input with no default only from the parent; a container
+default copied per call) — so a compile cached from item 0 never stands in for item N's values.
+Its `WorkflowValidationError` is prep-recoverable (routable), and its
+Diagnostics ride the `child_failure` bundle's `diagnostics` list (a pre-120
+trace's `template_diagnostic` is still read). The dry-run planner calls the same
+function per item. `workflow` accepts a path or saved name; relative paths use
+the parent workflow file. `_pflow_stack` and `_pflow_depth` guard cycles/depth.
 
 Children always receive isolated storage. Declared child outputs are exposed
 back through the host namespace; without declarations,

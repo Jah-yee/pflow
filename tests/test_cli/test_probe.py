@@ -245,3 +245,18 @@ def test_probe_ambiguous_node_shows_candidates(runner: click.testing.CliRunner, 
     assert "Ambiguous" in result.output
     assert "mcp-slack-composio-SLACK_SEND_MESSAGE" in result.output
     assert "mcp-other-SLACK_SEND_MESSAGE" in result.output
+
+
+def test_probe_still_types_node_parameter_tokens(runner: click.testing.CliRunner, mock_llm_client) -> None:
+    """A node parameter has no workflow-input declaration, so the probe keeps guessing a token's type
+    (workflow inputs never are — their declaration decides): `temperature=0.5` reaches the node a float."""
+    mock_llm_client.set_response("*", None, "ok")
+    result = runner.invoke(
+        probe_cmd,
+        ["llm", "model=anthropic/claude-sonnet-4-5", "prompt=hi", "temperature=0.5", "--output-format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    (call,) = mock_llm_client.call_history
+    assert call["temperature"] == 0.5
+    assert isinstance(call["temperature"], float)

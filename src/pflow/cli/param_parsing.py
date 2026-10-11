@@ -7,7 +7,9 @@ from typing import Any
 
 
 def infer_type(value: str) -> Any:
-    """Infer type from string value.
+    """Guess a type for a node parameter typed on ``pflow probe``'s command line.
+
+    Never used for workflow inputs: their declared type decides (``coerce_declared_input``).
 
     Supports:
     - Booleans: 'true', 'false' (case-insensitive)
@@ -46,30 +48,21 @@ def infer_type(value: str) -> Any:
     return value
 
 
-def parse_workflow_params(args: tuple[str, ...]) -> dict[str, Any]:
-    """Parse key=value parameters from command arguments.
+def parse_workflow_params(args: tuple[str, ...]) -> dict[str, str]:
+    """Split ``name=value`` arguments on the first ``=``; arguments without one are skipped.
 
-    Args:
-        args: Tuple of command line arguments
-
-    Returns:
-        Dictionary of parsed parameters with inferred types
+    Values stay text: a workflow input is typed by its declaration at the input boundary
+    (``prepare_inputs``), never guessed here.
     """
-    params = {}
-    for arg in args:
-        # Only process arguments with '='
-        if "=" in arg:
-            key, value = arg.split("=", 1)
-            # Use type inference for the value
-            params[key] = infer_type(value)
-    return params
+    return {key: value for key, _, value in (arg.partition("=") for arg in args if "=" in arg)}
 
 
 def format_param_value(value: Any) -> str:
     """Convert a Python value to its CLI string representation.
 
-    This reverses the logic of infer_type() to produce a string that,
-    when parsed by the CLI, will result in the same Python value.
+    The inverse of the declared-type coercer for every type but ``any``: compact JSON
+    for a container, ``true``/``false`` for a boolean, text as is — so the token reads
+    back as the same value through ``coerce_declared_input``.
 
     Args:
         value: The Python value to convert

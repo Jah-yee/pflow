@@ -1508,6 +1508,7 @@ def test_json_summary_exposes_projection_exclusions_and_delta_reason(tmp_path: P
     from pflow.core.prompt_cache_analysis.analyze import analyze
 
     workflow_ir = {
+        "inputs": {"items": {"type": "array"}},
         "nodes": [
             {
                 "id": "generate",
@@ -1520,7 +1521,7 @@ def test_json_summary_exposes_projection_exclusions_and_delta_reason(tmp_path: P
                 "type": "llm",
                 "params": {"model": "anthropic/claude-haiku-4-5", "prompt": "Score the options."},
             },
-        ]
+        ],
     }
     trace_data = {
         "format_version": "2.2.0",
@@ -2216,6 +2217,7 @@ def test_trace_mode_parentheticals_use_consistent_baseline_phrase(
         auto_load_trace=False,
     )
     unavailable_workflow = {
+        "inputs": {"items": {"type": "array"}},
         "nodes": [
             {
                 "id": "generate",
@@ -2223,7 +2225,7 @@ def test_trace_mode_parentheticals_use_consistent_baseline_phrase(
                 "params": {"model": "${item.model}", "prompt": "${item.prompt}"},
                 "batch": {"items": "${items}"},
             }
-        ]
+        ],
     }
     unavailable_trace = {
         "format_version": "2.2.0",
@@ -2370,6 +2372,7 @@ def test_actual_savings_falls_back_to_unavailable_when_no_priced_rows_remain(tmp
     from pflow.core.prompt_cache_analysis.analyze import analyze
 
     workflow_ir = {
+        "inputs": {"items": {"type": "array"}},
         "nodes": [
             {
                 "id": "generate",
@@ -2377,7 +2380,7 @@ def test_actual_savings_falls_back_to_unavailable_when_no_priced_rows_remain(tmp
                 "params": {"model": "${item.model}", "prompt": "${item.prompt}"},
                 "batch": {"items": "${items}"},
             }
-        ]
+        ],
     }
     trace_data = {
         "format_version": "2.2.0",

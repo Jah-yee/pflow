@@ -23,7 +23,7 @@ class TestWorkflowSavedName:
         """Basic workflow IR for testing.
 
         Declares the inputs that tests in this class pass through ``inputs:``.
-        Runtime ``_validate_child_params`` now rejects undeclared extras even
+        Runtime ``type_child_inputs`` now rejects undeclared extras even
         when a child's ``## Inputs`` section is empty, so tests must declare
         every key they pass.
         """

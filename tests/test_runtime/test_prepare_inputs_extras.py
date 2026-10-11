@@ -14,7 +14,14 @@ import sys
 
 import pytest
 
+from pflow.core.diagnostic import Diagnostic
 from pflow.runtime.compilation.ir_preparation import prepare_inputs
+
+
+def _parts(diagnostic: Diagnostic) -> tuple[str, str, str]:
+    """``(message, path, first suggestion)`` of an input-boundary Diagnostic."""
+    assert diagnostic.context is not None
+    return diagnostic.message, diagnostic.context["path"], (diagnostic.suggestions or [""])[0]
 
 
 class TestExtrasRejection:
@@ -25,7 +32,7 @@ class TestExtrasRejection:
         errors, _, _ = prepare_inputs({"inputs": {}}, {"BOGUS": "X"})
 
         assert len(errors) == 1
-        msg, path, suggestion = errors[0]
+        msg, path, suggestion = _parts(errors[0])
         assert msg == "Unknown input 'BOGUS' — this workflow declares no inputs."
         assert path == "inputs.BOGUS"
         assert "Remove the parameter" in suggestion or "declare it in ## Inputs" in suggestion
@@ -35,9 +42,9 @@ class TestExtrasRejection:
         workflow_ir = {"inputs": {"a": {"type": "string", "description": "First input", "required": True}}}
         errors, _, _ = prepare_inputs(workflow_ir, {"a": "ok", "BOGUS": "X"})
 
-        extras_errors = [e for e in errors if "Unknown input 'BOGUS'" in e[0]]
+        extras_errors = [e for e in errors if "Unknown input 'BOGUS'" in e.message]
         assert len(extras_errors) == 1
-        msg, path, suggestion = extras_errors[0]
+        msg, path, suggestion = _parts(extras_errors[0])
         assert msg == "Unknown input 'BOGUS' — not declared by this workflow."
         assert path == "inputs.BOGUS"
         # When no fuzzy match, suggestion lists available inputs
@@ -48,9 +55,9 @@ class TestExtrasRejection:
         workflow_ir = {"inputs": {"lyrics": {"type": "string", "description": "Lyrics", "required": True}}}
         errors, _, _ = prepare_inputs(workflow_ir, {"lyrics": "ok", "lyric": "typo"})
 
-        extras = [e for e in errors if "Unknown input 'lyric'" in e[0]]
+        extras = [e for e in errors if "Unknown input 'lyric'" in e.message]
         assert len(extras) == 1
-        _, _, suggestion = extras[0]
+        _, _, suggestion = _parts(extras[0])
         assert "Did you mean 'lyrics'?" in suggestion
 
     def test_missing_required_and_extra_both_surface(self):
@@ -60,7 +67,7 @@ class TestExtrasRejection:
 
         # Aggregated error list should contain both findings (one unknown + one missing)
         assert len(errors) == 2
-        messages = [e[0] for e in errors]
+        messages = [e.message for e in errors]
         assert any("Unknown input 'BOGUS'" in m for m in messages), messages
         assert any("Workflow requires input 'a'" in m for m in messages), messages
 
@@ -102,7 +109,7 @@ class TestExtrasRejection:
         workflow_ir = {"inputs": {"foo": {"type": "string", "description": "Foo", "required": True}}}
         errors, _, _ = prepare_inputs(workflow_ir, {"foo": "value", "_foo": "typo"})
 
-        extras = [e for e in errors if "Unknown input '_foo'" in e[0]]
+        extras = [e for e in errors if "Unknown input '_foo'" in e.message]
         assert len(extras) == 1
 
     def test_framework_prefix_typo_surfaces_as_extra(self):
@@ -114,7 +121,7 @@ class TestExtrasRejection:
         # Missing underscore after workflo: typo of `_pflow_workflow_file`.
         errors, _, _ = prepare_inputs(workflow_ir, {"a": "value", "_pflowworkflowfile": "/x"})
 
-        extras = [e for e in errors if "Unknown input '_pflowworkflowfile'" in e[0]]
+        extras = [e for e in errors if "Unknown input '_pflowworkflowfile'" in e.message]
         assert len(extras) == 1
 
     def test_multiple_extras_all_reported(self):
@@ -122,7 +129,7 @@ class TestExtrasRejection:
         workflow_ir = {"inputs": {"a": {"type": "string", "description": "A", "required": True}}}
         errors, _, _ = prepare_inputs(workflow_ir, {"a": "ok", "x": "1", "y": "2", "z": "3"})
 
-        extras_msgs = [e[0] for e in errors if "Unknown input" in e[0]]
+        extras_msgs = [e.message for e in errors if "Unknown input" in e.message]
         assert len(extras_msgs) == 3
         assert any("'x'" in m for m in extras_msgs)
         assert any("'y'" in m for m in extras_msgs)
@@ -133,7 +140,7 @@ class TestExtrasRejection:
         workflow_ir = {"inputs": {"a": {"type": "string", "description": "A", "required": True}}}
         errors, _, _ = prepare_inputs(workflow_ir, {"a": "ok", "zebra": "1", "apple": "2"})
 
-        extras_keys = [e[1].removeprefix("inputs.") for e in errors if "Unknown input" in e[0]]
+        extras_keys = [e.context["path"].removeprefix("inputs.") for e in errors if "Unknown input" in e.message]
         assert extras_keys == sorted(extras_keys)
 
 
@@ -154,7 +161,7 @@ class TestOptionalInputExtras:
         }
         errors, _, _ = prepare_inputs(workflow_ir, {"BOGUS": "X"})
 
-        extras = [e for e in errors if "Unknown input 'BOGUS'" in e[0]]
+        extras = [e for e in errors if "Unknown input 'BOGUS'" in e.message]
         assert len(extras) == 1
 
     def test_optional_declared_provided_is_fine(self):
@@ -170,27 +177,17 @@ class TestOptionalInputExtras:
         }
         errors, _, _ = prepare_inputs(workflow_ir, {"mode": "custom"})
         # No extras error; value passes through as provided (no coercion needed)
-        assert not any("Unknown input" in e[0] for e in errors)
+        assert not any("Unknown input" in e.message for e in errors)
 
 
-class TestValidateOnlyGap:
-    """Locked-in regression test documenting the intentional `--validate-only` parity gap.
+class TestValidateOnlyCatchesRootExtras:
+    """`--validate-only` with values refuses what the run would (the type/extras half of GH #297).
 
-    `WorkflowRunner.validate()` does NOT call `prepare_inputs`, so the extras
-    check added in GH #288 does NOT fire for `pflow <wf> BOGUS=X --validate-only`.
-    This is an accepted architectural trade-off from the #288 design discussion:
-    extras check lives at the compiler layer (where root missing-required also
-    lives), not the validator layer (where sub-workflow extras lives).
-
-    The proper fix is tracked in GH #297 — unify all input-shape checks in
-    WorkflowValidator. When that refactor lands, this test should be
-    **deliberately flipped** to assert `valid is False` / `len(errors) >= 1`.
-    A silent pass/fail flip during an unrelated refactor would indicate the
-    parity gap was closed accidentally, not by design.
+    `WorkflowRunner.validate()` runs the input boundary over the SUPPLIED values, so an undeclared
+    name fails validation exactly as it fails the run; the shape-check refactor stays #297's.
     """
 
-    def test_validate_only_does_not_catch_root_extras(self):
-        """See GH #297. Documents: `--validate-only` is structural, not runtime-shape."""
+    def test_validate_only_rejects_an_undeclared_input_and_accepts_the_declared_one(self):
         from pflow.execution.runner import WorkflowRunner
 
         workflow_ir = {
@@ -202,18 +199,14 @@ class TestValidateOnlyGap:
             "edges": [],
         }
 
-        # Extras passed to validate() → currently silent (valid=True). The
-        # extras check only fires at compile-time via prepare_inputs.
-        result = WorkflowRunner().validate(workflow_ir, params={"a": "ok", "BOGUS": "X"})
+        refused = WorkflowRunner().validate(workflow_ir, params={"a": "ok", "BOGUS": "X"})
+        accepted = WorkflowRunner().validate(workflow_ir, params={"a": "ok"})
 
-        assert result.valid is True, (
-            "Extras now caught by --validate-only. This is likely the GH #297 refactor "
-            "landing — flip this test to `result.valid is False` with an explicit "
-            "Diagnostic check, and delete this docstring."
-        )
-        assert not any("Unknown input" in d.message for d in result.diagnostics), (
-            "A diagnostic for 'Unknown input' appeared — GH #297 may have landed. Flip this test deliberately."
-        )
+        assert refused.valid is False
+        assert [(d.message, d.context["path"]) for d in refused.errors if d.context] == [
+            ("Unknown input 'BOGUS' — not declared by this workflow.", "inputs.BOGUS")
+        ]
+        assert accepted.valid is True  # the same workflow and value, minus the extra
 
 
 def _skip_uv_sandbox_panic(result: subprocess.CompletedProcess) -> None:

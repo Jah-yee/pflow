@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 from collections.abc import Mapping
 from typing import Any
 
@@ -37,7 +38,8 @@ def format_batch_errors_section(steps: list[dict[str, Any]]) -> list[str]:
                 lines.append(f"      item: {item_summary}")
             child_failure = err.get("child_failure")
             if isinstance(child_failure, Mapping):
-                lines.extend(_format_child_failure_lines(dict(child_failure), node_id))
+                headline = _error_headline(str(err.get("error", "")))
+                lines.extend(_format_child_failure_lines(dict(child_failure), node_id, headline))
 
         if truncated > 0:
             lines.append(f"  ...and {truncated} more errors")
@@ -106,12 +108,14 @@ def compact_batch_error_detail(error_detail: Mapping[str, Any]) -> dict[str, Any
     return compact
 
 
-def _format_child_failure_lines(child_failure: dict[str, Any], node_id: str) -> list[str]:
+def _format_child_failure_lines(child_failure: dict[str, Any], node_id: str, headline: str) -> list[str]:
     """Render a failed batch sub-workflow item's reconstructed child diagnostics (indented).
 
     Reuses the same reconstruction primitive (``build_subworkflow_diagnostics``) and
     renderer (``format_diagnostic``) the non-batch path uses, so a batched
-    sub-workflow failure shows the same rich, provenance-wrapped block.
+    sub-workflow failure shows the same rich, provenance-wrapped block. A diagnostic
+    whose message IS the item's ``[idx]`` headline (a child input the step passes,
+    placed at the step) shows only its detail lines, so the sentence reads once.
     """
     from pflow.core.diagnostic_render import format_diagnostic
     from pflow.execution.executor_service import build_subworkflow_diagnostics
@@ -127,6 +131,8 @@ def _format_child_failure_lines(child_failure: dict[str, Any], node_id: str) -> 
             rendered = rendered[1:]
             while rendered and not rendered[0].strip():
                 rendered.pop(0)
+        if rendered and rendered[0].strip() == headline:
+            rendered = textwrap.dedent("\n".join(rendered[1:])).splitlines()
         lines.extend(f"      {line}" if line.strip() else "" for line in rendered)
     return lines
 

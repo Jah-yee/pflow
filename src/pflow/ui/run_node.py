@@ -63,9 +63,9 @@ def read_run_inputs(workflow_key: str, run_id: str | None) -> dict[str, str] | N
     Reads the trace's ``meta.inputs`` (the Phase-1 keystone), OMITS any input carrying a secret — a
     top-level sensitive name OR a nested sensitive key like ``config.api_key`` (a past run's resolved
     secret never reaches the browser; the form re-resolves it from settings/env) — and renders each
-    remaining value via ``format_param_value`` (the inverse of the CLI's ``infer_type``:
-    bools→``true``/``false``, list/dict→compact JSON, scalars→str), so the tokens drop straight into the
-    form's channel-A controls. ``None`` when no trace/run is found (→ 404); ``{}`` for a run whose trace
+    remaining value via ``format_param_value`` (the inverse of the input boundary's declared-type
+    reading for every type but ``any``: bools→``true``/``false``, list/dict→compact JSON, scalars→str), so
+    the tokens drop straight into the form's channel-A controls. ``None`` when no trace/run is found (→ 404); ``{}`` for a run whose trace
     predates ``meta.inputs`` (graceful — the picker shows it with nothing to prefill). ``meta.inputs`` is
     written un-interned, so its values carry no blob refs."""
     from pflow.cli.param_parsing import format_param_value
@@ -82,9 +82,9 @@ def read_run_inputs(workflow_key: str, run_id: str | None) -> dict[str, str] | N
     tokens: dict[str, str] = {}
     for name, value in inputs.items():
         if not isinstance(name, str) or value is None:
-            # None → omit: format_param_value(None) is the literal token "None", which infer_type would
-            # re-type to the STRING "None" on re-run — a silent change from the original null. Omitting
-            # lets it re-resolve to its default, consistent with the form's blank-omission policy.
+            # None → omit: format_param_value(None) is the literal token "None", which a re-run would
+            # read as the TEXT "None" — a silent change from the original null. Omitting lets it
+            # re-resolve to its default, consistent with the form's blank-omission policy.
             continue
         if redact_sensitive({name: value}) != {name: value}:
             # A secret at ANY depth (the top-level name, or a nested key inside an object/list input) →

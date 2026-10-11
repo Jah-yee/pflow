@@ -877,6 +877,17 @@ def start_node_id(ir: dict[str, Any]) -> str | None:
     return str(nodes[0]["id"]) if nodes else None
 
 
+def declared_input_types(ir: dict[str, Any]) -> dict[str, str]:
+    """Every declared ``## Inputs`` name → its canonical type; untyped (or a type outside the
+    vocabulary, reachable only by bypassing the schema) → ``"any"``. The map the resolver's
+    no-re-parse rule reads (``templates.DECLARED_INPUT_TYPES_KEY``)."""
+    types: dict[str, str] = {}
+    for name, spec in (ir.get("inputs") or {}).items():
+        declared = spec.get("type") if isinstance(spec, dict) else None
+        types[name] = declared if isinstance(declared, str) and declared in CANONICAL_TYPES else "any"
+    return types
+
+
 def outgoing_edges(ir: dict[str, Any]) -> dict[str, list[tuple[str, str]]]:
     """Each step's outgoing ``(action, target)`` edges, sorted and deduped.
 

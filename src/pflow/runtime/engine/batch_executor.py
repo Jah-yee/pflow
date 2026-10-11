@@ -14,19 +14,18 @@ import copy
 import logging
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
 from pflow.core.diagnostic import Diagnostic, Severity
-from pflow.core.exceptions import CompilationError
-from pflow.core.json_utils import try_parse_json
+from pflow.core.exceptions import CompilationError, DeclaredInputTextError
 from pflow.core.node_type_display import is_model_node_type
 
 if TYPE_CHECKING:
     from pflow.core.prompt_cache import CacheRenderContext
 
-from pflow.core.templates import TemplateResolver, resolve
+from pflow.core.templates import DECLARED_INPUT_TYPES_KEY, batch_item_declaration, bind_declared, resolve
 
 from .batch_item_summary import summarize_batch_item
 from .types import BatchConfig, NodeConfig
@@ -115,21 +114,28 @@ def resolve_batch_items(items_template: Any, shared: dict[str, Any]) -> Any:
     Returns:
         Resolved value (list on success, None if unresolved).
     """
-    if isinstance(items_template, list):
-        return TemplateResolver.resolve_nested(items_template, shared)
-
-    resolution = resolve(items_template.strip(), shared)
+    # A whole `${…}` holding JSON text is parsed (shell → batch), unless it is a declared input's.
+    template = items_template if isinstance(items_template, list) else items_template.strip()
+    resolution = resolve(template, shared, auto_parse=True)
     if not resolution.ok:
-        return None
-    resolved = resolution.value
+        DeclaredInputTextError.raise_for(resolution, shared, where="Batch items")
+    if isinstance(items_template, list):
+        return resolution.value  # an unresolved inline item stays literal, as before
+    return resolution.value if resolution.ok else None
 
-    # Auto-parse JSON strings (enables shell -> batch patterns)
-    if isinstance(resolved, str):
-        success, parsed = try_parse_json(resolved)
-        if success and isinstance(parsed, list):
-            return parsed
 
-    return resolved
+def bind_batch_item(
+    item_store: dict[str, Any], parent_store: Mapping[str, Any], batch_config: BatchConfig, item: Any, index: int
+) -> None:
+    """Bind item ``index`` in its own store: the alias holds the item and ``__index__`` its index;
+    the alias's declared-input entry follows the AUTHORED ``batch.items``, read against the map
+    ``batch.items`` resolved under (``templates.batch_item_declaration``) — so an item taken from a
+    declared input is never re-parsed, and any other item is a local name."""
+    item_store[batch_config.item_alias] = item
+    item_store["__index__"] = index
+    declared: Mapping[str, str] = parent_store.get(DECLARED_INPUT_TYPES_KEY) or {}
+    entry = batch_item_declaration(batch_config.items_template, index, declared)
+    bind_declared(item_store, {batch_config.item_alias: entry})
 
 
 def _resolve_and_validate_items(batch_config: BatchConfig, shared: dict[str, Any], node_id: str) -> list[Any]:
@@ -206,8 +212,7 @@ def _pre_warm_compile_cache(
     # Create a temporary item context with the first item
     temp_shared = dict(shared)
     temp_shared[config.node_id] = {}
-    temp_shared[batch_config.item_alias] = first_item
-    temp_shared["__index__"] = 0
+    bind_batch_item(temp_shared, shared, batch_config, first_item, 0)
 
     # Resolve templates to get concrete params (like the engine does per-item)
     original_params = node.params
@@ -439,8 +444,7 @@ def _run_batch_item_once(
     """
     # Reset namespace for this attempt
     item_shared[config.node_id] = {}
-    item_shared[batch_config.item_alias] = item
-    item_shared["__index__"] = idx
+    bind_batch_item(item_shared, parent_shared, batch_config, item, idx)
     item_shared["_pflow_child_workflow_paths"] = {}
 
     # Execute via callback
@@ -484,6 +488,10 @@ def _run_batch_item_once(
         child_failure = result.get("_pflow_child_failure")
         if isinstance(child_failure, dict):
             error_info["child_failure"] = child_failure
+            if _child_masked_its_input(child_failure):
+                # The child boundary masked the value this item passed (a sensitive input name):
+                # the item line beside that message must not print it again.
+                error_info["item_summary"] = {**error_info["item_summary"], "summary": "<REDACTED>"}
     _capture_item_trace(
         parent_shared,
         config.node_id,
@@ -498,6 +506,14 @@ def _run_batch_item_once(
         child_workflow_path=item_child_workflow_path,
     )
     return result, error_info, duration_ms, last_resolutions, template_errors
+
+
+def _child_masked_its_input(child_failure: dict[str, Any]) -> bool:
+    """Whether a child-input error in this bundle showed the received value as ``<REDACTED>``."""
+    diagnostics = child_failure.get("diagnostics")
+    return isinstance(diagnostics, list) and any(
+        isinstance(d, dict) and (d.get("context") or {}).get("received") == "<REDACTED>" for d in diagnostics
+    )
 
 
 def _pop_child_workflow_path(shared: dict[str, Any], node_id: str) -> str | None:
@@ -816,9 +832,7 @@ def _execute_parallel(
         # THREADING: shallow copy — nested dicts (_batch_trace, __execution__)
         # are shared across threads. Writes to nested keys are GIL-protected (CPython).
         item_shared = dict(shared)
-        item_shared[config.node_id] = {}
-        item_shared[batch_config.item_alias] = item
-        item_shared["__index__"] = idx
+        item_shared[config.node_id] = {}  # the item and its alias are bound per attempt (_run_batch_item_once)
         item_shared["__pflow_cancel_event__"] = cancel_event
 
         # Task 125: a parallel worker cannot host an interactive gate prompt

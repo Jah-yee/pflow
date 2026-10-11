@@ -2,6 +2,7 @@
 
 import copy
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -13,6 +14,7 @@ from pflow.core.exceptions import (
     MarkdownParseError,
     PflowError,
     WorkflowNotFoundError,
+    WorkflowValidationError,
 )
 from pflow.core.file_resolver import is_workflow_file_reference
 from pflow.core.ir_schema import normalize_ir, validate_ir
@@ -21,19 +23,51 @@ from pflow.registry import Registry
 from pflow.runtime import CompilationError, compile_workflow
 
 # Exceptions from prep() that should dispatch through error_action rather than
-# propagate. These are "per-child" failures — bad input shape, unresolvable ref,
-# missing file — where one bad item shouldn't kill a batch of otherwise-valid
+# propagate. These are "per-child" failures — bad input shape or type, unresolvable
+# ref, missing file — where one bad item shouldn't kill a batch of otherwise-valid
 # items. CompilationError deliberately NOT included: a broken workflow
-# definition is not recoverable by error routing.
+# definition is not recoverable by error routing. WorkflowValidationError comes from
+# the child input boundary (type_child_inputs) — and from a saved child that fails to
+# load (WorkflowManager.load), the saved-name twin of MarkdownParseError.
 _PREP_RECOVERABLE = (
     ValueError,
     RecursionError,
     FileNotFoundError,
     MarkdownParseError,
     WorkflowNotFoundError,
+    WorkflowValidationError,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def type_child_inputs(
+    child_ir: dict[str, Any],
+    child_params: Mapping[str, Any],
+    *,
+    step: str | None,
+    sub_workflow_path: str,
+) -> dict[str, Any]:
+    """The sub-workflow input boundary for one call: the values a parent step passes, typed by the
+    child's ``## Inputs`` (labelled ``parent``), plus every absent input resolved environment →
+    settings → default — or ``WorkflowValidationError`` with one Diagnostic per problem, placed at
+    the step's ``inputs:``. The host's ``prep`` calls it per item (routable by ``error_action`` and
+    batch ``continue``); the dry-run planner calls it per item too.
+    """
+    from pflow.runtime.compilation.compile_validation import load_settings_env
+    from pflow.runtime.compilation.ir_preparation import prepare_inputs
+
+    errors, updates, _ = prepare_inputs(
+        child_ir,
+        child_params,
+        load_settings_env(),
+        input_sources=dict.fromkeys(child_params, "parent"),
+        step=step,
+        sub_workflow_path=sub_workflow_path,
+    )
+    if errors:
+        raise WorkflowValidationError("\n".join(error.message for error in errors), validation_errors=errors)
+    return {**child_params, **updates}
 
 
 class WorkflowExecutor(BaseNode):
@@ -177,10 +211,10 @@ class WorkflowExecutor(BaseNode):
             # even if resolution failed), "<unresolved>" otherwise.
             ref = self.params.get("workflow")
             path = ref if isinstance(ref, str) and ref else "<unresolved>"
-            return {
-                "_prep_error": str(e),
-                "workflow_path": path,
-            }
+            marker: dict[str, Any] = {"_prep_error": str(e), "workflow_path": path}
+            if isinstance(e, WorkflowValidationError):  # the child input boundary: keep its structure
+                marker["_prep_diagnostics"] = [d.to_dict() for d in e.to_diagnostics()]
+            return marker
 
     def _prep_unsafe(self, shared: dict[str, Any]) -> dict[str, Any]:
         """The real prep body; raises on failure. Wrapped by prep()."""
@@ -216,12 +250,14 @@ class WorkflowExecutor(BaseNode):
         self._child_parser_warnings = list(parser_warnings)
         self._propagate_child_parser_warnings(shared)
 
-        # Extract child inputs from the ``inputs:`` dict param.
-        # Template resolution already handled by engine's _execute_single_node before prep() runs.
-        child_params = self._extract_child_inputs()
-
-        # Validate child params against declared inputs
-        self._validate_child_params(workflow_ir, child_params, workflow_path)
+        # Extract child inputs from the ``inputs:`` dict param (resolved, unparsed, by the engine
+        # before prep runs), then type them by the child's own declarations — per item.
+        child_params = type_child_inputs(
+            workflow_ir,
+            self._extract_child_inputs(),
+            step=self.node_id or None,
+            sub_workflow_path=str(raw_ref) if isinstance(raw_ref, str) and raw_ref else str(workflow_path),
+        )
 
         return {
             "child_ir": workflow_ir,
@@ -302,6 +338,8 @@ class WorkflowExecutor(BaseNode):
                 copy.deepcopy(workflow_ir),  # Protect against concurrent mutation in parallel batch
                 registry=registry or Registry(),
                 initial_params=params,
+                # Already typed by prep's type_child_inputs, so this pass changes nothing.
+                input_sources=dict.fromkeys(child_params, "parent"),
             )
         except CompilationError as e:
             if not e.details:
@@ -375,7 +413,7 @@ class WorkflowExecutor(BaseNode):
         # success=False dict shape exec's own failure paths use. post() then
         # dispatches error_action uniformly.
         if "_prep_error" in prep_res:
-            return {
+            failure: dict[str, Any] = {
                 "success": False,
                 "error": prep_res["_prep_error"],
                 "workflow_path": prep_res.get("workflow_path", "<unresolved>"),
@@ -386,6 +424,17 @@ class WorkflowExecutor(BaseNode):
                 # exec's other failure return sites.
                 "child_storage": {},
             }
+            if "_prep_diagnostics" in prep_res:
+                # A child input the parent passed fails its declaration: the structured
+                # diagnostics ride the child-failure channel into error records.
+                failure["child_failure"] = {
+                    "workflow_path": failure["workflow_path"],
+                    "failed_node": None,
+                    "failures": {},
+                    "error": prep_res["_prep_error"],
+                    "diagnostics": prep_res["_prep_diagnostics"],
+                }
+            return failure
 
         workflow_ir = prep_res["child_ir"]
         workflow_path = prep_res["workflow_path"]
@@ -402,24 +451,8 @@ class WorkflowExecutor(BaseNode):
         # Compile (with compile-once caching)
         compiled = self._compile_sub_workflow(workflow_ir, workflow_path, child_params)
 
-        # Create child storage
+        # Child storage: the typed, complete per-item inputs (type_child_inputs) + execution context.
         child_storage = self._create_child_storage(parent_shared, prep_res)
-
-        # Seed structural defaults (for inputs NOT provided by this item), then per-item values.
-        # Only seed resolved_defaults keys absent from child_params — resolved_defaults may
-        # contain coerced values from the first item's compilation (compile-once cache), and
-        # those per-item coerced values must NOT leak to subsequent items.
-        #
-        # KNOWN LIMITATION (see #188): Per-item type coercion is lost. The old model ran
-        # prepare_inputs() per item (via per-item recompilation), which coerced "7" → 7 for
-        # int-typed inputs. The new compile-once model skips per-item coercion — child_params
-        # contain raw values from template resolution (typically strings from CLI args).
-        # This matters for sub-workflow inputs with declared numeric types. Most inputs are
-        # strings in practice, and template resolution preserves upstream types.
-        for k, v in compiled.resolved_defaults.items():
-            if k not in child_params:
-                child_storage[k] = v
-        child_storage.update(child_params)
 
         child_only = parent_shared.get("_pflow_child_only_node")
         # nested=True (Task 171): a gate firing in this child engine must never
@@ -665,7 +698,7 @@ class WorkflowExecutor(BaseNode):
             "error": WorkflowExecutor._summarize_child_failure(child_storage, workflow_path, failed_node),
         }
         if template_diagnostic is not None:
-            bundle["template_diagnostic"] = template_diagnostic.to_dict()
+            bundle["diagnostics"] = [template_diagnostic.to_dict()]
         return bundle
 
     @staticmethod
@@ -729,8 +762,16 @@ class WorkflowExecutor(BaseNode):
             return {}
         if isinstance(inputs, dict):
             return dict(inputs)
-        type_name = type(inputs).__name__
-        raise ValueError(f"Workflow node's 'inputs:' resolved to {type_name}, expected dict of child inputs.")
+        step = f"Step '{self.node_id}'" if self.node_id else "This step"
+        if isinstance(inputs, str):  # text is never parsed into the map: the child types each VALUE (ADR-0017)
+            reason = (
+                "resolved to text, expected a map of child inputs. If the text is JSON, have the producing step "
+                "emit a structured value (code `result: dict`) or list the inputs as keys under 'inputs:'."
+            )
+        else:
+            reason = f"resolved to {type(inputs).__name__}, expected a map of child inputs."
+        # ValueError, not TypeError: prep's recoverable set routes it (``_PREP_RECOVERABLE``).
+        raise ValueError(f"{step}: 'inputs:' {reason}")
 
     def _load_workflow(
         self, shared: dict[str, Any], execution_stack: list[str]
@@ -784,69 +825,6 @@ class WorkflowExecutor(BaseNode):
         if str(workflow_path) in execution_stack:
             cycle = " -> ".join([*execution_stack, str(workflow_path)])
             raise ValueError(f"Circular workflow reference detected: {cycle}")
-
-    def _validate_child_params(
-        self, workflow_ir: dict[str, Any], child_params: dict[str, Any], workflow_path: Any
-    ) -> None:
-        """Validate provided params against child workflow's declared inputs.
-
-        Checks both directions at runtime as defense-in-depth against programmatic
-        callers that bypass the parse-time validator:
-          * Missing required inputs → ``ValueError``.
-          * Undeclared extras inside ``inputs:`` dict → ``ValueError``.
-
-        Runs even when the child declares no inputs — in that case the
-        missing-required loop is a natural no-op but the extras loop correctly
-        rejects any provided keys (set(child_params) - set() = set(child_params)).
-        Previously this method early-returned on empty declarations, which
-        reopened the silent-drop class of bug for programmatic callers against
-        children with no ``## Inputs`` section.
-        """
-        # ``or {}`` defends against programmatic callers that set inputs=None
-        # explicitly. The schema (Step 1) rejects ``inputs: null`` from user-
-        # authored IR cleanly, but bypass callers (MCP server, direct Python
-        # API, tests constructing executors) skip validation — this is the
-        # runtime defense-in-depth boundary that catches the leak.
-        declared_inputs = workflow_ir.get("inputs") or {}
-        path_str = workflow_path if workflow_path else "<unknown>"
-
-        # Missing-required direction (pre-existing).
-        missing_required = []
-        for input_name, input_spec in declared_inputs.items():
-            is_required = input_spec.get("required", True)
-            has_default = "default" in input_spec
-            if is_required and not has_default and input_name not in child_params:
-                desc = input_spec.get("description", "")
-                input_type = input_spec.get("type", "any")
-                missing_required.append(
-                    f"  - {input_name} ({input_type}): {desc}" if desc else f"  - {input_name} ({input_type})"
-                )
-
-        if missing_required:
-            provided = list(child_params.keys()) if child_params else []
-            msg_parts = [
-                f"Child workflow '{path_str}' is missing required inputs:",
-                *missing_required,
-            ]
-            if provided:
-                msg_parts.append(f"You provided: {', '.join(provided)}")
-            else:
-                msg_parts.append("You provided no inputs.")
-            all_input_names = list(declared_inputs.keys())
-            msg_parts.append(f"Available inputs: {', '.join(all_input_names)}")
-            raise ValueError("\n".join(msg_parts))
-
-        # Undeclared-extras direction (symmetric to missing-required).
-        extras = sorted(set(child_params.keys()) - set(declared_inputs.keys()))
-        if extras:
-            declared_names = sorted(declared_inputs.keys())
-            msg_parts = [
-                f"Child workflow '{path_str}' was passed undeclared input(s): {', '.join(extras)}.",
-                f"The child declares: {', '.join(declared_names) if declared_names else '(none)'}.",
-                "Either declare these inputs in the child's ## Inputs section, "
-                "or remove them from this workflow node's inputs: dict.",
-            ]
-            raise ValueError("\n".join(msg_parts))
 
     def _create_child_storage(self, parent_shared: dict[str, Any], prep_res: dict[str, Any]) -> dict[str, Any]:
         """Create isolated storage for the child workflow.

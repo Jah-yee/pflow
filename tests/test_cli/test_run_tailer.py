@@ -839,7 +839,7 @@ def _write_wf(path: Path, node_id: str = "greet", *, command: str = "echo hi") -
 
 def _write_declared_defaults_wf(path: Path, node_id: str = "greet") -> Path:
     """A workflow whose declared input gets a DEFAULT filled — the exact case where a future
-    `_fill_declared_defaults` regression could pollute the stamped IR. The round-trip test runs this through
+    `_fill_placeholders` regression could pollute the stamped IR. The round-trip test runs this through
     the REAL runner to guard the pristine-IR stamp."""
     path.write_text(
         "# Round Trip\n\nGuards the pristine-IR stamp via a defaulted input.\n\n"
@@ -967,7 +967,7 @@ def test_start_pinned_broadcasts_run_stale_only_when_the_version_differs(tmp_pat
 def test_round_trip_real_runner_unedited_not_stale_edited_stale(tmp_path, monkeypatch):
     """The KEY consistency pin (drive the REAL runner, not a resolver shortcut): the producer stamp and the
     replay-compare hash the SAME resolved IR, so an UNEDITED file round-trips to an identical digest → not
-    stale. Uses a declared-defaults workflow (where `_fill_declared_defaults` could one day pollute the stamp
+    stale. Uses a declared-defaults workflow (where `_fill_placeholders` could one day pollute the stamp
     — this is what guards the pristine-IR invariant). Editing the file (rename the node) → digests differ →
     stale."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

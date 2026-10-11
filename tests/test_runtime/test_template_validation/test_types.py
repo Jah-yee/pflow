@@ -1498,8 +1498,9 @@ class TestCodeNodeInputAnnotationValidation:
         ann_errors = [d for d in errors if "Input 'x' expects dict" in d.message]
         assert len(ann_errors) == 1, [d.message for d in errors]
         suggestions = ann_errors[0].suggestions or []
-        # Must reference the workflow input declaration, not "change to return".
-        assert any("workflow input declaration for 'data'" in s and "- type: dict" in s for s in suggestions), (
+        # Must reference the workflow input declaration, not "change to return" — in the
+        # `## Inputs` vocabulary (`object`; `- type: dict` is rejected by the schema).
+        assert "Or change the workflow input declaration for 'data' to '- type: object' (currently array)" in (
             suggestions
         )
         assert not any("return dict" in s for s in suggestions), suggestions
