@@ -30,7 +30,8 @@ declare -a drifted=()
 while IFS= read -r cmd; do
   case_dir=$(dirname "$cmd")
   rel=${case_dir#$BASELINE_DIR/}
-  out=$("$BASELINE_DIR/run-case.sh" "$case_dir" --diff 2>&1)
+  # </dev/null: the loop reads the case list from stdin, and pflow reads a piped stdin.
+  out=$("$BASELINE_DIR/run-case.sh" "$case_dir" --diff 2>&1 </dev/null)
   rc=$?
   if [[ $rc -eq 0 ]]; then
     printf 'PASS  %s\n' "$rel"
@@ -49,6 +50,11 @@ done <<< "$cases"
 
 echo
 echo "summary: $pass passed, $drift drifted, $errors harness errors"
+expected=$(printf '%s\n' "$cases" | wc -l | tr -d ' ')
+if [[ $((pass + drift + errors)) -ne $expected ]]; then
+  echo "harness error: ran $((pass + drift + errors)) of $expected cases" >&2
+  errors=$((errors + 1))
+fi
 if [[ $drift -gt 0 ]]; then
   echo "drifted cases:"
   for c in "${drifted[@]}"; do echo "  $c"; done
