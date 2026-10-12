@@ -501,15 +501,20 @@ class TestTolerance:
         assert format_cost_summary_lines(outcome.document) == []
         assert identity_lines(outcome.document) == ["status: success"]
 
-    def test_a_failed_result_built_without_a_status_is_still_a_failure(self) -> None:
+    def test_success_is_derived_from_the_status(self) -> None:
+        """``success``, ``status`` and the exit code are one fact: the status decides, ``result.success`` never does."""
         error = Diagnostic(severity=Severity.ERROR, message="boom", source="runtime")
+        incoherent = ExecutionResult(success=True, status=WorkflowStatus.FAILED, diagnostics=[error])
 
-        outcome = build_run_outcome(ExecutionResult(success=False, diagnostics=[error]), {}, workflow_metadata=None)
+        failed = build_run_outcome(incoherent, {}, workflow_metadata=None)
+        succeeded = build_run_outcome(ExecutionResult(success=True), {}, workflow_metadata=None)
 
-        assert outcome.status is WorkflowStatus.FAILED
-        assert outcome.exit_code == 1
-        assert outcome.document["status"] == "failed"
-        assert "result" not in outcome.document
+        assert failed.document["success"] is False
+        assert failed.document["status"] == "failed"
+        assert failed.exit_code == 1
+        assert succeeded.document["success"] is True
+        assert succeeded.document["status"] == "success"
+        assert succeeded.exit_code == 0
 
 
 # --- Redaction and integrity of the printed diagnostics -----------------------------------------
@@ -840,6 +845,14 @@ def test_shell_stderr_upgrades_the_glyph_and_its_preview_keeps_the_cause(tmp_pat
     assert block[2].endswith("error: the real cause")
     assert completion_line(clean)[0].startswith("✓ Workflow completed in ")
     assert format_stderr_warnings(clean.document["execution"]["steps"]) == []
+    # The MCP response composes the same sections: an agent there sees the glyph and the cause too.
+    noisy_text = render_mcp_text(outcome)
+    clean_text = render_mcp_text(clean)
+    assert noisy_text.startswith("⚠️ Workflow completed in ")
+    assert "\n⚠️  Shell stderr (exit code 0):\n" in noisy_text
+    assert f"\n{block[2]}\n" in noisy_text
+    assert clean_text.startswith("✓ Workflow completed in ")
+    assert "Shell stderr" not in clean_text
 
 
 class TestStderrWarnings:
@@ -1151,18 +1164,28 @@ class TestCostLines:
 
     def test_partial_cost(self) -> None:
         calls = [{"model": "gpt-4o", "cost_usd": 0.03}, *[{"model": "unknown-model", "cost_usd": None}] * 2]
+        outcome = _llm_outcome(calls)
+        document = outcome.document
 
-        lines = format_cost_summary_lines(_llm_outcome(calls).document)
+        lines = format_cost_summary_lines(document)
 
+        # The JSON explains its null total with the discriminators beside it, not only in metrics.total.
+        assert document["total_cost_usd"] is None
+        assert document["partial_cost_usd"] == 0.03
+        assert document["pricing_available"] is False
+        assert document["unavailable_models"] == [{"name": "unknown-model", "calls": 2}]
         assert lines == [
             "💰 Cost: $0.0300+ (partial — pricing unavailable for: unknown-model (2 calls))",
             "   Total LLM calls: 3",
         ]
+        assert render_mcp_text(outcome).splitlines()[1:3] == lines
 
     def test_priced_cost_carries_calls_and_tokens(self) -> None:
-        assert format_cost_summary_lines(_llm_outcome(_priced(2, cost=0.05, tokens=28000)).document) == [
-            "💰 Cost: $0.0500 (2 calls, 28,000 tokens)"
-        ]
+        priced = _llm_outcome(_priced(2, cost=0.05, tokens=28000))
+
+        assert format_cost_summary_lines(priced.document) == ["💰 Cost: $0.0500 (2 calls, 28,000 tokens)"]
+        assert "pricing_available" not in priced.document
+        assert "\n💰 Cost: $0.0500 (2 calls, 28,000 tokens)\n" in render_mcp_text(priced)
         assert format_cost_summary_lines(_llm_outcome(_priced(1, cost=0.05, tokens=2137122)).document) == [
             "💰 Cost: $0.0500 (1 call, 2,137,122 tokens)"
         ]

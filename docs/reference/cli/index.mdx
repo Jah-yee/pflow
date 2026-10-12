@@ -322,7 +322,7 @@ Every way a run ends — success, failure, a paused gate, a denied gate — prin
 |-------|-------------|
 | `success` | `true` when the run completed (exit 0, `status` `success` or `degraded`); `false` when it failed, paused or was denied — branch on `status` to tell those apart |
 | `status` | `success`, `degraded` (completed with warnings), `failed`, `paused` or `denied` |
-| `execution_id`, `trace_path` | The run's id and its trace file — present together whenever the trace was written (absent under `--no-trace`). Pass either to `pflow report` |
+| `execution_id`, `trace_path` | The run's id and its trace file — present together whenever the trace was written (absent under `--no-trace`). Pass `trace_path` to `pflow report` |
 | `result` | Workflow output (object, string, or array based on declared outputs). On failure, present only when a declared output failed to resolve: it holds the outputs that did |
 | `error` | One-line summary of the failure or denial |
 | `errors[]` | The failure's error diagnostics — always a list, empty on success and on a pause: `message`, `title`, `suggestions`, `node_id`, and the details under `context` (e.g. `context.available_fields` — valid fields for a template variable) |

@@ -850,7 +850,7 @@ workflow_execute(
 
 Keep iterating on the `.pflow.md` file until the workflow executes successfully. Do NOT save until it works.
 
-**Trace files**: `~/.pflow/debug/workflow-trace-….json` — saved automatically on every run, CLI or `workflow_execute`. The response ends with `execution_id:` and `trace_path:` lines naming the run and its trace (plus `resume_command:` when the run can be resumed or a paused gate answered). Use `pflow report <trace_path>` for a readable execution report.
+**Trace files**: `~/.pflow/debug/workflow-trace-….json` — saved automatically for every run that starts, CLI or `workflow_execute` (a workflow that fails validation never starts, so it has none). When a trace was written, the response ends with `execution_id:` and `trace_path:` lines naming the run and its trace (plus `resume_command:` when the run can be resumed or a paused gate answered). Use `pflow report <trace_path>` for a readable execution report.
 
 ### Step 10: SAVE - Make It Executable by Name (Final Step)
 

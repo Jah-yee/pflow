@@ -27,9 +27,9 @@ Before flagging a UX issue, check if infrastructure already exists. New code sho
 | `PflowError` hierarchy | `core/exceptions.py` | Internal errors: `CompilationError`, `MarkdownParseError`, `WorkflowValidationError`, `LLMCallError` (+ `UnknownModelError`, `MissingApiKeyError`, `InvalidRequestError`, `LLMTransientError`, `LLMResponseParseError`), etc. Each implements `to_diagnostics()`. |
 | `MarkdownParseError` | `core/exceptions.py` (re-exported via `markdown_parser.py`) | Has `suggestion` field — the gold standard for actionable parse errors. |
 | `suggestion_utils.py` | `core/suggestion_utils.py` | Fuzzy matching for "Did you mean?" suggestions. |
-| Success/error formatters | `execution/formatters/` | Structured success and error output (shared by CLI and MCP). |
+| Run outcome | `execution/formatters/run_outcome.py` | The one document for every run ending; CLI JSON emits it, the CLI stderr and MCP text renderers compose its section functions. |
 | Output controller | `core/output_controller.py` | Interactive vs non-interactive output, progress callbacks, partial-line state machine. |
-| Unified error output | `cli/error_output.py` | JSON/text branching for ALL error types (post-Task 149). |
+| Exception error output | `cli/error_output.py` | JSON/text for an exception raised before any `ExecutionResult` exists; a run's ending of any status is the Run outcome (`execution/formatters/run_outcome.py`). |
 | Security utils | `core/security_utils.py` | Parameter masking — the `SENSITIVE_KEYS` word-aware name rule. |
 | `shared["__warnings__"]` | dict keyed by node_id | Accumulated warnings. Values may be strings, structured dicts, or `Diagnostic` instances. Surfaced in execution summary. |
 | MCP error diagnostics | `mcp/errors.py` | Per-status diagnostic builder with structured `suggestions` list. |

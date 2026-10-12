@@ -71,8 +71,10 @@ def build_run_outcome(
 ) -> RunOutcome:
     """Build the one Run outcome for ``result``, whatever its status.
 
-    Keys the run has no value for are absent, never ``null`` (no trace file → no
-    ``execution_id``/``trace_path``; no metrics collector → no ``duration_ms``/``metrics``).
+    ``success`` is derived from the outcome's status — the run completed (exit 0) — so ``success``,
+    ``status`` and the exit code can never disagree. Keys the run has no value for are absent, never
+    ``null`` (no trace file → no ``execution_id``/``trace_path``; no metrics collector → no
+    ``duration_ms``/``metrics``).
     Values whose producer means ``null`` keep it: the ``total_cost_usd`` pricing tri-state, a
     ``?? null`` output, the canonical gate payload's ``question``/``recommendation``/``iteration``.
     """
@@ -85,7 +87,7 @@ def build_run_outcome(
     metrics_summary = _metrics_summary(result)
 
     document: dict[str, Any] = {
-        "success": result.success,
+        "success": status in (WorkflowStatus.SUCCESS, WorkflowStatus.DEGRADED),
         "status": status.value,
         "workflow": workflow_metadata or {"action": "unsaved"},
     }
@@ -111,10 +113,10 @@ def build_run_outcome(
         document["total_cost_usd"] = metrics_summary["total_cost_usd"]
         _mirror_pricing_tri_state(document, metrics_summary)
         document["metrics"] = metrics_summary["metrics"]
-    execution = _execution_block(workflow_ir, result.shared_after, metrics_summary)
+    gate = _gate_payload(result, status)
+    execution = _execution_block(workflow_ir, result.shared_after, metrics_summary, gate)
     if execution is not None:
         document["execution"] = execution
-    gate = _gate_payload(result, status)
     if gate is not None:
         document["gate"] = gate
     resume_command = _resume_command(document, status, trace, gate)
@@ -125,18 +127,12 @@ def build_run_outcome(
 
 
 def _outcome_status(result: ExecutionResult) -> WorkflowStatus:
-    """The status the outcome reports — the result's, normalized for the two cases that can't stand.
-
-    A PAUSED run whose trailer never reached disk has no token that would resolve, so it ends as
-    FAILED (the gate's remediation ladder stays in its errors). A failed result built without a
-    status (the dataclass default is SUCCESS) must never read as a success or exit 0.
+    """The status the outcome reports — the result's, except a PAUSED run whose trailer never reached
+    disk: no token would resolve, so it ends as FAILED (the gate's remediation ladder stays in its errors).
     """
-    status = result.status
-    if status is WorkflowStatus.PAUSED and not result.is_durable_pause:
+    if result.status is WorkflowStatus.PAUSED and not result.is_durable_pause:
         return WorkflowStatus.FAILED
-    if not result.success and status in (WorkflowStatus.SUCCESS, WorkflowStatus.DEGRADED):
-        return WorkflowStatus.FAILED
-    return status
+    return result.status
 
 
 def _metrics_summary(result: ExecutionResult) -> dict[str, Any] | None:
@@ -158,12 +154,20 @@ def _outputs(
 
 
 def _execution_block(
-    workflow_ir: dict[str, Any], shared: dict[str, Any], metrics_summary: dict[str, Any] | None
+    workflow_ir: dict[str, Any],
+    shared: dict[str, Any],
+    metrics_summary: dict[str, Any] | None,
+    gate: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     """The step table — ``nodes_executed`` counts steps completed in THIS attempt (restored ≠ executed)."""
     steps = [_compact_step(step) for step in build_execution_steps(workflow_ir, shared, metrics_summary)]
     if not steps:
         return None
+    for step in steps:
+        if gate is not None and step["node_id"] == gate.get("node_id") and step["status"] == "completed":
+            # The gate stopped its step before it ran: the output a looping step carries in from its
+            # earlier iterations (or the resumed attempt) is not this step completing.
+            step["status"] = "not_executed"
     execution: dict[str, Any] = {}
     if metrics_summary is not None:
         execution["duration_ms"] = metrics_summary["duration_ms"]

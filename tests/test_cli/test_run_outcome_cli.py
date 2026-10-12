@@ -7,6 +7,7 @@ identity settled before a failure renders, and lineage on every ending.
 
 from __future__ import annotations
 
+import errno
 import json
 import re
 from pathlib import Path
@@ -16,6 +17,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from pflow.cli.main import cli
+from pflow.runtime.workflow_trace import WorkflowTraceCollector
 from tests.test_cli.test_paused_cli import _LOOP_GATE_WF
 from tests.test_execution.formatters.test_run_outcome import COMMON_KEYS, IDENTITY_KEYS, METRICS_KEYS
 
@@ -150,6 +152,46 @@ Third, gated.
 
 ```shell command
 {third}
+```
+"""
+
+# The second step reads a field of the first's text: the validator warns, the run still reaches the gate.
+_WARNED_GATE = """# Warned gate
+
+A validator warning, then a gate.
+
+## Steps
+
+### one
+
+Emit JSON.
+
+- type: shell
+
+```shell command
+echo '{"a": 1}'
+```
+
+### two
+
+Read a field of it.
+
+- type: shell
+- env: { X: "${one.stdout.a}" }
+
+```shell command
+echo "$X"
+```
+
+### three
+
+Gated.
+
+- type: shell
+- approval: required
+
+```shell command
+echo three-value
 ```
 """
 
@@ -425,6 +467,63 @@ class TestIdentityOnSuccessJson:
         assert "Workflow trace saved" not in result.stderr
 
 
+class _FullDisk:
+    """A trace stream whose every write fails the way a full disk does."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    def write(self, _text: str) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    def flush(self) -> None:
+        """Nothing buffered: every write already failed."""
+
+    def close(self) -> None:
+        self._stream.close()
+
+
+class TestATrailerWriteFaultLeavesNoIdentity:
+    """A success's outcome is built before the trailer is written (the trailer snapshots it). When that
+    write faults, streaming is disabled and the file has no ``run.complete`` — the run has no trace to name."""
+
+    @staticmethod
+    def _fault_the_trailer(monkeypatch: pytest.MonkeyPatch) -> None:
+        flush_line = WorkflowTraceCollector._flush_line
+
+        def fault_the_trailer(self: WorkflowTraceCollector, line: dict[str, Any], *, intern: bool = True) -> None:
+            if line.get("kind") == "run.complete" and self._stream is not None:
+                self._stream = _FullDisk(self._stream)
+            flush_line(self, line, intern=intern)
+
+        monkeypatch.setattr(WorkflowTraceCollector, "_flush_line", fault_the_trailer)
+
+    def test_json(self, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        path = _write(tmp_path, "ok", _OK)
+        healthy, healthy_document = _json(path)
+        self._fault_the_trailer(monkeypatch)
+
+        faulted, document = _json(path)
+
+        assert healthy.exit_code == faulted.exit_code == 0
+        assert healthy_document.keys() >= IDENTITY_KEYS
+        assert document["result"] == healthy_document["result"] == {"verdict": "two-value"}
+        assert not (IDENTITY_KEYS & document.keys())
+
+    def test_text(self, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        path = _write(tmp_path, "ok", _OK)
+        healthy = _invoke(path)
+        self._fault_the_trailer(monkeypatch)
+
+        faulted = _invoke(path)
+
+        assert healthy.exit_code == faulted.exit_code == 0
+        assert faulted.stdout == healthy.stdout == "two-value\n"
+        assert "Workflow trace saved:" in healthy.stderr
+        assert "Workflow trace saved:" not in faulted.stderr
+        assert "✓ Workflow completed in " in faulted.stderr
+
+
 class TestTiersUnderPrint:
     """P2-T5: ``-p`` hides the summary tier and never the must-act tier — on every status."""
 
@@ -459,6 +558,23 @@ class TestTiersUnderPrint:
         assert "Workflow trace saved:" not in quiet.stderr
         assert "⏸" not in plain.stderr  # the stdout token line is the pause's announcement
         assert "To resume from the failed step" not in plain.stderr  # a pause is answered, not resumed
+
+    def test_a_pause_shows_its_warnings_only_without_print(self, home: Path, tmp_path: Path) -> None:
+        path = _write(tmp_path, "warned-gate", _WARNED_GATE)
+        _, document = _json(path)
+        [warning] = document["warnings"]
+
+        plain = _invoke(path)
+        quiet = _invoke(path, "-p")
+
+        assert document["status"] == "paused"
+        for result in (plain, quiet):
+            assert result.exit_code == 4
+            assert "To answer: pflow resume " in result.stderr
+        assert "⚠️ Warnings:" in plain.stderr
+        assert warning["message"] in plain.stderr
+        assert "⚠️ Warnings:" not in quiet.stderr
+        assert warning["message"] not in quiet.stderr
 
     def test_the_paused_token_line_comes_before_the_gate_content(self, home: Path, tmp_path: Path) -> None:
         """show-before §3 "text unchanged": the stdout token line announces the pause, then the stderr
@@ -511,6 +627,23 @@ class TestCompileTimeFailureCarriesIdentity:
         assert result.stderr.count("Workflow trace saved:") == 1
 
 
+def test_a_looping_gate_paused_again_has_not_completed_its_step(home: Path, tmp_path: Path) -> None:
+    """The step a gate stopped has not completed — its loop-carried output says nothing about this attempt."""
+    workflow = _write(tmp_path, "loop", _LOOP_GATE_WF)
+    marker = tmp_path / "effects.txt"
+    first = _pause(workflow, f"marker={marker}")
+
+    result, document = _json("resume", first, "--approve", "yes")
+
+    assert result.exit_code == 4, result.stderr
+    assert marker.read_text(encoding="utf-8").splitlines() == ["effect 1"]  # iteration 1 ran, then the gate
+    assert document["status"] == "paused"
+    assert document["gate"]["node_id"] == "gated"
+    assert document["execution"]["steps"][0]["node_id"] == "gated"
+    assert document["execution"]["steps"][0]["status"] == "not_executed"
+    assert document["execution"]["nodes_executed"] == 0
+
+
 class TestADenialRendersNoAnswer:
     """P2-T9: a human's no is final — no gate preview, no answer command, no bulk hint after it."""
 
@@ -531,7 +664,10 @@ class TestADenialRendersNoAnswer:
         denied = _invoke("resume", token.group(1), "--approve", "no", *flags)
 
         assert denied.exit_code == 3, denied.stderr
-        assert "✗ Denied at gate 'gated'." in denied.stderr
+        # The loop's carried iteration-1 output is not this attempt completing the step.
+        assert "✗ Denied at gate 'gated'. Workflow stopped cleanly before the step ran. Steps completed: 0 of 1." in (
+            denied.stderr
+        )
         assert f"  ⤷ Resumed from {token.group(1)} at 'gated' (iteration 2)" in denied.stderr
         assert "To answer:" not in denied.stderr
         assert "To approve this and every remaining iteration" not in denied.stderr

@@ -42,7 +42,6 @@ def display_exception_text(exception: Exception, verbose: bool = False) -> None:
 
 
 def output_error(
-    ctx: click.Context | None,
     exception: Exception,
     output_format: str = "text",
     verbose: bool = False,

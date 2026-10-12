@@ -9,6 +9,7 @@ import shlex
 import sys
 import warnings
 from collections.abc import Mapping
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -36,6 +37,7 @@ from pflow.execution.workflow_resolver import resolve_workflow
 
 if TYPE_CHECKING:
     from pflow.core.param_coercion import InputSource
+    from pflow.execution.formatters.run_outcome import RunOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -98,10 +100,9 @@ def _save_trace_file(ctx: click.Context, workflow_trace: Any) -> Any | None:
     Task 172: the run-scoped collector streamed one JSONL line per node DURING the
     run; ``finalize()`` writes the ``run.complete`` trailer and closes the file
     (returning its path, or ``None`` when streaming was off — ``--no-trace``).
-    Idempotent across the two callers — the text-success path (which renders the
-    path in the summary's meta block above the data) and the ``finally`` block
-    (report generation + the failure/JSON-path trace echo) — so the trailer is
-    written exactly once (``finalize`` self-guards too). Returns ``None`` on error.
+    Idempotent across its callers — the outcome path in ``_display_execution_result``
+    and the ``finally`` block (``--report`` generation) — so the trailer is written
+    exactly once (``finalize`` self-guards too). Returns ``None`` on error.
     """
     if "trace_file" not in ctx.obj:
         try:
@@ -287,7 +288,6 @@ def execute_json_workflow(
         ctx.exit(130)
     except Exception as e:
         output_error(
-            ctx,
             exception=e,
             output_format=output_format,
             verbose=effective_verbose,
@@ -395,6 +395,33 @@ def _fully_answered_gate_ids(ctx: click.Context, nodes: list[dict[str, Any]]) ->
     return answered
 
 
+def _settled_outcome(
+    ctx: click.Context, result: Any, output_key: str | None, ir_data: dict[str, Any], output_format: str
+) -> RunOutcome:
+    """Build the run's outcome with its trace settled, so its identity names a complete trace file."""
+    from pflow.core.workflow.status import WorkflowStatus
+    from pflow.execution.formatters.run_outcome import build_run_outcome
+
+    trace = result.trace if ctx.obj.get("trace", True) else None
+    if trace is not None and not result.success:
+        # Settle identity first: a failure's trace is never mutated after the run, and a failure
+        # raised before the engine opened the stream only gets its file (and so its id) here.
+        _save_trace_file(ctx, trace)
+    build = partial(
+        build_run_outcome, result, ir_data, workflow_metadata=ctx.obj.get("workflow_metadata"), output_key=output_key
+    )
+    outcome = build()
+    if trace is None:
+        return outcome
+    if output_format == "json" and outcome.status in (WorkflowStatus.SUCCESS, WorkflowStatus.DEGRADED):
+        trace.set_json_output(outcome.document)  # the trailer snapshots the printed document
+    _save_trace_file(ctx, trace)
+    if "trace_path" in outcome.document and trace.trace_path is None:
+        # Writing the trailer faulted and disabled the stream: no complete file is left to name.
+        return build()
+    return outcome
+
+
 def _display_execution_result(
     ctx: click.Context,
     result: Any,
@@ -406,21 +433,10 @@ def _display_execution_result(
     """Render the run's outcome — stderr lines by tier, then its stdout data — and exit with its code."""
     from pflow.cli.workflow_output import _handle_text_output, _serialize_json_result
     from pflow.core.workflow.status import WorkflowStatus
-    from pflow.execution.formatters.run_outcome import build_run_outcome, render_cli_stderr
+    from pflow.execution.formatters.run_outcome import render_cli_stderr
 
-    trace = result.trace if ctx.obj.get("trace", True) else None
-    if trace is not None and not result.success:
-        # Settle identity first: a failure's trace is never mutated after the run, and a failure
-        # raised before the engine opened the stream only gets its file (and so its id) here.
-        _save_trace_file(ctx, trace)
-    outcome = build_run_outcome(
-        result, ir_data, workflow_metadata=ctx.obj.get("workflow_metadata"), output_key=output_key
-    )
+    outcome = _settled_outcome(ctx, result, output_key, ir_data, output_format)
     succeeded = outcome.status in (WorkflowStatus.SUCCESS, WorkflowStatus.DEGRADED)
-    if trace is not None:
-        if succeeded and output_format == "json":
-            trace.set_json_output(outcome.document)
-        _save_trace_file(ctx, trace)
 
     print_flag = ctx.obj.get("print_flag", False)
     text_mode = output_format == "text"
@@ -1152,5 +1168,5 @@ def run(
         of = ctx.obj.get("output_format", "text") if ctx.obj else output_format
         vb = ctx.obj.get("verbose", False) if ctx.obj else False
         wm = ctx.obj.get("workflow_metadata") if ctx.obj else None
-        output_error(ctx, exception=e, output_format=of, verbose=vb, workflow_metadata=wm)
+        output_error(exception=e, output_format=of, verbose=vb, workflow_metadata=wm)
         ctx.exit(1)

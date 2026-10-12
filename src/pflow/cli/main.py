@@ -61,7 +61,6 @@ class PflowCLI(click.Group):
         except PflowError as e:
             obj = ctx.obj or {}
             output_error(
-                ctx,
                 exception=e,
                 output_format=obj.get("output_format", "text"),
                 verbose=obj.get("verbose", False),

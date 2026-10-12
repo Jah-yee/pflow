@@ -1243,3 +1243,166 @@ resume_command: pflow resume <id> --approve yes|no
   If a lens flags it, it comes up as a plan-shape question, not a silent flip.
 - Text delta: #820 (→ `92dddfc4`) re-recorded Task-159 `12/04`; this branch's guide edits don't move it (I1b re-ran it: PASS).
 - Next: commit P4; merge `origin/main`; gates; completion gate (fresh gate-runner — I1b's window ~620k after four phases).
+
+## [2026-10-12 02:09] gate-runner G1 (Opus) — completion gate: reading battery (7 lenses, codex fan-out) — dispositions
+- Did: dispatched §9's seven reading lenses through `workflows/review/run-review-lenses.pflow.md` on codex from THIS worktree's
+  `pflow` (tree green), scope `git diff origin/main...HEAD` @ `3c5a901b`, spec/plan/show-before/progress-log named as documents
+  (silence = gap). Partition: `review-agent-ux` targeted at the `run_outcome.py` renderers + guide/docs/MCP-instructions/
+  `execution_tools.py` diff; `review-test-fidelity` focused on the rewritten pins + new suites; `simplicity`, `spec-conformance`,
+  `impact-completeness`, `silent-failures`, `feature-interactions` saw the whole diff. Open questions (a) all-`not_executed`
+  `execution` on a pre-collector failure and (b) `_outcome_status`'s second arm put to agent-ux + simplicity; the one-producer grep
+  put to spec-conformance. Report `reviews/completion-gate.md` (read in full; stderr in `completion-gate.stderr.log`):
+  `run-codex 7/7 277.5s`, merge ✓, Coverage "Failed-lens gaps: None" — all seven produced. Findings: Critical 0, Warning 7
+  (1 convergent ×3 lenses), Suggestion 4 (incl. one split assessment). Every Warning verified against code (reads + executed probes,
+  isolated HOME) before fixing.
+- Changed: `src/pflow/cli/commands/run.py` (`_settled_outcome` extracted from `_display_execution_result`: build → snapshot →
+  finalize → rebuild when the trailer write cleared `trace_path`; `_save_trace_file` docstring de-staled; `output_error` callers),
+  `src/pflow/execution/formatters/run_outcome.py` (`_execution_block` takes the gate: the gate-stopped step is never `completed`),
+  `src/pflow/cli/{error_output.py, main.py, commands/report.py, commands/resume.py}` (unused `ctx` param dropped),
+  `docs/reference/cli/index.mdx`, `src/pflow/mcp_server/resources/instructions/mcp-agent-instructions.md`,
+  `.claude/agents/review-{silent-failures,agent-ux}.md` (+ `make sync-claude-assets` → 2 `.codex` mirrors);
+  tests `tests/test_cli/test_run_outcome_cli.py` (+5), `tests/test_execution/formatters/test_run_outcome.py` (3 deepened).
+- Dispositions (every finding):
+  1. W convergent (spec-conformance W1, silent-failures W1, feature-interactions W2) — success CLI document keeps identity after a
+     trailer-write fault — **CONFIRMED + FIXED.** Read `workflow_trace.py:1018-1036` (`_flush_line` → `_disable_streaming` on any
+     write fault) + `:1120-1129` (clears `_stream_path`) + `:1146-1159` (`finalize` returns None): the success path built the
+     outcome before `finalize`, so JSON carried `execution_id`/`trace_path` naming a trailer-less file and text printed
+     `Workflow trace saved:` — violates spec "stream fault → both absent". Fix keeps §4.4's order (the trailer still snapshots the
+     printed document) and rebuilds the outcome only when settling cleared the path; extracted as `_settled_outcome` (also keeps
+     `_display_execution_result` under C901). Tests `TestATrailerWriteFaultLeavesNoIdentity::test_json/test_text`: a fault injected
+     at the stream's `write` for the `run.complete` line (real `_flush_line` → `_disable_streaming` arm), each paired with a healthy
+     run in the same medium (identity / trace line present). Not a re-litigation of the ordering ruling — the order is unchanged.
+  2. W feature-interactions W1 — resumed looping gate denied reads `Steps completed: 1 of 1` — **CONFIRMED (executed) + FIXED.**
+     Branch printed `1 of 1`; `main` (`923725b8`, same fixture, isolated HOME) printed `0 of 1` (old renderer counted
+     `__execution__.completed_nodes`). Cause: the resume seeds the loop target's carried output into `shared[node]` and keeps it out
+     of `restored_nodes`, so `build_execution_steps` labels it `completed`. Fix in the builder (no engine contact): the step the
+     gate stopped (paused or denied — `gate.node_id`) is relabelled `not_executed` when the store says `completed` (a gate always
+     stops its step before it runs). Tests: `test_denied_looping_gate[text|print]` now pins `Steps completed: 0 of 1.`;
+     new `test_a_looping_gate_paused_again_has_not_completed_its_step` (JSON paused doc after approve-yes: `nodes_executed == 0`,
+     gated step `not_executed`; the marker proves iteration 1 ran). The lens's "re-paused without approving" variant does not exist
+     — `pflow resume <paused>` without `--approve` is refused (executed) — dropped.
+  3. W spec-conformance W2 — P2-T5's paused warnings `-p` pair missing — **CONFIRMED + FIXED:**
+     `TestTiersUnderPrint::test_a_pause_shows_its_warnings_only_without_print` (real validator warning from `${one.stdout.a}` read off
+     the JSON document; `⚠️ Warnings:` + its message present without `-p`, absent with; `To answer:` present in both).
+  4. W test-fidelity W1 — migrated MCP regression tests assert section helpers, not `render_mcp_text` — **CONFIRMED + FIXED:**
+     `test_shell_stderr_upgrades_the_glyph…` now asserts the MCP text's glyph + stderr block (noisy) and their absence (clean);
+     `TestCostLines::test_partial_cost` / `test_priced_cost_carries_calls_and_tokens` assert the cost lines inside the MCP text.
+  5. W test-fidelity W2 — pricing-key absence lacks a JSON presence twin — **CONFIRMED + FIXED:** `test_partial_cost` asserts
+     `total_cost_usd is None`, `partial_cost_usd == 0.03`, `pricing_available is False`, `unavailable_models` on the document.
+  6. W impact-completeness — stale routing rows in `review-silent-failures.md:179` / `review-agent-ux.md:35` — **CONFIRMED + FIXED**
+     (rows now name `build_run_outcome` for run endings, `cli/error_output.py` for exceptions with no run; agent-ux's
+     "Success/error formatters" row → "Run outcome"); `.codex` mirrors regenerated.
+  7. W agent-ux W1 — docs say pass `execution_id` or `trace_path` to `pflow report` — **CONFIRMED** (`report.py:76` treats the
+     argument as a path) **+ FIXED** ("Pass `trace_path` to `pflow report`").
+  8. S simplicity — unused `output_error(ctx, …)` — **FIXED** (pre-existing on `main` too, but this branch reshaped the module; 5 call
+     sites, no test calls it directly).
+  9. S agent-ux S1 — MCP instructions promise a trace on every run — **FIXED** ("every run that starts … a workflow that fails
+     validation never starts"; identity lines "when a trace was written").
+  10. S spec-conformance — spec Status / task-review / Windows CI pending — **SKIPPED: close-out work owned by the task
+      orchestrator** (Status → done, `create-task-review`, PR CI), not a code defect.
+  11. S/split simplicity vs agent-ux — `_outcome_status` second arm — **ruled — orchestrator 01:25 "Accepted deviations"; left
+      as is, ESCALATED as open question (b) below** (simplicity: remove + give fixtures explicit status; agent-ux: keep).
+  12. Open question (a), all-`not_executed` `execution` on a pre-collector failure — simplicity AND agent-ux both answered **keep**
+      (plan §3.1: one rule independent of the collector; the table says explicitly that no step ran). No change.
+  13. Spec-conformance note — the plan §6 literal grep also matches the validate-only response (`run.py`), the probe
+      (`cli/commands/_probe_impl.py`) and single-node responses (`node_output_formatter.py`); `plan_formatter.py` does not match.
+      None is a run-ending document; the lens rules the one-producer requirement **MET** semantically. No change; the plan's
+      grep prediction was imprecise (recorded for the task-review).
+- Verified: `make check` green; `make test` **11688 passed** (HEAD baseline 11683 + the 1 `TestPerformanceBenchmarks` flake that
+  passed this time = 11684, +4 new tests); Task-159 `verify.sh` **87/87, 0 drifted**; examples `capture.py --check` **28 examples,
+  0 differing** (no re-record — no capture or case exercises a looping gate or a trailer fault). Mutation check (scratch script,
+  originals restored): rebuild-after-fault removed → 2 failed; gate relabel removed → 3 failed; MCP shell-stderr removed → 1;
+  MCP cost removed → 2; pricing mirror removed → 1; paused warnings shown under `-p` → 1 — every new/deepened test kills its
+  mutant. Real surface: looping gate → approve → deny on this tree prints `Steps completed: 0 of 1.`; paused JSON
+  `nodes_executed 0`. Real HOME: `find ~/.pflow -mmin -45` shows only the sanctioned fan-out trace and other sessions' files.
+  | Assumed: the trailer-fault test's injected `OSError(ENOSPC)` at `write` stands for every write fault (they share the one
+  `except Exception → _disable_streaming` arm); a fault RAISED out of `finalize` itself (e.g. computing aggregates) leaves
+  `_stream_path` set — pre-existing, not touched.
+- Deviations/surprises: (1) The gate relabel also covers PAUSED, not only the denial the lens reported: a paused-mid-loop step
+  whose iteration 1 ran in this attempt now reads `not_executed` (the step vocabulary has no "in progress"; `completed` was false
+  for a step waiting at its own gate and would contradict the `0 of 1` its denial prints a moment later) — judgment call, listed
+  below. (2) `_settled_outcome` is a new private helper (extracted to hold the rebuild and stay under C901); `_display_execution_result`
+  no longer imports `build_run_outcome`. (3) The convergent finding cited plan §4.4's accepted order; the fix preserved it.
+- Self-checks: fully happy with the fixes — doubt raised: whether rebuilding (a second `get_summary`, slightly later `duration_ms`)
+  only on the fault path is cleaner than "always build after finalize" — kept the conditional so the normal path's printed
+  document stays byte-identical to the trailer snapshot. test-reflect: applied by mutation (six mutants above, all killed); every
+  new absence has its presence twin in the same medium.
+- ESCALATIONS for the orchestrator (none decided here):
+  (b) `_outcome_status`'s `success=False`+default-SUCCESS → FAILED arm. Options: A keep (2 lines; no production producer; guards
+      exit-0-with-`success:false` for hand-built results) · B delete + give the ~23 fixture constructions `status=FAILED` (one status
+      authority; fixture churn, zero user-visible change) · C make the pair unrepresentable at the source (`ExecutionResult`
+      derives `success` from `status` or validates in `__post_init__` — touches `execution/result.py` and every constructor; widest).
+      Recommend A (1–2/5, reversible) — the lens split itself and the accepted 01:25 ruling stand; B is fine if you prefer one authority.
+  (c) FYI (2/5, built): the gate-stopped step is `not_executed` on PAUSED as well as DENIED. Alternative: relabel on DENIED only
+      (exactly restores `main`'s denied count; a paused-mid-loop doc would keep counting the gated step completed). Recommend as built.
+- Next: orchestrator launches `review-falsifier` on the fixed tree (uncommitted: 14 files + `reviews/completion-gate.md`); resume
+  G1 with its report.
+- (b) → ruled by orchestrator: success derived from status; arm deleted (2/5, orchestrator 02:15, after reading the dispositions;
+  (c) accepted as built). `build_run_outcome` writes `success = status in (SUCCESS, DEGRADED)` (F20 → A's definition), so
+  `success`, `status` and `exit_code` cannot disagree in a Run outcome; `_outcome_status` keeps only the non-durable-pause
+  normalization; builder + `_outcome_status` docstrings updated (grep: no other restatement in `src/` or the CLAUDE.md files).
+  Fixtures: the AST scan of every `ExecutionResult(` in `tests/` + `src/` found only TWO statusless `success=False` constructions
+  left (the "~23" of the P1 entry were already given explicit statuses during P2): `tests/test_execution/test_workflow_execution.py:81`
+  → `status=WorkflowStatus.FAILED`; `test_run_outcome.py::TestTolerance::test_a_failed_result_built_without_a_status_is_still_a_failure`
+  (it pinned the deleted arm) → replaced by `test_success_is_derived_from_the_status` (hand-built `success=True, status=FAILED` →
+  document `success: false`, `status: failed`, exit 1; paired `ExecutionResult(success=True)` → `true`, `success`, 0). Mutation:
+  `"success": result.success` restored → that test fails (1 failed), original written back. Production unaffected: both runner
+  constructions are coherent (`_determine_status` returns `(False, FAILED)` / `(True, DEGRADED|SUCCESS)`; exception path
+  `success=False` with an explicit non-success status). Verified: `make check` green; `make test` 11688 passed; `capture.py --check`
+  28/0 (verify.sh not re-run — no output can move).
+- Falsifier (report `reviews/falsifier.md`, relayed by the orchestrator; 18/19 promises HELD, 0 Critical) — dispositions:
+  - **W — a gate inside a sub-workflow child leaves the host step `call` reading `completed` on the failed run — CONFIRMED,
+    pre-existing, NOT FIXED here → follow-up issue (write-up below).** Reproduced on this tree AND on `main` `923725b8` with the
+    falsifier's `fz/gparent.pflow.md` + `gchild.pflow.md` (isolated HOME, non-TTY, `--output-format json`): exit 1, `failed`,
+    steps `prep completed, call completed`, `nodes_executed 2` on both. Root cause (in-process probe of `shared_after`):
+    `shared["call"] == {"_pflow_child_workflow_paths": {"call": ".../gchild.pflow.md"}}`, `__failures__` absent,
+    `__execution__.completed_nodes == ["prep"]`. (1) `WorkflowExecutor.exec` writes trace bookkeeping into the HOST's namespace
+    before the child runs (`runtime/workflow_executor.py:444` → `_record_child_workflow_path` `:741-749`, `parent_shared.setdefault(
+    "_pflow_child_workflow_paths", …)` — `parent_shared` is the host's namespaced view); (2) a child gate verdict re-raises
+    un-converted by design (`:482-488`, Task 125), so nothing records the host in `__failures__`; (3) `get_node_status`
+    (`runtime/node_state.py:84-88`) reads "present and not failed" as SUCCEEDED, so `build_execution_steps`
+    (`execution/execution_state.py:131-134`) labels the host `completed`. Why no builder fix: the builder's signals are the store
+    (which the executor polluted) and the engine's `completed_nodes`. Making `completed_nodes` the step table's source of truth is a
+    source change for every status's table (Task 148 chose `get_node_status`; `--only`/cache/loop/resume bookkeeping would all need
+    re-verifying) — a design choice — and keying on "host of a nested gate" from the gate diagnostic would be special-casing (the
+    diagnostic names the child's `inner`, not `call`). The honest fix is in the executor/engine (sensitive path; this task has no
+    engine contact). Follow-up issue draft:
+    - Title: "A gate inside a sub-workflow leaves its host step reading `completed` — executor bookkeeping makes the host namespace
+      look like output"
+    - Repro: parent `prep` → `call` (`type: workflow`, child's only step `approval: required`); run non-interactively with
+      `--output-format json` → exit 1 / `status: failed`, yet `execution.steps[call].status == "completed"`, `nodes_executed: 2`
+      (main and this branch); the text progress shows `call...` with no ✗. Contrast: a child failing by exception → `call` `failed`.
+    - Root cause: as above — `workflow_executor.py:444/:747` writes `_pflow_child_workflow_paths` into the host namespace at exec
+      start; the gate re-raise (`:482-488`) records no failure; `node_state.get_node_status` (`:86`) equates presence with success.
+    - Proposed fix (pick one in the lane): A) the engine marks a top-level step whose run ended by a gate exception raised from below
+      it as not-completed — e.g. `mark_node_failed`-free: pop the host's namespace / record it as the stopped step, so the Task 148
+      invariant holds; B) the executor records the child path somewhere that is not the host's output namespace until the host
+      finishes (needs `core/trace_tree.py:600-619`'s reader of `node_output._pflow_child_workflow_paths` re-pointed, and the
+      `batch_executor.py:448/:520` twin kept in step). Either closes the class "a step whose run ended at a gate, at any depth, never
+      reads completed" at its source; G1's top-level relabel in `run_outcome._execution_block` stays correct beside it.
+      Also check the progress line (`call...` with no ✗) in the same lane. Severity: low (wrong count on a failed run; no data loss).
+  - Obs 1 — pre-run CLI error documents (file not found, piped input unroutable, newer attempt exists) carry only
+    `{success,status,error,errors,diagnostics,workflow}` — **out of scope by plan §3.5** (no `ExecutionResult` exists; Task 117's
+    subcommand-JSON territory) → note for the task-review.
+  - Obs 2 — non-durable gate after a trace write fault: the fallback remediation lists `--no-trace`/inline/`--only`/unsupported
+    position, none of which applies — **pre-existing (falsifier: main identical), out of scope** (the text is
+    `GateNotInteractiveError`'s remediation in `core/exceptions.py`, not this task's renderer) → task-review note / candidate issue.
+  - Obs 3 — resuming a saved workflow reports `workflow.action: "unsaved"` — **pre-existing, NOT changed by this branch** (verified,
+    isolated HOME, `pflow save` → run by name → `resume --approve yes --output-format json`): resumed document
+    `{'action': 'unsaved', 'name': 'g184-saved-gate'}` on BOTH `main` and this branch. Cause: `cli/commands/resume.py:161,180` keys
+    `action` on `resolved.source == "library"`, and a resume resolves the workflow from the trace's file path (source `file`);
+    `resume.py` is untouched by the committed branch (`git diff origin/main...HEAD -- resume.py` is empty; the only working-tree edit is G1's `output_error` call site).
+    One branch-side difference noticed: the fresh PAUSED document by name now carries `{'action': 'reused', 'name': …}` where `main`
+    had no `workflow` key at all (D1's common keys) — intended. → task-review note.
+  - No code changed for the falsifier report (the gate-host fix is the follow-up above); `make check`/`make test` not re-run — tree
+    unchanged since the (b) entry's green gate.
+
+## [2026-10-12 02:45] task-orchestrator (Opus) — completion gate closed
+- Did: read G1's dispositions (7-lens codex battery: 0 C / 7 W / 4 S — 9 fixed, 1 skipped as close-out work, 1 ruled, 2 no
+  change) + the falsifier (direct launch, report `reviews/falsifier.md`: 18/19 HELD, 0 Critical). Ruled (b) (02:15, 2/5):
+  document `success` derived from the normalized status; (c) accepted as built.
+- Falsifier W (sub-workflow gate leaves its host `completed`; pre-existing on main) → filed **#828** (root cause at the executor's
+  host-namespace bookkeeping + `get_node_status`; engine/executor fix, lane A). Observations → task-review notes (pre-run error
+  documents out of scope by §3.5; write-fault fallback remediation text pre-existing; resumed saved workflow `action: unsaved`
+  pre-existing, branch unchanged).
+- Next: commit; `make test-all-local`; spec Status → done; `create-task-review`; `create-pr`.
