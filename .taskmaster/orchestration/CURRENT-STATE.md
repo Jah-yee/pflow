@@ -1,4 +1,4 @@
-# CURRENT-STATE.md (last verified: 2026-10-11, session-14 close + post-close rulings — main @ origin/main)
+# CURRENT-STATE.md (last verified: 2026-10-12, session-15 close — main @ origin/main `a7ba08de`, push CI green)
 
 _Living state header — the ONE mandatory session-start read (~80-line budget; state + pointers
 only). Rewritten at close/park (ORCHESTRATION "Artifacts and ownership"); work done outside a
@@ -8,66 +8,64 @@ braindumps); routing: `sessions/INDEX.md`. Every claim here is a pointer to veri
 
 ## Process
 
-- Session-14 ran Fable, then **Opus** from the user's `/model` swap (saved as default); routing table unchanged (DECISIONS #24).
-- New this session (homes carry them): quote the user only when the wording is operative (role prompt + ORCHESTRATION log
-  vocabulary); the user's "close bug classes … resolve all assumptions" + "consolidating seams" instructions (role prompt —
-  put them in every packet); concurrency cap 1 build + 3 lanes, nothing new above load ~40 (ORCHESTRATION step 7).
-- Post-close (user accepted all pending items): implementer defs (`never git stash`, tests never touch the real HOME), role
-  prompt (standing fix instructions, fresh reader for a rewritten spec, a pre-execution closing mechanism is a HYPOTHESIS),
-  searcher-offload brief rule — all COMMITTED. Global `~/.local/bin/pflow` reinstalled at 0.16.0 (editable, mcp 1.30).
+- Session-15 ran Fable, then **Opus** from the user's `/model` swap (saved as default); routing unchanged (DECISIONS #24, now
+  carrying the user's "fixes are not taste" line). Searcher default = the codex offload (astra) paired with execution before any
+  filing (the user, s14 + s15).
+- Uncommitted producer-facing edit (needs the user's word, DECISIONS #5): `.claude/skills/deep-review/SKILL.md` (+ `.agents/` twin) —
+  dogfood briefs `env -u` provider keys.
 
-## In flight — nothing live; TWO parked worktrees (branches LOCAL, not pushed), both RULED
+## In flight — nothing live; ONE parked worktree (local branch, clean, nothing built)
 
-- **Task 184** (One Run Outcome) — `feat/task-184-run-outcome` @ `aa96b450`: Fable plan committed (P0–P4, all Opus; one module
-  `execution/formatters/run_outcome.py`; ~30 test files; no engine/trace/web). Spec D1–D4 DECIDED; 8 spec corrections on the
-  branch. **CP-1 RULED** (all four as recommended — `scratchpads/session-14/CP-1-RULED.md` in the worktree; the orchestrator
-  records it on the branch first). NEXT: Opus task-orchestrator, implement-from-plan; packet adds the F20 note (what `success` means for paused/denied — dogfood
-  `scratchpads/session-14/dogfood/verified.md`) and `ui/server.py`'s raw `to_dict()` bodies (#799's sibling list).
-- **#799** (batched `child_failure` printed raw) — `fix/issue-799-batch-child-failure-redaction` @ `05884642`, uncommitted fix
-  + 4 tests (patch copy `scratchpads/session-14/lane-799-parked.patch`). **RULED B** (split the compactor; the user waived the lane-B engine
-  exclusion for the one `workflow_executor.py` call-site line) — park + ruling comments on #799 hold the resume steps.
-- ~~#749~~ — CLOSED into **Task 152** (ruled A); 152's spec refreshed against `cf8b7fcb` and moved to `next`; worktree removed.
+- **#801** (value-based secret scrub) — `fix/issue-801-value-scrub` @ `61625533`. PARKED on the user's Decisions 1–4 (secret-set
+  source A/B/C · min length 8/6 · scrub scope whole-document vs diagnostics · lane file scope); the park comment on #801 holds the
+  options + evidence + resume steps. Resume = a replacement lane in that worktree (merge main first).
 
 ## Next session, recommended order (NOT yet user-agreed)
 
-1. Launch 184's Opus task-orchestrator (implement-from-plan) and resume #799 as a lane (option B) — both ruled.
-2. **#801** (SECURITY: name-only masking prints the value) — lane, after #799 (same redaction seam; #801's value-scrub
-   would cover #799's field too — decide whether one lane takes both).
-3. **#795** (examples capture net → `baseline-oracle` job or delete) · **#755** (stderr head/tail preview, now unblocked) ·
-   **#722** (MCP input blocklist) — parallel-safe fills, Opus lanes.
-4. Dogfood classes #802–#807 (#802 with #458 as one lane; #804 carries an open exact-case-env decision, rec (a); #805 has a
-   trace-format note → may be task-sized). Evidence comments posted on #675 (raise to medium), #735 (widen), #245, #689,
-   #740, #694, #350. Lane residuals recorded in session-14 (e.g. `delete_file.py:183` allow-listed in the remedy ratchet).
-5. **Task 152** planner (now `next`; refreshed spec) — then Task 178 (client-era Q1 is the user's); both reshape `mcp_server/`,
-   serialize them.
-6. Release once the security lanes land (changelog links fixed by #741).
+1. Rule #801 → resume it (first on the `cli/commands/run.py` serial queue).
+2. `run.py` serial queue after #801: #806 (text helpers) → #807 (resume attempt view; now carries M8/P11b) → #821 member 2 (trace
+   finalized on every exit + Ctrl-C waits for the body thread) → #847 (`--help` description / output types) → #850 (header before
+   validation) → the redundant `run.py:816-830` name check (#817 residual; no issue — fold into the next run.py lane).
+3. Parallel-safe fills (verify ownership at pick-up): #846 probe exit code · #842 template error names the consumer · #841 HTTP error
+   body (redact before excerpting) · #832 MCP union params · #835 MCP step-key collisions · #838 · #848 · #849 · #851 · #852 · #855
+   (author-side reserved names) · #834 code-step output on exception · #836 · #837 · #839.
+4. UI follow-ups (Opus — fixes): callout overlays as obstacles (#822 residual; file first, verify) · F4 run-panel items (user's call).
 
 ## Decisions pending the user
 
-- #804's open question (exact-case env matching for inputs; rec (a)) — at its pick-up.
-- Carried: #692 (`pflow delete`, low, stays open — dogfood re-hit it); PyPI yank — orchestrator's rec NO, not ruled.
+- #801 Decisions 1–4 (above). · **#833** settings env exported to every shell step: A stop exporting / B fix the doc (A's premise
+  unverified). · **#843** JSON failure doc cap (rec a). · **#845** save + code-file siblings (rec warn). · **#844** resume-child
+  never-started — both closing options change a documented contract. · **#828** gate in a sub-workflow (engine → task-shaped).
+- F3(b): should `--approve no` skip the "file edited since pause" refusal? — the user: decide next session.
+- F4 (demo studio): transient all-pending panel / no RunProgress for CLI runs / badge excludes restored — file or not.
+- **MCP server future (parity vs removal)** — the user is waiting for more information; Task 152 and Task 178's server half HELD
+  (s15 22:50 ruling, operative wording in the session log). The MCP CLIENT (nodes, discovery, describe) is unaffected.
+- Carried: the release (v0.16.0 + ~45 commits; changelog workflow fixed by #741); #802/#803/#805 shapes; #692 (low).
 
 ## Do not re-raise (declined, with the trigger that reopens each)
 
 - pr-closer / RELEASE-BLOCK / batched releases / docs-PR lane / automatic PR review / cross-task knowledge base — never.
-- #665 (`save --force` data loss) — reopens when saved-library use becomes real.
-- #697 trace file mode 0644 — declined 2026-10-06; dogfood re-observed it, reopen trigger not met.
-- Execution-start MCP auto-sync — DELETED by ruling (#751). An mtime-based test guard (#793) — refuted by concurrent writers.
-- Loudkult s13 declines (deprecation windows, `-p` multi-output, `PFLOW_HOME`, CI validator package, validated-workflow cache).
-- #743 / #742 stay separate from Task 120 (merged).
+- #665 (`save --force`), #697 (trace 0644) — reopen when saved-library use becomes real.
+- Consumer reports (s13 + s15): deprecation windows / `requires-pflow`, `-p` multi-output (#281), `PFLOW_HOME` — s13 triggers;
+  `## Failures` section / per-step exit propagation, refusal API for code steps, `key=@file`, project-local MCP registry, MCP server
+  version record, auto-loading `./file` for MCP params — reopen when a SECOND consumer hits it. Output `keys:` lives on #743.
+- PyPI yank — closed (the user, s15). Execution-start MCP auto-sync — deleted (#751).
 
 ## Regime facts (dated — re-measure, never inherit)
 
-- 2026-10-11: suite ~11,550 tests; `baseline-oracle` CI job ~4 min (required); oracle 87/87; examples capture 12/29 drift (#795).
-- 2026-10-11: open issues 172. Host load ~7 at close (peaked 86 with 1 build + 3 lanes + 2 offloads).
+- 2026-10-12: suite ~11,794 (`make test`); `baseline-oracle` runs the Task-159 oracle AND the Task-170 examples capture (both required).
+- 2026-10-12: open issues 185 (newest #855). Load 70–183 with 1 build + 3 lanes + verification/offload agents (s14 peaked 86).
 
 ## Watch list (non-obvious, easy to miss)
 
-- **The test suite redirects HOME for the whole session** (#793 guard): a lane running `git push`/`gh` inside a test-shaped
-  env fails the credential helper — push with the normal HOME. Spawns without HOME are refused by the guard.
-- **User's machine:** stale uvx env with pflow 0.15.1 + mcp 2.3.0 (`uv cache clean pflow-cli`); registry
-  backup before the s14 re-sync at the session scratchpad (`registry.before-resync.json`).
-- Task 118 Part 2 is breaking for old-form shell/code bodies in the user's saved library — converting is THEIRS.
-- MCP stdio shims + `anyio>=4.5` exist only for Task 178 to delete — never port them.
-- `stash@{0}` (Task 125 WIP) is the user's — no agent ever runs `git stash` (in the implementer defs).
+- **Exit codes changed (#815):** 2 = wrong call (engine never started), 1 = run failed, 3 denied, 4 paused, 130 interrupt — baselines
+  and tests that pin exit codes moved with it.
+- **The run document's JSON shape changed (Task 184):** top-level `nodes_executed`, `checkpoint`, `paused_node_id`, `gate_request` gone.
+- **User actions (their HOME, not ours):** `pflow mcp sync` to pick up corrected MCP param types (#811); stale uvx env
+  (`uv cache clean pflow-cli`). The user's own shell exports GEMINI/OPENAI keys — isolated-HOME agents must `env -u` them.
+- The test suite redirects HOME for the whole session (#793) — push/`gh` with the normal HOME.
+- Agents' abandoned probe shells can block `./scripts/worktree rm` (s15: a `ugrep` hung on stdin 18 min) — inspect argv/cwd, kill only
+  PIDs naming the worktree. Agents can also drop probe files at the MAIN checkout root (s15: 15 `e*.pflow.md`, moved to
+  `scratchpads/session-15/stray-root-probes/`).
+- MCP stdio shims + `anyio>=4.5` exist only for Task 178 to delete. `stash@{0}` (Task 125 WIP) is the user's — never `git stash`.
 - Agent defs/skills in the MAIN checkout are read live by agents launched from the session — committed or not.

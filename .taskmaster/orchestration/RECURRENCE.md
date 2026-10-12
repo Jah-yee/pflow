@@ -51,7 +51,8 @@ proof.
 - a lane squash-merged after `origin/main` moved past its last merge-of-main without
   re-gating (CI on the push to main caught it green) — the lane def's merged-result gate runs
   before the PR, not again before the merge click; recognition would add "re-check origin/main
-  right before merging; if it moved, repeat the gate" | s08 | n=1
+  right before merging; if it moved, repeat the gate" (s15: #817 raced #814's merge; gate ran
+  after, green) | s08, s15 | n=2 → PROPOSED (one sentence in `lane-implementer.md`'s merge step)
 - an issue AUDIT judged "still open" from the body alone while an owner COMMENT on the issue said the
   symptom was fixed (#437 → PR #519) — the brief said read bodies; recognition would make "every issue
   read is TWO calls, body + `--comments`" (already the planner rule) the rule for every agent that
@@ -81,9 +82,20 @@ proof.
 - I tore down a worktree whose gitignored scratch held the only evidence a producer cited (181's `*.corrupt.json`
   before-images) — recognition: before `./scripts/worktree rm`, copy any scratch path a hand-back cites into the session
   scratchpad | s13 | n=1
-- the codex searcher-offload sandbox cannot reach the GitHub API (`gh issue view` fails; s10 read it as "comments empty") —
-  APPLIED at s14 close as a sentence in `workflows/search/run-searcher.pflow.md`'s `prompt` input (paste issue text inline)
-  | s10, s14 | n=2 → promoted (ratify or revert)
 - an upstream issue number beside a closing keyword in a PR body ("fixes agronholm/anyio#816") parsed by GitHub as a phantom
   closing reference to THIS repo's #816 (nonexistent, no effect) — the "never place a closing keyword next to a number the PR
   must not close" trap in a cross-repo form; recognition would extend that ORCHESTRATION sentence to upstream references | s14 | n=1
+- host load far above the ~40 launch ceiling with only 1 build + 3 lanes, because offload runs and verification/execution agents
+  run beside them (s14 peak 86; s15 70–183) — recognition: count offload runs and verification agents toward the cap
+  | s14, s15 | n=2 → PROPOSED (one sentence in ORCHESTRATION step 7)
+- the user waived the lane-B `runtime/engine/` exclusion for exactly one line per launch (#799 call site s14; #755 constant s15)
+  — recognition: a standing rule "a one-line engine constant/call-site may be waived per launch by the user; logic never"
+  | s14, s15 | n=2 → PROPOSED (a DECISIONS row; Home ORCHESTRATION "Lanes")
+- an isolated `HOME` does not isolate the environment: the dogfood agent's `pflow find` silently used the calling shell's exported
+  provider key (one paid call) — APPLIED at s15 close as a sentence in the deep-review dogfood section | s15 | n=1 → applied (ratify)
+- a lane's hand-back message never reached the orchestrator; only a later follow-up notification referencing "the three rulings" did
+  (#811) — kin of s11's "notification before the message"; recognition: when a notification references questions not seen, ask the
+  agent to restate them (done, worked) | s11, s15 | n=2 → PROPOSED (wait n=3 recommended — runner behaviour, cheap workaround)
+- agents' leftovers in places the orchestrator owns: an abandoned falsifier probe shell (hung `ugrep` on stdin) blocked
+  `./scripts/worktree rm`; 15 probe `.pflow.md` files written at the MAIN checkout root — recognition: packets say "kill your probe
+  processes; never write outside your worktree / scratch" (the first half went into s15's last packets) | s15 | n=1

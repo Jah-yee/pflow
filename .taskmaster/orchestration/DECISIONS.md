@@ -50,7 +50,8 @@ Home: this row
 User, verbatim: *"fable is for main orch, planning, and ui / taste, everything else is opus, never
 sonnet"* · *"fable planner is for task planning, not lanes"*. So every task gets a Fable planner →
 Opus task orchestrator (too small for a planner ⇒ lane B); Sonnet is never launched, never pinned;
-lane B runs Opus and gets Fable only on the user's per-launch word.
+lane B runs Opus and gets Fable only on the user's per-launch word. A UI *fix* is not a taste
+trigger — user: *"fable is not needed when its just fixes, fable is for taste and designining"*.
 
 Home: `ORCHESTRATION.md` "Model routing", "Lanes"; `.claude/agents/task-planner.md` frontmatter
 
