@@ -135,8 +135,12 @@ def _resolve_input(
         return None, None, None
     if is_required and value == "":
         origin = "" if supplied is not None else f" (resolved from {source})"
-        message = f"Required input '{input_name}' is empty{origin}: {description}"
-        return caller.error(message, caller.path(input_name), "Provide a non-empty value"), None, source
+        if input_usage(input_spec).required:
+            message, fix = f"Required input '{input_name}' is empty{origin}: {description}", "Provide a non-empty value"
+        else:  # its default makes it optional to leave out — but not to pass empty
+            message = f"Input '{input_name}' is empty{origin}: {description}"
+            fix = "Provide a non-empty value, or leave it out to use its default"
+        return caller.error(message, caller.path(input_name), fix), None, source
     try:
         return None, coerce_declared_input(input_name, input_spec.get("type"), value, source=source), source
     except InputTypeError as e:

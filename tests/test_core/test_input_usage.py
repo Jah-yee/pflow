@@ -93,6 +93,19 @@ class TestTheHelperIsTheRunsRule:
         [error] = _missing_input_errors(spec)
         assert error.message == f"Required input '{NAME}' is empty (resolved from default): The probe."
 
+    def test_an_empty_value_for_an_input_its_default_makes_optional_is_not_called_required(self) -> None:
+        """Leaving it out is fine (its default fills it); passing it empty is not — and the message
+        must not contradict every surface that labels it optional."""
+        spec = _declared("string", {"default": "hello"})
+        assert input_usage(spec).required is False
+        errors, _, _ = prepare_inputs({"inputs": {NAME: spec}}, {NAME: ""}, {})
+        assert [(e.message, e.suggestions) for e in errors] == [
+            (
+                f"Input '{NAME}' is empty: The probe.",
+                ["Provide a non-empty value, or leave it out to use its default"],
+            )
+        ]
+
     def test_at_a_sub_workflow_boundary_an_empty_default_does_not_open_the_settings_fallback(self) -> None:
         """The child boundary reads the same rule: a required input whose default the run rejects
         comes from the parent, never from settings — as the validator rules statically."""
