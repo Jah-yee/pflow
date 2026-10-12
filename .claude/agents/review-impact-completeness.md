@@ -202,7 +202,7 @@ When a change adds new data or behavior to one layer, check if other layers need
 
 ### 7. Display/Output Path Completeness
 
-If the diff changes any user-visible output or behavior, check ALL output paths — the full table lives in `.claude/agents/review-feature-interactions.md` (§Output/Display Interactions). The short list: `execution/formatters/` (success + error), `cli/workflow_output.py` (`_display_execution_summary` — a SEPARATE path from the formatters, Task 96), `mcp_server/services/execution_service.py`, `core/trace_report.py`, JSON mode (errors unified via `cli/error_output.py`, success paths still parallel — verify both branches), and `src/pflow/guide/` agent instructions.
+If the diff changes any user-visible output or behavior, check ALL output paths — the full table lives in `.claude/agents/review-feature-interactions.md` (§Output/Display Interactions). The short list: `execution/formatters/run_outcome.py` (the one Run outcome document + its CLI stderr and MCP text renderers — a field is added once, but check both renderers show it), `cli/workflow_output.py` (a successful run's stdout data), `cli/error_output.py` (failures with no run), `core/trace_report.py`, and `src/pflow/guide/` agent instructions.
 
 ### 8. Test Consumers
 

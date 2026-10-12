@@ -4,7 +4,6 @@ This service handles workflow execution, validation, saving,
 and node testing operations.
 """
 
-import json
 import logging
 from collections.abc import Mapping
 from pathlib import Path
@@ -40,66 +39,14 @@ def _from_the_call(parameters: Mapping[str, Any]) -> dict[str, "InputSource"]:
     return dict.fromkeys(parameters, "call")
 
 
-def _trace_path_str(result: Any) -> str:
-    """The run's streamed trace path as a string — ``""`` when no file exists.
-
-    Task 171: ``WorkflowTraceCollector.trace_path`` is a real property now (the
-    old ``hasattr`` guards here were always-False), but it is ``None`` when
-    streaming was gated off or disabled by an I/O fault mid-run.
-    """
-    path = getattr(result.trace, "trace_path", None) if result.trace else None
-    return str(path) if path else ""
-
-
-def _format_success_result(
-    result: Any,
-    resolved: Any,
-    workflow_name_display: str | None,
-) -> dict[str, Any]:
-    """Format successful execution result for MCP text output.
-
-    Args:
-        result: ExecutionResult from WorkflowRunner
-        resolved: ResolvedWorkflow from resolver
-        workflow_name_display: User-facing name (e.g., "my-workflow"), not file path
-
-    Returns:
-        Formatted success dictionary
-    """
-    from pflow.execution.formatters.success_formatter import format_execution_success
-
-    # Build workflow metadata from resolution source
-    # Note: "name" must be user-facing (e.g., "my-workflow"), NOT file_path
-    # (which is an absolute path like /Users/.../my-workflow.pflow.md).
-    # The formatter displays "{name} was executed" in MCP output.
+def _workflow_metadata(resolved: Any, workflow_name_display: str) -> dict[str, Any]:
+    """The outcome's ``workflow`` block. ``name`` is user-facing (``my-workflow``), never the
+    absolute file path — the MCP text leads with ``{name} was executed``."""
     if resolved.source == "library":
-        workflow_metadata: dict[str, Any] | None = {
-            "action": "reused",
-            "name": workflow_name_display or str(resolved.file_path),
-        }
-    elif resolved.source == "file":
-        workflow_metadata = {
-            "action": "unsaved",
-            "name": workflow_name_display or str(resolved.file_path),
-        }
-    else:
-        workflow_metadata = {"action": "unsaved"}
-
-    formatted = format_execution_success(
-        shared_storage=result.shared_after,
-        workflow_ir=resolved.ir,
-        metrics_collector=result.metrics,
-        workflow_metadata=workflow_metadata,
-        trace_path=_trace_path_str(result),
-        status=result.status,
-        warnings=_mcp_surfaced_diagnostics(getattr(result, "diagnostics", [])),
-    )
-    # Task 171: run identity on every success response — MCP callers have no
-    # other way to correlate a run with its trace / a later resume chain.
-    if result.trace is not None:
-        formatted["execution_id"] = result.trace.execution_id
-
-    return formatted
+        return {"action": "reused", "name": workflow_name_display or str(resolved.file_path)}
+    if resolved.source == "file":
+        return {"action": "unsaved", "name": workflow_name_display or str(resolved.file_path)}
+    return {"action": "unsaved"}
 
 
 def _mcp_surfaced_diagnostics(diagnostics: list[Diagnostic]) -> list[Diagnostic]:
@@ -126,106 +73,6 @@ def _format_mcp_diagnostic_sections(diagnostics: list[Diagnostic]) -> str:
     if advisory_diagnostics:
         sections.append("Advisories:\n" + "\n".join(format_diagnostic(advisory) for advisory in advisory_diagnostics))
     return "\n\n".join(sections)
-
-
-def _build_error_text(
-    errors: list[Diagnostic],
-    warnings: list[Diagnostic],
-    trace_path: str = "",
-    *,
-    result: Any | None = None,
-    workflow_ir: dict[str, Any] | None = None,
-) -> str:
-    """Build detailed error text from diagnostics for MCP agent consumption.
-
-    Args:
-        errors: Error diagnostics from ExecutionResult
-        warnings: Warning diagnostics from ExecutionResult
-        trace_path: Optional trace file path
-
-    Returns:
-        Human-readable error text with shell details for agent diagnosis
-    """
-    if not errors:
-        return "❌ Workflow execution failed"
-
-    lines: list[str] = []
-    if len(errors) > 1:
-        # Multi-error: summary header, then numbered diagnostics
-        lines.append("❌ Workflow execution failed")
-        for index, err in enumerate(errors[:3], 1):
-            lines.append("")
-            lines.append(format_diagnostic(err, error_number=index))
-    else:
-        # Single error: format_diagnostic provides the complete titled output
-        lines.append(format_diagnostic(errors[0]))
-
-    if result is not None and workflow_ir is not None:
-        from pflow.execution.execution_state import build_execution_steps
-        from pflow.execution.formatters.batch_errors import format_batch_errors_section
-
-        steps = build_execution_steps(workflow_ir, result.shared_after, metrics_summary=None)
-        lines.extend(format_batch_errors_section(steps))
-        lines.extend(_format_resolved_outputs_section(result, workflow_ir))
-
-    if warnings:
-        lines.append("\n" + _format_mcp_diagnostic_sections(warnings))
-
-    if trace_path and Path(trace_path).exists():
-        lines.append(f"\nTrace: {trace_path}")
-
-    return "\n".join(lines)
-
-
-def _format_resolved_outputs_section(result: Any, workflow_ir: dict[str, Any]) -> list[str]:
-    """The declared outputs that resolved before an output-resolution failure.
-
-    MCP has no JSON failure document, so this is where the CLI's failure ``result``
-    reaches an MCP caller.
-    """
-    from pflow.execution.formatters.success_formatter import collect_outputs_resolved_before_failure
-
-    resolved = collect_outputs_resolved_before_failure(result, workflow_ir)
-    if not resolved:
-        return []
-    try:
-        rendered = json.dumps(resolved, indent=2, ensure_ascii=False, default=str)
-    except (TypeError, ValueError):  # non-str dict keys; same fallback as the success text's outputs
-        rendered = repr(resolved)
-    return ["", "Outputs that resolved before the failure:", rendered]
-
-
-def _format_paused_text(result: Any) -> str:
-    """Text response for a durably PAUSED run (Task 171).
-
-    This surface is text-by-design (LLMs parse text better than nested JSON);
-    the scalar fields stay grep-parseable as one ``key: value`` per line. The
-    gate content is rendered so the agent (or its human) can compose the answer
-    from this response alone; the resume command is the exact next step.
-    """
-    from pflow.execution.gate_prompt import format_bulk_approve_hint, format_gate_lines, format_resume_answer_command
-
-    pause = result.trace.pause_request or {}
-    node_id = pause.get("paused_node_id")
-    gate_request = pause.get("gate_request") or {}
-    execution_id = result.trace.execution_id
-    resume_command = format_resume_answer_command(execution_id, gate_request)
-
-    lines = [
-        f"⏸ Workflow paused at '{node_id}' — a human decision is required.",
-        "",
-        "status: paused",
-        f"execution_id: {execution_id}",
-        f"paused_node_id: {node_id}",
-        f"trace_path: {_trace_path_str(result)}",
-        f"resume_command: {resume_command}",
-    ]
-    bulk_hint = format_bulk_approve_hint(execution_id, gate_request)
-    if bulk_hint:
-        lines.append(bulk_hint)
-    lines += ["", "Gate:"]
-    lines.extend(f"  {line}" for line in format_gate_lines(gate_request))
-    return "\n".join(lines)
 
 
 class ExecutionService(BaseService):
@@ -313,35 +160,19 @@ class ExecutionService(BaseService):
         )
 
         try:
-            if result.success:
-                success_dict = _format_success_result(result, resolved, str(workflow))
-                from pflow.execution.formatters.success_formatter import format_success_as_text
+            from pflow.core.workflow.status import WorkflowStatus
+            from pflow.execution.formatters.run_outcome import build_run_outcome, render_mcp_text
 
-                return format_success_as_text(
-                    success_dict,
-                    warning_diagnostics=_mcp_surfaced_diagnostics(result.diagnostics),
-                )
-            elif result.is_durable_pause:
-                # Task 171: a durable gate pause is not an error — return the
-                # resume token + the gate content in the structured result.
-                # `is_durable_pause` (not a bare `status is PAUSED`) is the SAME
-                # guard the CLI applies: if the trace stream died mid-run there
-                # is no on-disk trailer, so the token would never resolve — that
-                # case falls through to the error branch below (the gate's
-                # remediation ladder), never advertising a dead token.
-                return _format_paused_text(result)
-            else:
-                error_diagnostics = [d for d in result.diagnostics if d.severity == Severity.ERROR]
-                warning_diagnostics = _mcp_surfaced_diagnostics(result.diagnostics)
-                raise RuntimeError(
-                    _build_error_text(
-                        error_diagnostics,
-                        warning_diagnostics,
-                        _trace_path_str(result),
-                        result=result,
-                        workflow_ir=resolved.ir,
-                    )
-                )
+            outcome = build_run_outcome(
+                result, resolved.ir, workflow_metadata=_workflow_metadata(resolved, str(workflow))
+            )
+            text = render_mcp_text(outcome)
+            # A durable pause is not an error: it returns the token + gate (the builder already
+            # turned a pause whose trailer never reached disk into a failure). Failure stays a
+            # raise — the server boundary renders it.
+            if outcome.status in (WorkflowStatus.SUCCESS, WorkflowStatus.DEGRADED, WorkflowStatus.PAUSED):
+                return text
+            raise RuntimeError(text)
         except RuntimeError:
             raise
         except Exception as e:
@@ -784,11 +615,9 @@ class ExecutionService(BaseService):
                     raise TypeError(f"Expected str from structure format, got {type(formatted)}")
                 return formatted
             else:
-                # Use diagnostic pipeline directly
+                from pflow.execution.formatters.run_outcome import format_error_text
 
-                error_diagnostics = result.errors
-                warning_diagnostics = _mcp_surfaced_diagnostics(result.diagnostics)
-                return _build_error_text(error_diagnostics, warning_diagnostics, _trace_path_str(result))
+                return format_error_text(result.errors, _mcp_surfaced_diagnostics(result.diagnostics))
 
         except Exception as e:
             logger.error(f"Failed to run node {node_type}: {e}", exc_info=True)

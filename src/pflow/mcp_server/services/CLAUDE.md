@@ -27,13 +27,16 @@ MCP-specific parameter checks are in
 cache-analysis/probe entry points call them explicitly; a new service method does
 not receive them automatically.
 
-When changing a shared formatter, inspect **both CLI and MCP callers**. CLI run
-rendering is in `cli/commands/run.py` and `cli/workflow_output.py`, not `cli/main.py`.
-Local imports avoid cycles; use shared formatters rather than duplicate wording.
+`execute_workflow` renders the run's ending through `execution/formatters/run_outcome.py`
+(`build_run_outcome` → `render_mcp_text`) — the same document the CLI emits as JSON — and
+returns the text on success or a durable pause, raising it as `RuntimeError` on failure.
+Never assemble MCP run text here; change the builder or a section function. Local imports
+avoid cycles.
 
-`execution_service.py:_mcp_surfaced_diagnostics` includes warnings and parser/validator
-INFO advisories; runtime INFO is not generally surfaced. Preserve those source and
-severity conditions when moving diagnostics across boundaries.
+The advisory policy — warnings plus parser/validator INFO, runtime INFO left to the
+document — lives in `render_mcp_text` for runs and in
+`execution_service.py:_mcp_surfaced_diagnostics` for `validate_workflow` and the
+`registry_run` probe. Preserve those source and severity conditions when moving diagnostics.
 
 For saved-workflow not-found responses, retain actionable similar-name suggestions;
 see `workflow_service.py:describe_workflow` and

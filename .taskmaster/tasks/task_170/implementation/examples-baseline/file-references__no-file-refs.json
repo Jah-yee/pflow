@@ -2,6 +2,7 @@
   "advisories": [],
   "diagnostics": [],
   "duration_ms": 0,
+  "errors": [],
   "execution": {
     "duration_ms": 0,
     "nodes_executed": 1,
@@ -15,6 +16,7 @@
       }
     ]
   },
+  "execution_id": "<UUID>",
   "metrics": {
     "total": {
       "cost_usd": 0.0,
@@ -30,19 +32,18 @@
       "node_timings": {
         "greet": 0
       },
-      "nodes_executed": 1,
       "tokens_input": 0,
       "tokens_output": 0,
       "tokens_total": 0
     }
   },
-  "nodes_executed": 1,
   "result": {
     "stdout": "Hello world, no file references here"
   },
   "status": "success",
   "success": true,
   "total_cost_usd": 0.0,
+  "trace_path": "<TRACE_PATH>",
   "warnings": [],
   "workflow": {
     "action": "unsaved",

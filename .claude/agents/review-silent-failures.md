@@ -174,9 +174,9 @@ When data or signals cross a component boundary, they can be lost in transit. **
 | Child → parent workflow | Child declared outputs or filtered child-store fallback values; error status via action strings | Error action strings — only exceptions were checked (fix 284a5934) |
 | Node → namespaced store | `set_params()` writes params on the node instance | Historical: pre-wrapper-removal, params didn't forward to wrapper chain (Task 96). Current architecture is bare nodes — verify if any new wrapping layer is added. |
 | Root store ↔ namespaced store | Templates resolve through `TemplateResolver` | Ad-hoc code reading `shared[key]` directly misses namespaced data |
-| Runtime → CLI display | Execution results formatted for display | CLI has its own `_display_execution_summary()` in `cli/workflow_output.py` separate from `success_formatter.py` — updating one misses the other (Task 96) |
+| Runtime → CLI display | Execution results formatted for display | `run_outcome.py` builds one document; a key the builder adds but `render_cli_stderr` / `render_mcp_text` never render is silently invisible on that channel (pre-184 history: parallel summary paths, Task 96) |
 | Runtime → MCP server | Execution results returned as tool responses | Check validation coverage across entry points. Historical Task 107: batch-variable registration was missed; current runtime item/index injection is independent of validation metadata. |
-| Any error → JSON output | Errors unified through `cli/error_output.py` (Task 149) — verify all new error paths route through it | Pre-Task 149 history: per-path JSON branching with 72% gap (Task 115 context) |
+| Any error → JSON output | A run's ending (any status) renders through `build_run_outcome` (`execution/formatters/run_outcome.py`); only an exception raised before any `ExecutionResult` exists routes through `cli/error_output.py` — verify a new run-ending path uses the outcome, not the exception document (which carries no identity, metrics or lineage) | Pre-Task 149 history: per-path JSON branching with 72% gap (Task 115 context); pre-Task 184: five bespoke run-ending documents |
 | Runtime → trace/metrics | Execution events collected for reporting | Cached results still reporting phantom costs (fix c4721dfa) |
 
 **Systematic check**: For each boundary crossing in the diff, ask:

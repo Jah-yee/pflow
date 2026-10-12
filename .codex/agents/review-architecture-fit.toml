@@ -35,7 +35,7 @@ A **one-way door** is a decision whose reversal price grows with what accumulate
 4. **The node interface and registry names** — `prep`/`exec`/`post` in `core/node.py`, Interface docstrings, registered type strings (`registry/`). Workflows name node types directly; Task 121 (mock nodes) and Task 114 (custom nodes) build on this contract.
 5. **The trace format** — JSONL events, meta line and `run.complete` trailer, the `format_version` gate readers check (`runtime/workflow_trace.py`, `core/trace_io.py`; ADR-0007-133). Traces feed the web UI, `--only` snapshots, and resume.
 6. **Resume tokens and approval-gate shapes** — the token a human answers days later, gate kinds and answers (`cli/commands/resume.py`, `runtime/resume_source.py`, `core/gate.py`; ADR-0009, ADR-0010). Issued tokens are in the wild.
-7. **Agent-facing CLI and MCP contracts** — flags, `--output-format json` shapes, stdout/stderr routing (`cli/workflow_output.py`), MCP tool names and payloads (`mcp_server/tools/`). Agents script against them; Task 152 is already paying a parity cutover and Task 117 will add a JSON error contract.
+7. **Agent-facing CLI and MCP contracts** — flags, `--output-format json` shapes (one Run outcome document for every ending, `execution/formatters/run_outcome.py`), stdout/stderr routing (`cli/workflow_output.py`), MCP tool names and payloads (`mcp_server/tools/`). Agents script against them; Task 152 is already paying a parity cutover and Task 117 will add a JSON error contract.
 8. **Settings keys** (`core/settings.py`) — persisted in users' settings files.
 9. **`pflow guide` content** (`src/pflow/guide/`) documenting any of the above — agents learn the door from it, so a door change is also a guide change.
 

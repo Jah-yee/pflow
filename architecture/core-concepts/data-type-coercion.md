@@ -140,7 +140,7 @@ whose supplying operand is rooted in a declared non-`any` input (the source-side
 
 ### Point 4: Display Layer
 
-**Location**: `src/pflow/execution/formatters/success_formatter.py` (`parse_json_or_original`)
+**Location**: `src/pflow/execution/formatters/run_outcome.py` (`_collect_outputs` → `parse_json_or_original`)
 
 **When it fires**: At the output boundary, when displaying workflow results. An explicit `-o <path>` into a declared
 input is not re-parsed (`TemplateResolver.reads_declared_input`).

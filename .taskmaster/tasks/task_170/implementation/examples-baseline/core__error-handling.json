@@ -13,6 +13,7 @@
     }
   ],
   "duration_ms": 0,
+  "errors": [],
   "execution": {
     "duration_ms": 0,
     "nodes_executed": 2,
@@ -52,6 +53,7 @@
       }
     ]
   },
+  "execution_id": "<UUID>",
   "metrics": {
     "total": {
       "cost_usd": 0.0,
@@ -69,13 +71,11 @@
         "log-error": 0,
         "read-source": 0
       },
-      "nodes_executed": 3,
       "tokens_input": 0,
       "tokens_output": 0,
       "tokens_total": 0
     }
   },
-  "nodes_executed": 3,
   "result": {
     "create-fallback": {
       "written": "Successfully wrote to '<CWD>/output/fallback.txt'"
@@ -84,6 +84,7 @@
   "status": "degraded",
   "success": true,
   "total_cost_usd": 0.0,
+  "trace_path": "<TRACE_PATH>",
   "warnings": [
     {
       "context": {

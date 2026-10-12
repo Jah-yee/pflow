@@ -86,18 +86,18 @@ async def workflow_execute(
         parameters={...}
 
     Returns:
-        Formatted text with execution results.
-        Success: one-line completion tag, optional supplementary info (batch
-            errors, stderr warnings, LLM cost, validation warnings) when
-            present, then ``Workflow output:`` followed by the declared
-            output value (JSON-encoded for structured types so agents can
-            parse it directly).
-            Example: "✓ Workflow completed in 0.5s\n\nWorkflow output:\n\n{\"key\": \"value\"}"
-        Paused: "⏸ Workflow paused at '<step>' — a human decision is required."
-            followed by grep-parseable ``key: value`` lines (``status: paused``,
-            ``execution_id`` — the resume token, ``paused_node_id``, ``trace_path``,
-            ``resume_command``) and the rendered gate content under ``Gate:``.
-        Error: "❌ Workflow execution failed\n\nError details:\n  • node-id: error message..."
+        One text layout for every ending, rendered from the same Run outcome the
+        CLI emits as ``--output-format json``: the completion line (``✓``/``⚠️``
+        completed, ``❌ Workflow failed after Xs``, or ``⏸ Workflow paused at
+        '<step>' — a human decision is required.``), any ``⤷`` resume/--only line,
+        batch errors, shell stderr and LLM cost, then ``⚠️ Warnings:`` /
+        ``Advisories:``, every error, ``Workflow output:`` with the value
+        (success; JSON-encoded when structured) or the ``Gate:`` content (paused),
+        and last the grep-parseable identity lines: ``status:``, ``execution_id:``
+        (the resume token when paused), ``trace_path:``, and ``resume_command:``
+        when the run can be resumed or answered.
+        Example: "✓ Workflow completed in 0.5s\n\nWorkflow output:\n\n{\"key\": \"value\"}\n\nstatus: success\nexecution_id: …\ntrace_path: …"
+        A failed run is raised as an error whose message is this same text.
     """
     logger.debug(f"workflow_execute called: workflow type={type(workflow)}")
 

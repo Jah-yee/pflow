@@ -9,8 +9,8 @@ Shared presentation for CLI and MCP. Return strings/dicts; never print or call
 |---|---|
 | Wrong selected output/mode | `output_utils.py::select_output_mode` |
 | Full-run fallback output vs `--only` output | `output_utils.py::find_auto_output`, `find_only_output` |
-| Success summary, mode indicators, shell-stderr warnings | `success_formatter.py` |
-| Failed execution and sanitized response fields | `error_formatter.py` |
+| How a run ended — the JSON document, CLI stderr summary, MCP text (every status) | `run_outcome.py` (`build_run_outcome` → `RunOutcome`; `render_cli_stderr`, `render_mcp_text`) |
+| `registry_run` probe failure text | `run_outcome.py::format_error_text` |
 | Batch error input is too large/sensitive to display | `batch_errors.py` |
 | Node text/JSON/template paths | `node_output_formatter.py` |
 | Validation diagnostics | `validation_formatter.py` |
@@ -27,9 +27,12 @@ Batch renderers use display-safe item summaries, never raw `errors[].item`.
 A printer compacts a batch error with `compact_batch_error_detail` / `compact_batch_output_value`
 (redacted); `archive_batch_output_value` keeps values raw and is the runtime's form only.
 
-When extending shared formatter inputs, update both consumers:
-`cli/workflow_output.py` and `mcp_server/services/execution_service.py` (under
-`src/pflow/`). A change at only one call site silently diverges CLI/MCP behavior.
+A run's ending has one builder: `build_run_outcome` turns the `ExecutionResult` into the
+document CLI JSON emits; `render_cli_stderr` (CLI) and `render_mcp_text` (MCP) render it
+from the same section functions. Add a field once, in the builder, and render it in a
+section function both renderers compose — never assemble a run-ending dict elsewhere.
+The document's optional keys are absent, never `null`; a producer's `null` (the cost
+tri-state, a `?? null` output, the gate payload) stays.
 
 ## Easy-to-confuse behavior
 
@@ -51,15 +54,20 @@ must not make restored nodes appear newly executed in summaries.
 
 ## CLI/MCP parity seams
 
-Keep `success_formatter`'s `format_only_indicator`, `format_resume_indicator`, and
-`format_stderr_warnings` shared across CLI and MCP text paths. Successful shell
-stderr still affects the completion glyph and warning block.
+The section functions in `run_outcome.py` (`completion_line`, `mode_lines`,
+`errors_block`, `diagnostic_sections`, `gate_lines`, `answer_lines`,
+`format_stderr_warnings`, `format_cost_summary_lines`, …) are the shared seam; the two
+renderers differ only in tiering (the CLI's `-p`/JSON-mode table) and MCP's identity
+lines and advisory filter. Shell stderr from a step that exited 0 still upgrades the
+completion glyph and renders its block.
 
-`success_formatter._append_outputs` and `cli/workflow_output.py::safe_output`
+`run_outcome._append_outputs` and `cli/workflow_output.py::safe_output`
 JSON-encode non-string values with the same options and use `repr(value)` on
 serialization failure. The fallback value must agree; CLI can additionally emit
 a side-channel warning that MCP text cannot.
 
-Parity coverage lives in `tests/test_execution/formatters/test_success_formatter.py`
-(`TestAppendOutputsCliMcpParity`, `TestStderrWarningsCliMcpParity`). Dry-run rendering
-coverage is in `test_plan_formatter.py` alongside it.
+Coverage: `tests/test_execution/formatters/test_run_outcome.py` (the builder, the
+sections, both renderers on built outcomes), `tests/test_cli/test_run_outcome_cli.py`
+(the CLI adapter on real runs), `tests/test_integration/test_cli_mcp_parity.py` (the
+same run through both channels). Dry-run rendering coverage is in
+`test_plan_formatter.py`.

@@ -9,7 +9,8 @@ fills in `exit_code` and `output`. Each example runs as
 in a fresh HOME (no memo cache, no settings, no traces leaking between runs), a fresh cwd
 (file-writing examples write there) and an empty stdin (pflow reads a piped stdin, so an
 inherited one would change every result). Normalized fields: every `duration_ms` and
-`node_timings` value → 0; every UUID (execution ids) → `<UUID>`; the repo root → `<REPO>`;
+`node_timings` value → 0; every `trace_path` → `<TRACE_PATH>` (the file name carries a
+timestamp); every UUID (execution ids) → `<UUID>`; the repo root → `<REPO>`;
 the run's cwd → `<CWD>`; the run's HOME → `<HOME>`; the OS name and machine (`uname -s`/`-m`) →
 `<OS>`/`<ARCH>`, so a capture recorded on macOS matches on CI's Linux runner.
 
@@ -50,6 +51,8 @@ def _normalize(value: Any, key: str | None, subs: tuple[tuple[str, str], ...]) -
         return [_normalize(v, key, subs) for v in value]
     if key is not None and key.endswith("duration_ms") and isinstance(value, (int, float)):
         return 0
+    if key == "trace_path" and isinstance(value, str):
+        return "<TRACE_PATH>"  # its file name carries the run's timestamp
     if isinstance(value, str):
         for old, new in subs:
             value = value.replace(old, new)

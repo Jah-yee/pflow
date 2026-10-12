@@ -109,14 +109,15 @@ def test_paused_json_document_shape(home, gate_wf):
     document = json.loads(result.stdout)
     assert document["success"] is False
     assert document["status"] == "paused"
-    assert document["paused_node_id"] == "gated"
+    assert document["gate"]["node_id"] == "gated"
+    assert "paused_node_id" not in document  # folded into gate.node_id — one gate payload, one shape
     assert document["resume_command"] == f"pflow resume {document['execution_id']} --approve yes|no"
     # REQUIRED keys for generic success:false handlers — present and empty.
     assert document["errors"] == []
     assert document["diagnostics"] == []
     # The gate payload is self-contained but secret-masked (same policy as the
     # denied document's gate payload).
-    gate = document["gate_request"]
+    gate = document["gate"]
     assert gate["kind"] == "action_approval"
     assert (gate["iteration"], gate["max_iterations"]) == (None, None)  # present and null on a non-loop gate
     assert gate["preview"]["env"]["API_KEY"] == "<REDACTED>"
@@ -163,7 +164,7 @@ def test_pause_surfaces_preview_env_as_the_bound_text_in_full(home, tmp_path):
     assert "chars)" not in text.stderr
 
     document = json.loads(_runner().invoke(cli, [str(wf), "--output-format", "json"]).stdout)
-    assert document["gate_request"]["preview"]["env"] == {
+    assert document["gate"]["preview"]["env"] == {
         "FLAG": "True",
         "LONG": _LONG_ENV_VALUE,
         "AFTER": "tail-var",
@@ -552,8 +553,8 @@ def test_loop_gate_position_reaches_every_pause_surface(home, loop_gate):
     paused = _runner().invoke(cli, ["resume", token, "--approve", "yes", "--output-format", "json"])
     assert paused.exit_code == 4, paused.stderr
     document = json.loads(paused.stdout)
-    gate = document["gate_request"]
-    assert (document["paused_node_id"], gate["iteration"], gate["max_iterations"]) == ("gated", 2, 3)
+    gate = document["gate"]
+    assert (gate["node_id"], gate["iteration"], gate["max_iterations"]) == ("gated", 2, 3)
     token = document["execution_id"]
 
     listed = _runner().invoke(cli, ["resume", "list"])
