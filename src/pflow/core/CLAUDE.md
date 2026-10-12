@@ -184,8 +184,9 @@ Workflow input precedence is separately owned by
 
 ## Shell and progress boundaries
 
-`stdin_has_data()` recognizes real pipes: Unix FIFO detection, Windows pipe-handle
-detection. Readiness polling can hang on external-agent character-device stdin.
+`stdin_has_data()` recognizes real pipes and regular-file redirects (Unix
+`S_ISFIFO`/`S_ISREG`, Windows `FILE_TYPE_PIPE`/`FILE_TYPE_DISK`), never character
+devices: readiness polling can hang on external-agent character-device stdin.
 
 `OutputController.is_interactive()` gates interactive discovery, not all execution
 progress. New writers must respect the `_ensure_node_line_open`/
