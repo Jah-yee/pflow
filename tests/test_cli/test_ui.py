@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import os
+import shlex
 import socket
 import sys
 from pathlib import Path
@@ -27,7 +29,7 @@ from starlette.testclient import TestClient
 from pflow.cli.commands.ui import ui_cmd
 from pflow.core.workflow.manager import WorkflowManager
 from pflow.runtime.workflow_trace import format_trace_filename
-from pflow.ui.server import _json, create_app
+from pflow.ui.server import _checkout_web_dir, _json, bundle_warning, create_app
 from tests.shared.markdown_utils import ir_to_markdown, write_workflow_file
 
 
@@ -474,6 +476,145 @@ class TestJsonSerialization:
         assert response.status_code == 200
         body = json.loads(response.body)
         assert body["nodes"][0]["value"] == "2026-06-08"
+
+
+_BUILT_AT = 1_700_000_000.0
+
+
+def _checkout(tmp_path: Path, *, built: bool = True) -> tuple[Path, Path]:
+    """A source-checkout layout — ``web/`` sources plus the bundle — every file stamped at ``_BUILT_AT``.
+
+    Returns ``(web_dir, static_dir)`` for patching ``pflow.ui.server._WEB_DIR`` / ``_STATIC_DIR``.
+    """
+    web = tmp_path / "web"
+    static = tmp_path / "src" / "pflow" / "ui" / "static"
+    files = [
+        web / "index.html",
+        web / "package-lock.json",
+        web / "src" / "main.tsx",
+        web / "src" / "graph" / "io.test.ts",
+        web / "src" / "test" / "fixtures" / "contracts" / "run-cycle.json",
+        web / "CLAUDE.md",
+        web / "node_modules" / "react" / "index.js",
+    ]
+    if built:
+        files.append(static / "index.html")
+    for path in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x", encoding="utf-8")
+        os.utime(path, (_BUILT_AT, _BUILT_AT))
+    return web, static
+
+
+def _touch_after_build(path: Path) -> None:
+    os.utime(path, (_BUILT_AT + 60, _BUILT_AT + 60))
+
+
+class TestBundleWarning:
+    """``pflow ui`` in a source checkout says so when the bundle it serves is missing or older than ``web/``.
+
+    Issue #824: ``create_app`` mounts whatever bundle exists, so after a ``git pull`` changed ``web/src``
+    the Viewer silently lacked features the CLI and server already had.
+    """
+
+    def test_input_newer_than_the_bundle_warns_naming_the_newest_and_the_checkout(self, tmp_path: Path) -> None:
+        """Any build input counts (not only ``web/src``); the newest is named; the rebuild names the checkout."""
+        web, static = _checkout(tmp_path)
+        _touch_after_build(web / "src" / "main.tsx")
+        os.utime(web / "package-lock.json", (_BUILT_AT + 120, _BUILT_AT + 120))
+        with patch("pflow.ui.server._WEB_DIR", web), patch("pflow.ui.server._STATIC_DIR", static):
+            warning = bundle_warning()
+        assert warning is not None
+        assert "older than web/ — web/package-lock.json changed" in warning
+        assert f"make -C {shlex.quote(str(tmp_path))} ui-build" in warning
+
+    def test_fresh_bundle_is_silent(self, tmp_path: Path) -> None:
+        web, static = _checkout(tmp_path)
+        with patch("pflow.ui.server._WEB_DIR", web), patch("pflow.ui.server._STATIC_DIR", static):
+            assert bundle_warning() is None
+
+    @pytest.mark.parametrize(
+        "non_input",
+        [
+            "src/graph/io.test.ts",
+            "src/test/fixtures/contracts/run-cycle.json",
+            "CLAUDE.md",
+            "node_modules/react/index.js",
+        ],
+    )
+    def test_files_the_build_never_reads_do_not_make_it_stale(self, tmp_path: Path, non_input: str) -> None:
+        """Colocated tests, test fixtures, docs and installed deps change without changing the bundle."""
+        web, static = _checkout(tmp_path)
+        _touch_after_build(web / non_input)
+        with patch("pflow.ui.server._WEB_DIR", web), patch("pflow.ui.server._STATIC_DIR", static):
+            assert bundle_warning() is None
+
+    def test_source_checkout_without_a_bundle_warns_to_build_and_restart(self, tmp_path: Path) -> None:
+        """The not-built mount is fixed at ``create_app``, so a build only shows up after a restart."""
+        web, static = _checkout(tmp_path, built=False)
+        with patch("pflow.ui.server._WEB_DIR", web), patch("pflow.ui.server._STATIC_DIR", static):
+            warning = bundle_warning()
+        assert warning is not None
+        assert "not built" in warning
+        assert f"make -C {shlex.quote(str(tmp_path))} ui-build" in warning
+        assert "stop this server (Ctrl+C)" in warning  # re-running `pflow ui` would just reuse it
+
+    def test_installed_package_is_silent_even_without_a_bundle(self, tmp_path: Path) -> None:
+        with patch("pflow.ui.server._WEB_DIR", None), patch("pflow.ui.server._STATIC_DIR", tmp_path / "static"):
+            assert bundle_warning() is None
+
+    def test_checkout_without_web_sources_is_silent(self, tmp_path: Path) -> None:
+        with (
+            patch("pflow.ui.server._WEB_DIR", tmp_path / "web"),
+            patch("pflow.ui.server._STATIC_DIR", tmp_path / "static"),
+        ):
+            assert bundle_warning() is None
+
+    @pytest.mark.parametrize(
+        ("package_dir", "expected"),
+        [
+            ("/repo/src/pflow/ui", "/repo/web"),
+            ("/venv/lib/python3.12/site-packages/pflow/ui", None),
+            # `pip install --target vendor` inside a project that has its own web/ — not ours to judge.
+            ("/proj/vendor/pflow/ui", None),
+        ],
+    )
+    def test_only_a_src_layout_checkout_has_a_web_source(self, package_dir: str, expected: str | None) -> None:
+        web = _checkout_web_dir(Path(package_dir))
+        assert web == (Path(expected) if expected else None)
+
+    def test_a_fresh_start_prints_the_warning_to_stderr(self, tmp_path: Path) -> None:
+        web, static = _checkout(tmp_path)
+        _touch_after_build(web / "src" / "main.tsx")
+        runner = CliRunner(mix_stderr=False)
+        with (
+            patch("pflow.ui.server._WEB_DIR", web),
+            patch("pflow.ui.server._STATIC_DIR", static),
+            patch("pflow.cli.commands.ui._port_available", return_value=True),
+            patch("uvicorn.Server.run"),
+        ):
+            result = runner.invoke(ui_cmd, ["--no-open", "--port", "9141"])
+        assert result.exit_code == 0, result.output
+        assert result.stderr.count("web/src/main.tsx") == 1
+        assert result.stdout == ""
+
+    def test_reusing_a_running_viewer_does_not_warn(self, tmp_path: Path) -> None:
+        """The reused server is another process, possibly from another checkout — this one serves nothing."""
+        web, static = _checkout(tmp_path)
+        _touch_after_build(web / "src" / "main.tsx")
+        runner = CliRunner(mix_stderr=False)
+        with (
+            patch("pflow.ui.server._WEB_DIR", web),
+            patch("pflow.ui.server._STATIC_DIR", static),
+            patch("pflow.cli.commands.ui._port_available", return_value=False),
+            patch("pflow.cli.commands.ui._probe_health", return_value={"service": "pflow-ui"}),
+            patch("uvicorn.Server.run") as mock_run,
+        ):
+            result = runner.invoke(ui_cmd, ["--no-open", "--port", "9142"])
+        assert result.exit_code == 0, result.output
+        assert "already running" in result.stderr
+        assert "web/src/main.tsx" not in result.stderr
+        mock_run.assert_not_called()
 
 
 class TestFrontendFallback:

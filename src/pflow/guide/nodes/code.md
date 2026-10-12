@@ -66,6 +66,7 @@ result: dict = {
 - Single output via `result` variable — use dict for structured output
 - `${node.stdout}`/`${node.stderr}` hold what the code itself prints (per batch item); prints from threads the code starts (`threading.Thread`, `ThreadPoolExecutor`, `run_in_executor`) are not captured and go to pflow's stderr — return thread output through `result`. Never use `contextlib.redirect_stdout` (process-wide; misroutes parallel batch output)
 - Downstream access: `${node.result}` or `${node.result.field}` for dict results
+- A code step ends by assigning its outputs — `sys.exit(...)` (any code, 0 included) is a step failure, handled like any other error (it never becomes pflow's own exit code); to fail on purpose, raise an exception
 - A body loaded with `- code: ./x.py` gets `__file__` (that file's absolute path) — use `Path(__file__).parent` for files next to it; relative paths in the code itself resolve against the working directory. An `if __name__ == "__main__":` block in the file does not run
 
 ## Validate-Time Type Checking

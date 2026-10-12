@@ -15,7 +15,7 @@ import time
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NamedTuple, NoReturn
+from typing import TYPE_CHECKING, NamedTuple, NoReturn
 from urllib.parse import urlencode
 
 import click
@@ -23,6 +23,9 @@ import httpx
 
 from pflow.core.diagnostic import Diagnostic
 from pflow.core.diagnostic_render import format_diagnostic
+
+if TYPE_CHECKING:
+    from starlette.applications import Starlette
 
 _HOST = "127.0.0.1"
 _DEFAULT_PORT = 8765
@@ -620,7 +623,7 @@ def serve_cmd(
         return
     try:
         import starlette  # noqa: F401
-        import uvicorn
+        import uvicorn  # noqa: F401
     except ImportError:
         click.echo(
             "The 'pflow ui' web interface needs extra dependencies.\n→ uv tool install 'pflow-cli[ui]'",
@@ -629,7 +632,7 @@ def serve_cmd(
         ctx.exit(1)
         return
 
-    from pflow.ui.server import create_app
+    from pflow.ui.server import bundle_warning, create_app
 
     if not _port_available(_HOST, port):
         # Port taken. If it's our own viewer, reuse it (open a tab) rather than fail —
@@ -684,6 +687,13 @@ def serve_cmd(
         ).start()
 
     click.echo(f"Serving pflow UI at {url} (Ctrl+C to stop)", err=True)
+    if warning := bundle_warning():
+        click.echo(warning, err=True)
+    _run_until_interrupted(app, port)
+
+
+def _run_until_interrupted(app: Starlette, port: int) -> None:
+    """Serve ``app`` on the loopback port until Ctrl+C, then shut down cleanly."""
     # Hand Ctrl+C to uvicorn cleanly. pflow's global SIGINT handler (main._handle_sigint → sys.exit(130)) is
     # for `pflow run`, not a long-lived server: uvicorn captures signals while serving and RE-RAISES SIGINT
     # into that handler on shutdown, so sys.exit(130) fires inside the event loop mid-teardown → a SystemExit
@@ -694,6 +704,8 @@ def serve_cmd(
     import contextlib
     import signal
     from types import FrameType
+
+    import uvicorn
 
     # Close the overlay's long-lived SSE streams the moment Ctrl+C arrives — BEFORE uvicorn's graceful-wait
     # times out and FORCE-cancels them (which logs a CancelledError per stream). Wrapping uvicorn's own

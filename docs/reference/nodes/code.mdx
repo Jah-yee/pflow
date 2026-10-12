@@ -292,5 +292,6 @@ Suggestions:
 | Timeout | Code exceeded time limit | Current timeout, suggestion to increase |
 | `SyntaxError` | Invalid Python | Line number from Python parser |
 | Runtime error | Any other exception | Exception type, line number, source line |
+| `sys.exit` | Code called `sys.exit` (any code, 0 included) | The exit call, line number, source line, and what the code printed to stderr — a step failure like any other, never pflow's own exit code |
 
-The node doesn't retry — code execution is deterministic, so retrying the same code produces the same result.
+By default the node doesn't retry — code execution is deterministic, so retrying the same code produces the same result. A step's `retry:` re-runs a body that raises or calls `sys.exit`.
