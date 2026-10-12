@@ -1406,3 +1406,9 @@ resume_command: pflow resume <id> --approve yes|no
   documents out of scope by §3.5; write-fault fallback remediation text pre-existing; resumed saved workflow `action: unsaved`
   pre-existing, branch unchanged).
 - Next: commit; `make test-all-local`; spec Status → done; `create-task-review`; `create-pr`.
+
+## [2026-10-12 03:00] task-orchestrator (Opus) — close-out
+- Did: merged `origin/main` `f2da18e2` (#825; clean); `make check` green; `make test-all-local` 11796 passed / 2 skipped;
+  Task-159 `verify.sh` 87/87; examples `capture.py --check` 28/0; own real-surface spot-check (isolated HOME): exception failure
+  text (❌ line, warnings before the error, resume hint, one trace line), paused JSON key set, resumed denial (`0 of 3` + `⤷`).
+- Wrote `task-review.md`; spec Status → done, Completed 2026-10-12. Next: `create-pr`.

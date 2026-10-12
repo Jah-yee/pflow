@@ -12,7 +12,11 @@ Build the ending once: one document built from the execution result, rendered pe
 
 ## Status
 
-not started
+done
+
+## Completed
+
+2026-10-12
 
 ## Priority
 
