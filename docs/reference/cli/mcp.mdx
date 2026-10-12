@@ -250,25 +250,41 @@ pflow mcp describe <TOOL>
 **Example:**
 
 ```bash
-pflow mcp describe mcp-github-create-issue
+pflow mcp describe mcp-forms-fill
 ```
 
 **Output:**
 
 ```
-Tool: mcp-github-create-issue
-Server: github
-Description: Create a new issue in a GitHub repository
+Tool: mcp-forms-fill
+Server: forms
+Tool Name: fill
+Description: Fill form fields.
+Module: pflow.nodes.mcp.node
+Class: MCPNode
 
 Parameters:
-  - repo (string, required): Repository in owner/repo format
-  - title (string, required): Issue title
-  - body (string): Issue body/description
-  - labels (array): List of label names
+  - fields: list[dict] (required)
+      - name: str (required)
+      - value: str (required)
+  - mode: str (default: draft) (one of: draft, submit)
+  - timeout: int - Timeout in seconds for tool execution (default: 30)
+  - result_format: str - Set to json_block to parse the single fenced ```json block of a text result as `result` (error on zero or several blocks)
 
 Outputs:
-  - result (object): Created issue details
+  - result: any - Tool execution result
+
+Usage in .pflow.md:
+
+    ### step-name
+
+    Describe what this step does and why.
+
+    - type: mcp-forms-fill
+    - fields: value
 ```
+
+An object parameter, or a list of objects, lists its fields indented beneath it. The usage snippet sets only the required parameters; the rest keep their defaults. Run `pflow mcp sync` after upgrading pflow so tools registered earlier pick up the current parameter types.
 
 ## pflow mcp serve
 
