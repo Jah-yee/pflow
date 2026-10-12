@@ -917,25 +917,67 @@ describe("GraphView mount", () => {
         }),
       );
       await waitFor(() => expect(marked(container).sort()).toEqual(["n0", "n1"]));
+
+      // A connection that no longer resolves (an edit dropped the binding; both steps survive) marks
+      // nothing — never its two ends, which would claim a connection the canvas does not have.
+      act(() =>
+        live.handlers!.frame({
+          kind: "edge",
+          source: GRAPH.nodes[0]!.ref,
+          source_field: "stdout",
+          source_path: [],
+          target: GRAPH.nodes[1]!.ref,
+          input_name: "gone",
+        }),
+      );
+      await waitFor(() => expect(marked(container)).toEqual([]));
     });
 
-    it("survives the user's own hover, and a user click supersedes it", async () => {
+    it("adds to the user's own hover without either erasing the other; a user click supersedes it", async () => {
       window.history.replaceState({}, "", "/?density=advanced");
       try {
         const container = await mount();
-        act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[0]!.ref }));
-        await waitFor(() => expect(marked(container)).toEqual(["n0"]));
+        act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[1]!.ref }));
+        await waitFor(() => expect(marked(container)).toEqual(["n1"]));
 
-        // Hovering n1's bound row marks the row's far end (n0) too; leaving clears the HOVER set —
-        // which must not take the narration ring with it.
+        // Hovering n1's bound row marks its far end (n0) alongside the framed n1; leaving clears the
+        // HOVER set — which must not take the narration ring with it.
         const row = nodeOf(container, "n1").querySelector(".param-row")!;
         fireEvent.mouseEnter(row);
+        expect(marked(container).sort()).toEqual(["n0", "n1"]);
         fireEvent.mouseLeave(row);
-        expect(marked(container)).toEqual(["n0"]);
+        expect(marked(container)).toEqual(["n1"]);
 
-        fireEvent.click(screen.getByText("done"));
-        await waitFor(() => expect(nodeOf(container, "n1").classList.contains("focused")).toBe(true));
+        fireEvent.click(screen.getByText("say hi"));
+        await waitFor(() => expect(nodeOf(container, "n0").classList.contains("focused")).toBe(true));
         expect(marked(container)).toEqual([]);
+      } finally {
+        window.history.replaceState({}, "", "/");
+      }
+    });
+
+    it("a click on empty canvas drops it even when nothing was focused", async () => {
+      const container = await mount();
+      act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[1]!.ref }));
+      await waitFor(() => expect(marked(container)).toEqual(["n1"]));
+      fireEvent.click(container.querySelector(".react-flow__pane")!);
+      await waitFor(() => expect(marked(container)).toEqual([]));
+    });
+
+    it("an input frame lights that port's row and rings its card", async () => {
+      vi.mocked(fetchGraph).mockResolvedValue(GRAPH_WITH_INPUT);
+      window.history.replaceState({}, "", "/?density=advanced");
+      try {
+        const { container } = render(<GraphView workflow="demo" onBack={() => {}} />);
+        await waitFor(() => expect(live.handlers).not.toBeNull());
+        await waitFor(() => expect(container.querySelectorAll(".io-row").length).toBe(3));
+
+        act(() => live.handlers!.frame({ kind: "node", ref: GRAPH_WITH_INPUT.nodes[1]!.ref }));
+        await waitFor(() => expect(marked(container)).toEqual(["g_in"]));
+        const litRows = Array.from(container.querySelectorAll(".io-row.hover-mark"));
+        expect(litRows).toHaveLength(1);
+        expect(litRows[0]!.textContent).toContain("name");
+        expect(container.querySelector(".read-panel")).toBeNull();
       } finally {
         window.history.replaceState({}, "", "/");
       }

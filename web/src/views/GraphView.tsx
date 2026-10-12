@@ -112,7 +112,8 @@ function sayAnchorIdFor(
 // What an agent `frame` marks (#823) — painted through the hover-mark channel (components/interaction.ts),
 // so a framed target wears the ring a hovered chip draws. Re-resolved from the CURRENT graph every render
 // (the say-box rule above); a ref that no longer resolves marks nothing. A port marks itself (its row
-// lights, its owner card rings); a step marks the say box's anchor; a connection marks its line + both ends.
+// lights, its owner card rings); a step marks the say box's anchor; a connection marks its line + both ends
+// — or nothing once the connection itself is gone (its two steps may survive an edit that drops it).
 function frameMarksFor(
   graph: RFGraph,
   target: PointTarget,
@@ -120,10 +121,12 @@ function frameMarksFor(
 ): ReadonlySet<string> {
   const markFor = (ref: RFRef): string | null =>
     ref.port !== null ? flatIdForRef(graph, ref) : sayAnchorIdFor(graph, ref, representativeFor);
-  const ids =
-    target.kind === "node"
-      ? [markFor(target.ref)]
-      : [edgeIdForTarget(graph, target), markFor(target.source), markFor(target.target)];
+  let ids: (string | null)[];
+  if (target.kind === "node") ids = [markFor(target.ref)];
+  else {
+    const edgeId = edgeIdForTarget(graph, target);
+    ids = edgeId === null ? [] : [edgeId, markFor(target.source), markFor(target.target)];
+  }
   return new Set(ids.filter((id): id is string => id !== null));
 }
 
@@ -226,8 +229,8 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
   // The agent's `frame` target (#823), marked through the same channel (frameMarksFor) so a narrated step
   // is findable even when the camera barely moves. Its own state, so a user's hover adds to it but never
   // erases it. It lasts until the next agent point (frame replaces it; focus/clear drop it — see
-  // pointHandlers) or a focus/selection change, which supersedes it as it does hover. NOT keyed on
-  // collapse: a frame's own reveal expands the target's ancestors.
+  // pointHandlers), a focus/selection change (which supersedes it as it does hover), or a pane click
+  // (onPaneClick — which may change neither). NOT keyed on collapse: a frame's reveal expands ancestors.
   const [framed, setFramed] = useState<PointTarget | null>(null);
   useEffect(() => setFramed(null), [focus, selectedId]);
 
@@ -563,6 +566,7 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
   }, [focus, graph, builtEdgeIds]);
 
   const onPaneClick = useCallback(() => {
+    setFramed(null);
     setFocus(null);
     setSelectedId(null);
     reportUser("focus_clear", undefined, null);

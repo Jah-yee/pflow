@@ -50,8 +50,8 @@ windows and Watch what they deliberately click:
 - `pflow ui focus <workflow> <target> [--open] [--say TEXT] [--no-wait]` — focus/reveal a target
   in every matching Viewer.
 - `pflow ui frame <workflow> <target> [--say TEXT] [--no-wait]` — move the camera to a target
-  and ring it, without changing focus or opening the details panel. The ring stays until the next
-  `focus`, `frame`, or `clear-focus` (or the user's own click).
+  and ring it, without changing focus or opening a details panel. The ring stays until the next
+  `focus`, `frame`, or `clear-focus`, or until the user selects something or clicks empty canvas.
 - `pflow ui clear-focus <workflow>` — clear the current focus (also dismisses all `--say` captions).
 - `pflow ui user-activity [workflow]` — read recent clicks and view changes.
 
@@ -76,7 +76,7 @@ pflow ui focus review.pflow.md report --say "[cheerful] And the findings land in
 
 Any point target narrates — steps, inputs/outputs, or a connection (quote the `->` address);
 use `frame` when you want the camera moved and the target ringed without changing what's focused
-(no details panel covering a narrow canvas).
+(it opens no details panel to cover a narrow canvas).
 
 Run the walkthrough as ONE chained shell command like above, not one `--say` per turn — your
 own thinking time between separate commands is absorbed only up to the playing clip's length,

@@ -857,8 +857,9 @@ def frame_cmd(
 ) -> None:
     """Frame TARGET and ring it, without changing focus state.
 
-    The ring stays until the next focus, frame, or clear-focus. TARGET uses
-    the same names as ``pflow ui focus``. ``--say "text"`` also
+    The ring stays until the next focus, frame, or clear-focus, or until the
+    user selects something or clicks empty canvas. TARGET uses the same
+    names as ``pflow ui focus``. ``--say "text"`` also
     narrates the text aloud with an on-canvas caption.
     """
     n = _resolve_narration(say)
