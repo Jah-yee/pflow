@@ -29,6 +29,7 @@ Exit mid-body.
 ```python code
 import sys
 result: int = 1
+print("no input file", file=sys.stderr)
 sys.exit(3)
 ```
 
@@ -118,6 +119,7 @@ def test_sys_exit_fails_the_step_and_downstream_never_runs(tmp_path: Path) -> No
     document = _run(tmp_path / "plain.pflow.md")
 
     assert document["error"].startswith("Code called sys.exit(3)")
+    assert "Stderr: no input file" in document["error"]
     assert [e["node_id"] for e in document["errors"]] == ["quit"]
     assert document["execution"]["nodes_executed"] == 0
 

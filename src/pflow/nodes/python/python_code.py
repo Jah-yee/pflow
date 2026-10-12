@@ -32,6 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any
 
+from pflow.core.diagnostic_render import head_tail_preview
 from pflow.core.exceptions import NodeError
 from pflow.core.node import Node
 from pflow.core.types import PYTHON_ALIASES_AT_S1
@@ -755,7 +756,9 @@ class PythonCodeNode(Node):
         }
         if body_exit is not None:
             # As deterministic as a missing result, and routed the same way — keeping the output.
-            exec_result["error"] = self._format_exec_error(body_exit, prep_res, has_inputs="inputs" in self.params)
+            exec_result["error"] = self._format_exec_error(
+                body_exit, prep_res, has_inputs="inputs" in self.params, stderr=stderr
+            )
             return exec_result
         if has_result and "result" not in namespace:
             # A deterministic code bug, not worth a retry: route it like exec_fallback's error dict.
@@ -1001,11 +1004,13 @@ class PythonCodeNode(Node):
                 )
 
     @staticmethod
-    def _format_exec_error(exc: BaseException, prep_res: dict[str, Any], *, has_inputs: bool) -> str:
+    def _format_exec_error(exc: BaseException, prep_res: dict[str, Any], *, has_inputs: bool, stderr: str = "") -> str:
         """Format an execution exception into a user-friendly error string.
 
         Extracts line number from traceback when available, and provides
         actionable suggestions for each error type so AI agents can self-correct.
+        A ``sys.exit`` carries no message of its own — its reason is what the code
+        printed to stderr first, so that output is previewed in the error.
         """
         code = prep_res.get("code", "")
         code_source_line = prep_res.get("code_source_line", 0)
@@ -1025,6 +1030,8 @@ class PythonCodeNode(Node):
             msg = f"Code called {call} — a code step ends by assigning its outputs, not by exiting"
             if location:
                 msg += f"\n{location}"
+            if stderr.strip():
+                msg += f"\n  Stderr: {head_tail_preview(stderr.strip())}"
             msg += (
                 "\n\nSuggestions:\n"
                 "  - Assign the outcome instead: `result: int = main()` rather than `sys.exit(main())`\n"
