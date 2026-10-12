@@ -2,8 +2,9 @@
 
 ``- code: ./x.py`` gives the body ``__file__`` = that file's absolute path, from any working
 directory, including inside a nested child (resolved against the CHILD file) and per item of a
-parallel batch. Every code body runs with ``__name__ == "__main__"``; an inline body has no
-``__file__``. Driven through the real CLI entry point from a third directory.
+parallel batch; an inline body has no ``__file__``. A reused script's ``if __name__ == "__main__":``
+block does not run (its ``sys.exit`` would end the whole run). Driven through the real CLI entry
+point from a third directory.
 """
 
 from __future__ import annotations
@@ -16,7 +17,13 @@ from click.testing import CliRunner
 
 from pflow.cli.main import main
 
-LOCATE = 'result: dict = {"file": globals().get("__file__"), "name": __name__}\n'
+LOCATE = """import sys
+
+result: dict = {"file": globals().get("__file__")}
+
+if __name__ == "__main__":
+    sys.exit(3)
+"""
 
 CHILD = """# Child
 
@@ -73,7 +80,7 @@ Inline body.
 - type: code
 
 ```python code
-result: dict = {"file": globals().get("__file__"), "name": __name__}
+result: dict = {"file": globals().get("__file__")}
 ```
 
 ## Outputs
@@ -120,7 +127,7 @@ def test_code_file_sees_its_own_path_from_any_cwd(tmp_path: Path, monkeypatch: p
     assert run.exit_code == 0, run.stdout + run.stderr
     result = json.loads(run.stdout)["result"]
     top_file = str((parent / "top.py").resolve())
-    assert result["top"] == {"file": top_file, "name": "__main__"}
-    assert [item["result"] for item in result["fan"]] == [{"file": top_file, "name": "__main__"}] * 2
-    assert result["child"] == {"file": str((kids / "lib" / "where.py").resolve()), "name": "__main__"}
-    assert result["inline"] == {"file": None, "name": "__main__"}
+    assert result["top"] == {"file": top_file}
+    assert [item["result"] for item in result["fan"]] == [{"file": top_file}] * 2
+    assert result["child"] == {"file": str((kids / "lib" / "where.py").resolve())}
+    assert result["inline"] == {"file": None}

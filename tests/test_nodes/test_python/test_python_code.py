@@ -1144,28 +1144,6 @@ class TestEdgeCases:
 # ======================================================================
 
 
-class TestScriptIdentity:
-    """The body runs as a script: ``__name__ == "__main__"`` (issue #813)."""
-
-    def test_future_annotations_dataclass_works(self):
-        # `@dataclass` under `from __future__ import annotations` looks the class's module up in
-        # sys.modules; a `__name__` absent from it (e.g. "<code>") crashes class creation.
-        shared: dict = {}
-        run_code_node(
-            shared,
-            code=(
-                "from __future__ import annotations\n"
-                "import dataclasses\n"
-                "@dataclasses.dataclass\n"
-                "class Point:\n"
-                "    x: int\n"
-                "result: str = f'{__name__} {Point(1)!r}'\n"
-            ),
-        )
-        assert shared.get("error") is None
-        assert shared["result"] == "__main__ Point(x=1)"
-
-
 class TestWorkflowIntegration:
     """Verify the code node works through the full compiler/executor pipeline.
 

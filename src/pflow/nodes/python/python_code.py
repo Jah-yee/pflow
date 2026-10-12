@@ -719,11 +719,10 @@ class PythonCodeNode(Node):
         inputs = prep_res["inputs"]
         timeout = prep_res["timeout"]
 
-        # Build namespace with unrestricted builtins + typing + input variables. The body runs as a
-        # script does: `__name__` is "__main__" (a name in sys.modules — `@dataclass` under
-        # `from __future__ import annotations` looks the module up there), and a file-loaded body
-        # gets `__file__`, as `python x.py` would.
-        namespace: dict[str, Any] = {"__builtins__": __builtins__, "__name__": "__main__"}
+        # Build namespace with unrestricted builtins + typing + input variables. A file-loaded body
+        # gets `__file__`, as `python x.py` would. `__name__` stays unset on purpose: "__main__" would
+        # run a reused script's `if __name__ == "__main__":` block, whose sys.exit/argparse ends the run.
+        namespace: dict[str, Any] = {"__builtins__": __builtins__}
         if prep_res["source_file"]:
             namespace["__file__"] = prep_res["source_file"]
         namespace["typing"] = _typing_module
