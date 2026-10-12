@@ -17,7 +17,7 @@ import type { RFGraph, RFNode } from "../types";
 // error contract (not a fabricated shape) is what the banner test exercises.
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
-  return { ...actual, fetchGraph: vi.fn(), fetchCatalog: vi.fn(), fetchSource: vi.fn(), fetchRuns: vi.fn(), fetchRunNode: vi.fn(), runWorkflow: vi.fn(), fetchGate: vi.fn(), resumeRun: vi.fn() };
+  return { ...actual, fetchGraph: vi.fn(), fetchCatalog: vi.fn(), fetchSource: vi.fn(), fetchRuns: vi.fn(), fetchRunNode: vi.fn(), runWorkflow: vi.fn(), fetchGate: vi.fn(), resumeRun: vi.fn(), fetchVersion: vi.fn() };
 });
 const live = vi.hoisted(() => ({
   handlers: null as import("../api/events").PointHandlers | null,
@@ -74,7 +74,7 @@ vi.mock("@xyflow/react", async (importOriginal) => {
   };
 });
 
-import { ApiError, fetchGate, fetchGraph, fetchRunNode, fetchRuns, fetchSource, resumeRun, runWorkflow } from "../api/client";
+import { ApiError, fetchGate, fetchGraph, fetchRunNode, fetchRuns, fetchSource, fetchVersion, resumeRun, runWorkflow } from "../api/client";
 import { subscribe } from "../api/events";
 import type { RunHandlers } from "../api/events";
 import type { GateInfo } from "../types";
@@ -181,6 +181,7 @@ beforeEach(() => {
   });
   vi.mocked(layoutGraph).mockReset();
   vi.mocked(layoutGraph).mockImplementation(layoutStub);
+  vi.mocked(fetchVersion).mockReset().mockResolvedValue("v1"); // a steady source: no live reload
   fitViewSpy.mockClear();
   live.handlers = null;
   live.report.mockReset();
@@ -966,6 +967,28 @@ describe("GraphView mount", () => {
       fireEvent.click(container.querySelector(".read-panel-header .icon-button")!);
       await waitFor(() => expect(container.querySelector(".read-panel")).toBeNull());
       expect(marked(container)).toEqual(["n1"]);
+    });
+
+    it("survives a live reload that renumbers flat ids while something is focused", async () => {
+      const container = await mount();
+      act(() => live.handlers!.focus({ kind: "node", ref: GRAPH.nodes[0]!.ref }));
+      await waitFor(() => expect(nodeOf(container, "n0").classList.contains("focused")).toBe(true));
+      act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[1]!.ref }));
+      await waitFor(() => expect(marked(container)).toEqual(["n1"]));
+
+      // An edit inserts a step first: greet n0→n1, done n1→n2. The remap rewrites focus/selection,
+      // which is not the user pointing elsewhere — the ring follows `done` to its new id.
+      const inserted = { ...GRAPH.nodes[0]!, id: "n0", ref: { node_id: "first", ancestor_path: [], port: null }, purpose: "new first step", params: [] };
+      vi.mocked(fetchGraph).mockResolvedValue({
+        ...GRAPH,
+        nodes: [inserted, { ...GRAPH.nodes[0]!, id: "n1" }, { ...GRAPH.nodes[1]!, id: "n2" }],
+        edges: [{ ...GRAPH.edges[0]!, source: "n1", target: "n2" }],
+      });
+      vi.mocked(fetchVersion).mockResolvedValue("v2");
+      act(() => document.dispatchEvent(new Event("visibilitychange"))); // poll now instead of in 1.5s
+      await waitFor(() => expect(screen.getByText("new first step")).toBeTruthy());
+      await waitFor(() => expect(nodeOf(container, "n1").classList.contains("focused")).toBe(true));
+      expect(marked(container)).toEqual(["n2"]);
     });
 
     it("a click on empty canvas drops it even when nothing was focused", async () => {
