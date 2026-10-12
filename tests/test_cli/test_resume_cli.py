@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -224,6 +225,21 @@ def test_side_effect_tty_confirm_no_cancels(home, shell_wf, monkeypatch):
     assert "Resume cancelled" in result.stderr
     # A user's "no" is a clean stop, not the failure rendering.
     assert "❌" not in result.stderr
+
+
+def test_side_effect_tty_confirm_end_of_input_cancels_like_no(home, shell_wf, monkeypatch):
+    """Ctrl-D at the prompt is the same "no": exit 1. ``click.confirm`` raises ``Abort`` on end of input."""
+
+    def _end_of_input(*_args: object, **_kwargs: object) -> bool:
+        raise click.Abort
+
+    exec_id = _run_to_failure(shell_wf)
+    monkeypatch.setattr("pflow.execution.gate_prompt.can_prompt", lambda oc: True)
+    monkeypatch.setattr("pflow.cli.commands.resume.click.confirm", _end_of_input)
+    result = _runner().invoke(cli, ["resume", exec_id, "mode=ok"])
+    assert result.exit_code == 1, result.stderr
+    assert "Resume cancelled" in result.stderr
+    assert "Abort" not in result.stderr
 
 
 # --- llm K resumes silently (IR-type vocabulary pin) -------------------------

@@ -74,12 +74,16 @@ def _prompt_or_raise_side_effect(
     controller = OutputController(print_flag=print_flag)
     if can_prompt(controller):
         controller.prepare_for_prompt()
-        confirmed = click.confirm(
-            f"Resuming re-runs step '{refusal.node_id}' (a {refusal.node_type} step) "
-            "and its side effects may fire again. Continue?",
-            default=False,
-            err=True,
-        )
+        try:
+            confirmed = click.confirm(
+                f"Resuming re-runs step '{refusal.node_id}' (a {refusal.node_type} step) "
+                "and its side effects may fire again. Continue?",
+                default=False,
+                err=True,
+            )
+        except click.Abort:  # end of input (Ctrl-D) is a "no", not an error
+            click.echo("", err=True)
+            confirmed = False
         if not confirmed:
             click.echo("Resume cancelled.", err=True)
             ctx.exit(1)
