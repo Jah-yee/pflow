@@ -65,7 +65,7 @@ export function besideAnchor(anchor: Box, card: Size, side: CalloutSide): Box {
 
 /**
  * The first side (in the direction's order) whose card fits wholly inside the visible pane, slid along
- * the anchor's edge as far as it stays beside the anchor. When no side fits (a cramped canvas), the side
+ * the anchor's edge as far as it still overlaps the anchor. When no side fits (a cramped canvas), the side
  * showing the most of the card, pushed into view — over the anchor's near edge if it must, but never past
  * the anchor, so a card whose anchor is panned away leaves with it. An unmeasured pane (RF reports 0
  * before it sizes its container) keeps the preferred side.
@@ -107,11 +107,12 @@ function slide(pos: number, size: number, visPos: number, visSize: number, a: nu
 }
 
 // Along the anchor edge the card sits on (vertically beside a left/right card, horizontally for
-// above/below), while the card's span still contains the anchor's span or sits inside it.
+// above/below), as far as its span still overlaps the anchor's — so while any of the anchor is on screen
+// the card sits beside that visible part, and an anchor straddling the pane edge never clips its card.
 function slideAlongAnchor(box: Box, anchor: Box, side: CalloutSide, visible: Box): Box {
   return side === "left" || side === "right"
-    ? { ...box, y: slide(box.y, box.h, visible.y, visible.h, anchor.y, anchor.y + anchor.h - box.h) }
-    : { ...box, x: slide(box.x, box.w, visible.x, visible.w, anchor.x, anchor.x + anchor.w - box.w) };
+    ? { ...box, y: slide(box.y, box.h, visible.y, visible.h, anchor.y - box.h, anchor.y + anchor.h) }
+    : { ...box, x: slide(box.x, box.w, visible.x, visible.w, anchor.x - box.w, anchor.x + anchor.w) };
 }
 
 // Toward the anchor, from its beside position up to flush with the anchor's FAR edge (covering it).

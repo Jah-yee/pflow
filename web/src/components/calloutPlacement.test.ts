@@ -107,7 +107,7 @@ describe("placeCallout — LR", () => {
 });
 
 describe("placeCallout — the card stays beside its anchor", () => {
-  it("slides along the anchor edge to clear the pane's bottom, never off the anchor's span", () => {
+  it("slides along the anchor edge to clear the pane's bottom, still beside the anchor", () => {
     const tall: Size = { w: 320, h: 260 };
     const pane = { w: 1400, h: 700 };
     // Anchor at screen y 420..612; a top-aligned 312 px card would end at 732 > 688 (pane − margin).
@@ -118,7 +118,26 @@ describe("placeCallout — the card stays beside its anchor", () => {
     expect(side).toBe("left");
     expect(insidePane(box, v, pane)).toBe(true);
     expect(box.y).toBeLessThan(ANCHOR.y); // slid up…
-    expect(box.y + box.h).toBeGreaterThanOrEqual(ANCHOR.y + ANCHOR.h); // …still spanning the anchor
+    expect(box.y + box.h).toBeGreaterThanOrEqual(ANCHOR.y + ANCHOR.h); // …only as far as needed
+  });
+
+  it.each([
+    // A card as wide as its anchor (an expanded 320-unit step) has no room to slide while it must span the
+    // anchor — so it slides as far as it still OVERLAPS the anchor, beside the part that is on screen.
+    { direction: "LR" as const, pan: { x: -72, y: 400 }, side: "above" }, // anchor straddles the LEFT edge
+    { direction: "TD" as const, pan: { x: 700, y: -42 }, side: "left" }, // anchor straddles the TOP edge
+  ])("$direction: an anchor straddling the pane edge never clips its card", ({ direction, pan, side: expected }) => {
+    const pane = { w: 1200, h: 853 };
+    const v = { ...pan, zoom: ZOOM };
+
+    const { side, box } = placeCallout(ANCHOR, CAPTION, direction, v, pane);
+
+    expect(side).toBe(expected);
+    expect(insidePane(box, v, pane)).toBe(true);
+    // Still beside the anchor: the card's span overlaps the anchor's on the axis it slid along.
+    const [lo, hi] = direction === "LR" ? [box.x, box.x + box.w] : [box.y, box.y + box.h];
+    const [alo, ahi] = direction === "LR" ? [ANCHOR.x, ANCHOR.x + ANCHOR.w] : [ANCHOR.y, ANCHOR.y + ANCHOR.h];
+    expect(hi > alo && lo < ahi).toBe(true);
   });
 
   it("an anchor panned far off-screen takes its card with it — never pinned to the canvas edge", () => {
