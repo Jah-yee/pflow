@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from pflow.core.prompt_cache_analysis.stages.summary import _format_workflow_run_command
-from pflow.core.types import CANONICAL_TYPES, TypeSpec, input_usage
+from pflow.core.types import CANONICAL_TYPES, input_usage
 from pflow.core.workflow.context import _build_workflow_entry
 from pflow.core.workflow.graph.build import build_graph
 from pflow.core.workflow.skill_service import generate_usage_section
@@ -26,6 +26,17 @@ from pflow.runtime.compilation.ir_preparation import prepare_inputs
 from pflow.runtime.template_validation.path_validation import _get_input_description
 
 NAME = "probe_in"  # an input name no test environment sets
+
+# What a caller types after `name=` — written out, never read from production code.
+_PLACEHOLDERS: dict[str, str] = {
+    "string": "<string>",
+    "integer": "<integer>",
+    "number": "<number>",
+    "boolean": "<true/false>",
+    "array": "'[...]'",
+    "object": "'{...}'",
+    "any": "<value>",
+}
 
 # A default each type accepts, and that default as a caller types it.
 _DEFAULTS: dict[str, tuple[Any, str]] = {
@@ -75,14 +86,6 @@ def _missing_input_errors(spec: dict[str, Any], **caller: Any) -> list[Any]:
 class TestTheHelperIsTheRunsRule:
     """``required`` is what ``prepare_inputs`` does with an omitted input — not the ``required:`` key."""
 
-    @pytest.mark.parametrize(("spec", "type_name", "required"), _cases())
-    def test_an_omitted_input_fails_exactly_when_the_helper_says_required(
-        self, spec: dict[str, Any], type_name: str, required: bool, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv(NAME, raising=False)
-        assert input_usage(spec).required is required
-        assert bool(_missing_input_errors(spec)) is required
-
     def test_an_empty_default_is_still_required_because_the_run_rejects_it(self) -> None:
         spec = _declared("string", {"default": ""})
         assert input_usage(spec).required is True
@@ -113,7 +116,9 @@ class TestEverySurfaceAgrees:
         self, spec: dict[str, Any], type_name: str, required: bool, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         ir: dict[str, Any] = {"inputs": {NAME: spec}, "nodes": [{"id": "work", "type": "shell"}], "edges": []}
-        argument = f"{NAME}={TypeSpec(type_name).placeholder}"
+        assert input_usage(spec).required is required
+        placeholder = _PLACEHOLDERS[type_name]
+        argument = f"{NAME}={placeholder}"
         status = "required" if required else "optional"
         stdin = " [stdin]" if spec.get("stdin") else ""
         default = spec.get("default")
@@ -160,7 +165,8 @@ class TestEverySurfaceAgrees:
         # analyze-cache's suggested command
         assert _format_workflow_run_command("/w.pflow.md", ir["inputs"]) == f"pflow run /w.pflow.md {argument}"
 
-        # the run's own missing-input remedy names the same argument
+        # the run: an omitted input fails exactly when the helper says required, and its remedy
+        # names the same argument
         monkeypatch.delenv(NAME, raising=False)
         errors = _missing_input_errors(spec)
         if required:
@@ -168,11 +174,19 @@ class TestEverySurfaceAgrees:
             assert [e.suggestions for e in errors] == [
                 [
                     f"{passed} — or set the name '{NAME}' in the shell environment, "
-                    f"or once with: pflow settings set-env {NAME} {TypeSpec(type_name).placeholder}"
+                    f"or once with: pflow settings set-env {NAME} {placeholder}"
                 ]
             ]
         else:
             assert errors == []
+
+
+def test_a_scalar_default_on_a_string_input_shows_as_the_text_the_run_receives() -> None:
+    """`default: false` on a `string` input reaches the run as "False" — typing `false` would not."""
+    ir: dict[str, Any] = {"inputs": {"flag": {"type": "string", "default": False}}, "nodes": []}
+    _, updates, _ = prepare_inputs(ir, {}, {})
+    assert updates == {"flag": "False"}
+    assert "    Default: False\n" in format_workflow_interface("wf", {"ir": ir})
 
 
 def test_required_inputs_come_first_and_optional_ones_only_where_every_input_is_listed() -> None:

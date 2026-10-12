@@ -251,11 +251,12 @@ def input_usage(spec: Mapping[str, Any]) -> InputUsage:
     optional. Untyped (or a type outside the vocabulary) is ``any``.
     """
     declared = spec.get("type")
+    type_spec = TypeSpec(declared if isinstance(declared, str) and declared in CANONICAL_TYPES else "any")
     default = spec.get("default")
     return InputUsage(
-        type=TypeSpec(declared if isinstance(declared, str) and declared in CANONICAL_TYPES else "any"),
+        type=type_spec,
         required=bool(spec.get("required", True)) and default in (None, ""),
-        default=None if default is None else _typed_text(default),
+        default=None if default is None else _typed_text(default, type_spec),
         stdin=spec.get("stdin") is True,
     )
 
@@ -269,10 +270,14 @@ def usage_arguments(inputs: Mapping[str, Mapping[str, Any]], *, include_optional
     return required + optional if include_optional else required
 
 
-def _typed_text(value: Any) -> str:
-    """A value as a caller types it: text as is (empty text as ``""``), anything else as JSON."""
+def _typed_text(value: Any, type_spec: TypeSpec) -> str:
+    """A default as the run receives it, typed as a caller would: text as is (empty text as ``""``);
+    a scalar into a ``string`` input as the text the coercer makes of it (``False`` → ``False``, as
+    ``param_coercion.coerce_declared_input`` does); anything else as JSON."""
     if isinstance(value, str):
         return value or '""'
+    if type_spec.name == "string" and not isinstance(value, (dict, list)):
+        return str(value)
     return json.dumps(value, ensure_ascii=False)
 
 
