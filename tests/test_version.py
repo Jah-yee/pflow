@@ -216,8 +216,12 @@ def test_importing_the_cli_and_running_a_command_never_runs_git(repo: Path, tmp_
         "        calls.append(args)\n"
         "    return real_run(args, *rest, **kwargs)\n"
         "subprocess.run = spy\n"
-        "from pflow.cli.main import main\n"
-        "main(['guide'], standalone_mode=False)\n"
+        "from pflow.cli.main import cli_main\n"  # the real entry point: it also repins Windows stdio to UTF-8
+        "sys.argv = ['pflow', 'guide']\n"
+        "try:\n"
+        "    cli_main()\n"
+        "except SystemExit as exit_:\n"
+        "    assert exit_.code in (0, None), exit_.code\n"
         "assert calls == [], calls\n"
     )
 
