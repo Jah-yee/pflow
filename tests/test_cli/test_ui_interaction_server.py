@@ -956,6 +956,22 @@ class TestRunEndpoint:
         assert "nope" in json.dumps(response.json()["errors"])
         popen.assert_not_called()
 
+    def test_a_reserved_input_name_is_400_and_does_not_spawn(self, tmp_path: Path) -> None:
+        """The pre-flight refuses a `_pflow_*` key as the spawned run would — without it the spawn dies
+        before its trace with its streams on DEVNULL, a silent failure (#817)."""
+        workflow = _workflow(tmp_path)
+        with patch("pflow.ui.server.subprocess.Popen") as popen:
+            response = _client().post(
+                "/api/run",
+                json={"workflow": str(workflow), "inputs": {"_pflow_workflow_file": "/elsewhere/x.pflow.md"}},
+            )
+
+        assert response.status_code == 400, response.text
+        assert [err["message"] for err in response.json()["errors"]] == [
+            "Invalid parameter name '_pflow_workflow_file' - names starting with '_pflow_' are reserved for pflow"
+        ]
+        popen.assert_not_called()
+
     def test_missing_required_input_is_400_with_diagnostics_and_does_not_spawn(self, tmp_path: Path) -> None:
         # The pre-flight compile (off-loop) catches the silent pre-trace-failure class as a clean 400.
         workflow = _workflow_with_input(tmp_path, required=True)

@@ -16,7 +16,7 @@ from pflow.core.execution_cache import ExecutionCache
 from pflow.core.param_coercion import coerce_param_for_node
 from pflow.core.stdio_reservation import reserve_stdout
 from pflow.core.user_errors import MCPError
-from pflow.core.validation_utils import is_valid_parameter_name
+from pflow.core.validation_utils import get_parameter_validation_error, is_valid_parameter_name
 from pflow.registry import Registry
 from pflow.registry.node_id import normalize_node_id
 from pflow.runtime.compilation import import_node_class, inject_special_parameters
@@ -53,8 +53,8 @@ def _validate_parameters(params: tuple[str, ...]) -> dict[str, Any]:
     execution_params = {key: infer_type(value) for key, value in parse_workflow_params(params).items()}
     invalid_keys = [key for key in execution_params if not is_valid_parameter_name(key)]
     if invalid_keys:
-        click.echo(f"❌ Invalid parameter name(s): {', '.join(invalid_keys)}", err=True)
-        click.echo("   Parameter names cannot contain shell special characters ($, |, >, <, &, ;, etc.)", err=True)
+        for key in invalid_keys:
+            click.echo(f"❌ {get_parameter_validation_error(key)}", err=True)
         sys.exit(1)
     return execution_params
 

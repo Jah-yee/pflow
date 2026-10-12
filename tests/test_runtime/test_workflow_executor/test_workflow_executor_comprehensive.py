@@ -939,21 +939,6 @@ class TestWorkflowExecutorComprehensive:
 
     # --- Test 32: _pflow_workflow_file flows to shared store ---
 
-    def test_pflow_workflow_file_flows_to_shared_store(self):
-        """_pflow_workflow_file in params flows to shared store via Runner."""
-        from pflow.execution.result import RunnerConfig
-        from pflow.execution.runner import WorkflowRunner
-
-        workflow_ir = {
-            "nodes": [{"id": "test", "type": "shell", "params": {"command": "echo hi"}}],
-            "edges": [],
-        }
-        params = {"_pflow_workflow_file": "/path/to/workflow.pflow.md"}
-
-        result = WorkflowRunner().run(workflow_ir, params, RunnerConfig())
-
-        assert result.shared_after["_pflow_workflow_file"] == "/path/to/workflow.pflow.md"
-
     # --- NEW: test_params_as_inputs_basic ---
 
     def test_params_as_inputs_basic(self, simple_workflow_ir, tmp_path):

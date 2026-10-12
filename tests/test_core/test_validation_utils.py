@@ -80,6 +80,14 @@ def test_invalid_parameter_names():
     assert not is_valid_parameter_name("__warnings__")
     assert not is_valid_parameter_name("__custom__")
 
+    # Reserved `_pflow_` prefix (pflow's own root store keys: child resolution, nesting guards)
+    assert not is_valid_parameter_name("_pflow_workflow_file")
+    assert not is_valid_parameter_name("_pflow_depth")
+    assert not is_valid_parameter_name("_pflow_x")
+    # ...the prefix only: near-misses stay ordinary names
+    assert is_valid_parameter_name("_pflowx")
+    assert is_valid_parameter_name("pflow_depth")
+
 
 def test_parameter_validation_error_messages():
     """Test that error messages are descriptive."""
@@ -116,6 +124,11 @@ def test_parameter_validation_error_messages():
     # Reserved dunder names
     error = get_parameter_validation_error("__execution__", "input")
     assert "reserved" in error
+
+    # Reserved `_pflow_` prefix names the rule
+    assert get_parameter_validation_error("_pflow_depth") == (
+        "Invalid parameter name '_pflow_depth' - names starting with '_pflow_' are reserved for pflow"
+    )
 
 
 # ---------------------------------------------------------------------------

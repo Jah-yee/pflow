@@ -227,9 +227,9 @@ def test_probe_unknown_node_errors(runner: click.testing.CliRunner, mock_registr
 
 
 def test_probe_rejects_shell_special_chars_in_param_names(runner: click.testing.CliRunner) -> None:
-    """Security boundary: shell special characters in parameter names must be
-    rejected before any node execution occurs."""
-    for invalid_param in ["$PWD", "key|value", "test>out", "test&bg", "test;next"]:
+    """Security boundary: shell special characters and pflow's reserved `_pflow_*` prefix in
+    parameter names must be rejected before any node execution occurs."""
+    for invalid_param in ["$PWD", "key|value", "test>out", "test&bg", "test;next", "_pflow_depth"]:
         result = runner.invoke(probe_cmd, ["shell", f"{invalid_param}=value"])
 
         assert result.exit_code == 1, f"Expected rejection for '{invalid_param}'"

@@ -11,8 +11,9 @@ from unittest.mock import patch
 import pytest
 
 from pflow.core.diagnostic import Diagnostic, Severity
-from pflow.core.exceptions import MarkdownParseError, SchemaValidationError
+from pflow.core.exceptions import MarkdownParseError, SchemaValidationError, WorkflowValidationError
 from pflow.core.trace_io import load_trace_file
+from pflow.core.validation_utils import get_parameter_validation_error
 from pflow.core.workflow.status import WorkflowStatus
 from pflow.core.workflow.validator import WorkflowValidator
 from pflow.execution.result import ExecutionResult, RunnerConfig
@@ -1170,23 +1171,28 @@ def test_inline_dict_run_scopes_cache_to_ir_hash():
     assert len(workflow_file) == 40, f"Unexpected id length: {workflow_file!r}"
 
 
-def test_caller_injected_workflow_file_preserved():
-    """Callers pre-injecting _pflow_workflow_file keep their value — runner uses setdefault.
+def _one_shell_step_ir() -> dict[str, Any]:
+    return {"nodes": [{"id": "only", "type": "shell", "params": {"command": "echo hello"}}], "edges": []}
 
-    MCP server and CLI pre-inject file paths today. The runner must not
-    overwrite. Without `setdefault`, the runner would clobber the caller's
-    value with an IR hash even on file/library runs that flow through MCP.
-    """
-    ir = {
-        "nodes": [{"id": "only", "type": "shell", "params": {"command": "echo hello"}}],
-        "edges": [],
-    }
-    caller_path = "/absolute/path/caller/injected.pflow.md"
-    params = {"_pflow_workflow_file": caller_path}
 
-    result = WorkflowRunner().run(ir, params, RunnerConfig())
-    assert result.success, f"Run failed: {result.errors}"
-    assert result.shared_after["_pflow_workflow_file"] == caller_path
+@pytest.mark.parametrize("name", ["_pflow_workflow_file", "_pflow_depth", "__loop_active__"])
+def test_run_refuses_a_reserved_param_name_before_the_engine(name: str) -> None:
+    """A caller's `_pflow_*`/`__*__` key would seed pflow's own state (child resolution, the nesting
+    guards), so the runner — where every caller's params converge — refuses it as a wrong call."""
+    result = WorkflowRunner().run(_one_shell_step_ir(), {name: "/elsewhere/x.pflow.md"}, RunnerConfig())
+
+    assert result.success is False
+    assert result.engine_started is False  # a pre-engine refusal: the CLI maps it to exit 2
+    assert [d.message for d in result.errors] == [get_parameter_validation_error(name)]
+
+
+def test_preflight_refuses_a_reserved_param_name() -> None:
+    """The web UI's run pre-flight goes through the same check, so it refuses with a 400 instead of
+    spawning a run that dies before writing its trace."""
+    with pytest.raises(WorkflowValidationError) as excinfo:
+        WorkflowRunner().preflight(_one_shell_step_ir(), {"_pflow_stack": "[]"})
+
+    assert [d.message for d in excinfo.value.validation_errors] == [get_parameter_validation_error("_pflow_stack")]
 
 
 # --- Severity-aware _determine_status -------------------------------------
