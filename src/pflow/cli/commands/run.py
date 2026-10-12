@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import logging
 import os
 import shlex
 import sys
-import time
 import warnings
 from collections.abc import Mapping
 from pathlib import Path
@@ -17,10 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 import click
 
 from pflow.cli.param_parsing import parse_workflow_params
-from pflow.cli.workflow_output import (
-    _create_workflow_metadata,
-    _handle_workflow_output,
-)
+from pflow.cli.workflow_output import _create_workflow_metadata
 from pflow.cli.workflow_resolution import is_likely_workflow_name
 from pflow.core import StdinData
 from pflow.core.diagnostic import Diagnostic, Severity
@@ -97,61 +92,6 @@ def _cleanup_temp_files(stdin_data: str | StdinData | None, verbose: bool) -> No
                 click.echo(f"cli: Warning - could not clean up temp file: {stdin_data.temp_path}", err=True)
 
 
-def _handle_workflow_success(
-    ctx: click.Context,
-    result: Any,
-    workflow_trace: Any | None,
-    shared_storage: dict[str, Any],
-    output_key: str | None,
-    ir_data: dict[str, Any],
-    output_format: str,
-    metrics_collector: Any | None,
-    verbose: bool,
-) -> None:
-    """Handle successful workflow execution."""
-    if verbose:
-        click.echo("cli: Workflow execution completed", err=True)
-
-    print_flag = ctx.obj.get("print_flag", False)
-    workflow_metadata = ctx.obj.get("workflow_metadata")
-    status = getattr(result, "status", None)
-    # Include INFO advisories alongside WARNING so catalog-backed INFO
-    # diagnostics like `cache.routed-provider-degraded` reach the agent-
-    # facing CLI surface. Severity is still used by the renderer to choose
-    # an icon (see `diagnostic_render.py`). Matches the precedent at the
-    # validate/dry-run rendering site below (~line 365) and mermaid.py.
-    result_warnings = [
-        diagnostic
-        for diagnostic in getattr(result, "diagnostics", [])
-        if diagnostic.severity in {Severity.WARNING, Severity.INFO}
-    ]
-
-    # Text mode renders the trace path in the summary's meta block (above the
-    # data), so save it now and thread the path down. JSON leaves it None — its
-    # ``set_json_output`` mutates the trace during output handling, so the file
-    # must be saved afterward (in the finally block), where the line is echoed.
-    trace_path = None
-    if output_format == "text" and workflow_trace and ctx.obj.get("trace"):
-        trace_file = _save_trace_file(ctx, workflow_trace)
-        trace_path = str(trace_file) if trace_file else None
-
-    # Writes data to stdout, summary/advice to stderr; rationale in docstring.
-    _handle_workflow_output(
-        shared_storage,
-        output_key,
-        ir_data,
-        verbose,
-        output_format,
-        metrics_collector=metrics_collector,
-        print_flag=print_flag,
-        workflow_metadata=workflow_metadata,
-        workflow_trace=workflow_trace,
-        status=status,
-        warnings=result_warnings,
-        trace_path=trace_path,
-    )
-
-
 def _save_trace_file(ctx: click.Context, workflow_trace: Any) -> Any | None:
     """Finalize the streamed trace once; cache and return its path.
 
@@ -172,21 +112,14 @@ def _save_trace_file(ctx: click.Context, workflow_trace: Any) -> Any | None:
     return ctx.obj["trace_file"]
 
 
-def _finalize_trace_and_report(ctx: click.Context, workflow_trace: Any, *, echo_trace_line: bool) -> None:
-    """Save the trace, optionally echo its path, and generate the report.
+def _finalize_trace_and_report(ctx: click.Context, workflow_trace: Any) -> None:
+    """Save the trace (idempotent — the outcome path usually already did) and generate ``--report``.
 
-    ``echo_trace_line`` is False on the text-success path — there the path is
-    already rendered in the summary's meta block (above the data). It's True for
-    JSON and failure paths, which have no such meta block, so the line is echoed
-    here (after the payload / error output), matching the prior behavior.
+    The ``Workflow trace saved`` line is part of the run outcome's stderr summary, not echoed here.
     """
     trace_file = _save_trace_file(ctx, workflow_trace)
-    if not trace_file:
-        return
-    if echo_trace_line:
-        _echo_trace(ctx, f"Workflow trace saved: {trace_file}")
     report = ctx.obj.get("report")
-    if report:
+    if trace_file and report:
         _generate_and_echo_report(ctx, trace_file, report, workflow_trace)
 
 
@@ -353,72 +286,20 @@ def execute_json_workflow(
         click.echo("\n✗ Workflow execution interrupted", err=True)
         ctx.exit(130)
     except Exception as e:
-        metrics = result.metrics if result else None
-        _emit_failure_tag(ctx, metrics)
-
         output_error(
             ctx,
             exception=e,
             output_format=output_format,
             verbose=effective_verbose,
             workflow_metadata=ctx.obj.get("workflow_metadata") if ctx.obj else None,
-            metrics_collector=metrics,
-            shared_storage=result.shared_after if result else {},
         )
         ctx.exit(1)
 
     finally:
         trace = result.trace if result else None
         if trace and config.trace_enabled:
-            # Text-success already rendered the trace line in the summary's meta
-            # block (above the data); JSON and failure paths echo it here.
-            text_success = bool(result and result.success and output_format == "text")
-            _finalize_trace_and_report(ctx, trace, echo_trace_line=not text_success)
-            _maybe_echo_resume_hint(ctx, result)
+            _finalize_trace_and_report(ctx, trace)
         _cleanup_temp_files(stdin_data, effective_verbose)
-
-
-def _maybe_echo_resume_hint(ctx: click.Context, result: Any | None) -> None:
-    """After a FAILED run whose trace was saved, tell the agent how to resume.
-
-    Discoverability where it is needed: the failed-run output gains one stderr
-    line naming the exact ``pflow resume <execution-id>`` command. Gated on a
-    saved trace (``ctx.obj["trace_file"]`` — set by ``_finalize_trace_and_report``)
-    so ``--no-trace`` and stream-failed runs (which have no file to resume from)
-    stay silent. Skipped for success, for a clean gate denial (exit 3 is a human
-    stop), and for a gate STOP (a non-interactive unapproved gate finalizes FAILED,
-    not DENIED — but ``load_resume_source`` refuses it as ``ResumeGateStoppedError``,
-    so pointing an agent at ``pflow resume`` there only wastes a round-trip; the
-    gate error already carries the ``--auto-approve`` remedy). Emitted DIRECTLY to
-    stderr — unlike the trace-location line, this survives ``-p``: failure
-    diagnostics must stay visible in print mode (stdout stays data-only), and a
-    ``-p`` agent otherwise has no way to learn the resume target.
-    """
-    from pflow.core.workflow.status import WorkflowStatus
-
-    if not result or result.success or result.status is WorkflowStatus.DENIED:
-        return
-    # A durable pause has its own answer hint (_display_paused_result
-    # names the exact --approve/--choose command) — belt and braces beside the
-    # has_resumable_step suppression below.
-    if result.status is WorkflowStatus.PAUSED:
-        return
-    # A gate stop is a human checkpoint, not a resumable failure — resume refuses it.
-    # Mirror _display_denied_result's gate detection so the two stay consistent.
-    if any(d.context and d.context.get("category") == "gate" for d in (result.diagnostics or ())):
-        return
-    if not ctx.obj.get("trace_file"):
-        return
-    # Only advertise resume when the run actually has a failed step to resume from
-    # (C2): a crash before the first step, or an all-steps-succeed-but-output-
-    # unbuildable failure, produces a trace resume would then REFUSE — a dead-end
-    # command. The collector answers this authoritatively from its own events.
-    if not result.trace or not result.trace.has_resumable_step():
-        return
-    execution_id = getattr(result.trace, "execution_id", None)
-    if not execution_id:
-        return
-    click.echo(f"To resume from the failed step: pflow resume {execution_id}", err=True)
 
 
 def _prepare_gate_resolver(
@@ -514,59 +395,6 @@ def _fully_answered_gate_ids(ctx: click.Context, nodes: list[dict[str, Any]]) ->
     return answered
 
 
-def _display_denied_result(ctx: click.Context, result: Any, output_format: str) -> None:
-    """Render a DENIED run: prose on stderr, or a JSON document on stdout.
-
-    The JSON document exists because the denied branch bypasses ``output_error``
-    (the only path to the failure JSON emitter) — without it, ``--output-format
-    json`` would emit NOTHING on deny.
-    """
-    gate_diag = next(
-        (d for d in result.diagnostics if d.context and d.context.get("category") == "gate"),
-        None,
-    )
-    node_id = gate_diag.node_id if gate_diag else None
-    message = gate_diag.message if gate_diag else "Denied at gate."
-
-    if output_format == "json":
-        # A strict superset of the unified `success: false` shape (error_output.py
-        # emits {success, status, error, errors, diagnostics, ...}) — agents that
-        # branch on success==false and iterate .diagnostics/.errors must find the
-        # denial there, not only in the bespoke `gate` key.
-        diagnostics = [d.to_output_dict() for d in result.diagnostics]
-        document = {
-            "success": False,
-            "status": "denied",
-            "error": message,
-            "errors": [d.to_output_dict() for d in result.errors],
-            "diagnostics": diagnostics,
-            "gate": gate_diag.context.get("gate") if gate_diag else None,
-        }
-        click.echo(json.dumps(document, indent=2, default=str))
-        return
-
-    execution = result.shared_after.get("__execution__", {}) if result.shared_after else {}
-    completed = len(execution.get("completed_nodes", []))
-    total = ctx.obj.get("total_nodes") if ctx.obj else None
-    progress = f" Steps completed: {completed} of {total}." if total else ""
-    gate_name = f" '{node_id}'" if node_id else ""
-    click.echo(
-        click.style(
-            f"✗ Denied at gate{gate_name}. Workflow stopped cleanly before the step ran.{progress} (exit 3)",
-            fg="yellow",
-        ),
-        err=True,
-    )
-
-
-def _emit_failure_tag(ctx: click.Context, metrics: Any | None) -> None:
-    """Emit one-line failure tag to stderr for agent observability."""
-    print_flag = ctx.obj.get("print_flag", False) if ctx.obj else False
-    if not print_flag and metrics:
-        duration_s = time.perf_counter() - metrics.start_time
-        click.echo(f"❌ Workflow failed after {duration_s:.3f}s", err=True)
-
-
 def _display_execution_result(
     ctx: click.Context,
     result: Any,
@@ -575,147 +403,44 @@ def _display_execution_result(
     output_format: str,
     verbose: bool,
 ) -> None:
-    """Display execution result and set exit code."""
-    from pflow.cli.error_output import output_error
+    """Render the run's outcome — stderr lines by tier, then its stdout data — and exit with its code."""
+    from pflow.cli.workflow_output import _handle_text_output, _serialize_json_result
     from pflow.core.workflow.status import WorkflowStatus
+    from pflow.execution.formatters.run_outcome import build_run_outcome, render_cli_stderr
 
-    if result.status is WorkflowStatus.DENIED:
-        # A human's "no" at an approval gate: clean stop,
-        # its own rendering + exit code 3 — never the failure path (no ❌ tag,
-        # no error formatter; a workflow must not read denial as a failure).
-        _display_denied_result(ctx, result, output_format)
-        ctx.exit(3)
+    trace = result.trace if ctx.obj.get("trace", True) else None
+    if trace is not None and not result.success:
+        # Settle identity first: a failure's trace is never mutated after the run, and a failure
+        # raised before the engine opened the stream only gets its file (and so its id) here.
+        _save_trace_file(ctx, trace)
+    outcome = build_run_outcome(
+        result, ir_data, workflow_metadata=ctx.obj.get("workflow_metadata"), output_key=output_key
+    )
+    succeeded = outcome.status in (WorkflowStatus.SUCCESS, WorkflowStatus.DEGRADED)
+    if trace is not None:
+        if succeeded and output_format == "json":
+            trace.set_json_output(outcome.document)
+        _save_trace_file(ctx, trace)
 
-    if result.status is WorkflowStatus.PAUSED:
-        if result.is_durable_pause:
-            # A gate held open on disk: the trace is the checkpoint,
-            # the execution_id is the resume token. Own rendering + exit code 4.
-            _display_paused_result(result, output_format)
-            ctx.exit(4)
-        # The stream died mid-run: no durable trailer exists, so no token would
-        # resolve. Fall through to the failure path with the status NORMALIZED —
-        # a success:false exit-1 error document must not claim "paused".
-        result = dataclasses.replace(result, status=WorkflowStatus.FAILED)
+    print_flag = ctx.obj.get("print_flag", False)
+    text_mode = output_format == "text"
+    if text_mode and outcome.status is WorkflowStatus.PAUSED:
+        # ONE parseable stdout line — it IS the paused run's data (survives -p), and it announces the
+        # pause before the gate content below it.
+        node_id = (outcome.document.get("gate") or {}).get("node_id")
+        click.echo(f"Paused at '{node_id}'. Resume token: {result.trace.execution_id} (exit 4)")
+    if verbose and succeeded:
+        click.echo("cli: Workflow execution completed", err=True)
+    for line in render_cli_stderr(outcome, text_mode=text_mode, print_flag=print_flag, verbose=verbose):
+        click.echo(line, err=True)
 
-    if result.success:
-        _handle_workflow_success(
-            ctx=ctx,
-            result=result,
-            workflow_trace=result.trace,
-            shared_storage=result.shared_after,
-            output_key=output_key,
-            ir_data=ir_data,
-            output_format=output_format,
-            metrics_collector=result.metrics,
-            verbose=verbose,
-        )
-    else:
-        _emit_failure_tag(ctx, result.metrics)
+    if not text_mode:
+        _serialize_json_result(outcome.document, verbose)
+    elif succeeded:
+        _handle_text_output(result.shared_after, output_key, ir_data, verbose, print_flag)
 
-        output_error(
-            ctx,
-            result=result,
-            output_format=output_format,
-            verbose=verbose,
-            workflow_metadata=ctx.obj.get("workflow_metadata") if ctx.obj else None,
-            metrics_collector=result.metrics,
-            shared_storage=result.shared_after,
-            ir_data=ir_data,
-            resume_execution_id=_resumable_execution_id(ctx, result),
-        )
-        ctx.exit(1)
-
-
-def _resumable_execution_id(ctx: click.Context, result: Any) -> str | None:
-    """The failed run's execution id, when a trace exists on disk to resume from.
-
-    Feeds the JSON failure document's ``execution_id``/``resume_command`` fields
-    (agent-UX: a ``--output-format json`` consumer must be able to extract the
-    resume target from stdout, not scrape a stderr prose line). Mirrors
-    ``_maybe_echo_resume_hint``'s gate, but must run BEFORE the trace is
-    finalized (the JSON document is emitted first, and JSON mode finalizes in
-    the ``finally``), so it checks trace-enabled + stream health instead of the
-    finalized path.
-    """
-    trace = result.trace
-    if trace is None or not (ctx.obj or {}).get("trace", True):
-        return None
-    if getattr(trace, "_stream_failed", False):
-        return None
-    # Same resumability gate as the stderr hint (C2): don't hand a JSON agent a
-    # resume_command the loader would refuse. Computed in memory, so it holds even
-    # though the trace is not finalized yet on this (pre-finalize) JSON path.
-    if not trace.has_resumable_step():
-        return None
-    execution_id = getattr(trace, "execution_id", None)
-    return execution_id if isinstance(execution_id, str) else None
-
-
-def _display_paused_result(result: Any, output_format: str) -> None:
-    """Render a durably PAUSED run: token on stdout, gate content on stderr.
-
-    The token line goes to stdout even under ``-p`` — it IS the paused run's
-    data (a calling process must be able to capture it). The gate CONTENT goes
-    to stderr (like ``_maybe_echo_resume_hint``, so it survives ``-p``): an
-    agent must be able to compose the answer from this output alone, without a
-    blind resume round-trip. Non-error diagnostics the run produced before the
-    pause (e.g. a resumed loop's ``resume.loop-restart`` advisory) are kept — a
-    pause carries no error, but what happened on the way to it still matters.
-    """
-    from pflow.execution.formatters.success_formatter import partition_surfaced_diagnostics
-    from pflow.execution.gate_prompt import format_bulk_approve_hint, format_gate_lines, format_resume_answer_command
-
-    surfaced = [d for d in result.diagnostics if d.severity in {Severity.WARNING, Severity.INFO}]
-
-    pause = result.trace.pause_request or {}
-    node_id = pause.get("paused_node_id")
-    gate_request = pause.get("gate_request") or {}
-    execution_id = result.trace.execution_id
-    resume_command = format_resume_answer_command(execution_id, gate_request)
-
-    if output_format == "json":
-        # A strict superset of the unified `success: false` shape — the empty
-        # errors/diagnostics arrays are REQUIRED (agents that branch on
-        # success==false and iterate them must not crash on a pause; a pause
-        # carries no error). Preview masked with the same shared dict-form policy
-        # as the denied doc's gate payload: secrets don't inform a decision,
-        # everything else must survive in full.
-        from pflow.core.gate import masked_gate_dict
-
-        masked_request = masked_gate_dict(gate_request)
-        document = {
-            "success": False,
-            "status": "paused",
-            "execution_id": execution_id,
-            "paused_node_id": node_id,
-            "gate_request": masked_request,
-            "resume_command": resume_command,
-            "errors": [],
-            "diagnostics": [diagnostic.to_output_dict() for diagnostic in surfaced],
-        }
-        click.echo(json.dumps(document, indent=2, default=str))
-        return
-
-    # Text: ONE parseable stdout line; the in-band exit code mirrors denied's.
-    click.echo(f"Paused at '{node_id}'. Resume token: {execution_id} (exit 4)")
-    click.echo("", err=True)
-    for line in format_gate_lines(gate_request):
-        click.echo(f"   {line}", err=True)
-    click.echo("", err=True)
-    warnings_list, advisories = partition_surfaced_diagnostics(surfaced)
-    for heading, block in (
-        ("⚠️ Warnings:", warnings_list),
-        ("\N{INFORMATION SOURCE}\N{VARIATION SELECTOR-16} Advisories:", advisories),
-    ):
-        if block:
-            click.echo(heading, err=True)
-            for diagnostic in block:
-                click.echo(format_diagnostic(diagnostic), err=True)
-            click.echo("", err=True)
-    click.echo(f"To answer: {resume_command}", err=True)
-    bulk_hint = format_bulk_approve_hint(execution_id, gate_request)
-    if bulk_hint:
-        click.echo(bulk_hint, err=True)
+    if outcome.exit_code:
+        ctx.exit(outcome.exit_code)
 
 
 def _echo_diagnostic_group(diagnostics: list[Any], *, blank_line: bool) -> None:

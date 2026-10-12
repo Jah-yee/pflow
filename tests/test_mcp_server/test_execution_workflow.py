@@ -300,14 +300,16 @@ class TestExecuteWorkflowPaused:
     """Task 171 — MCP durable pause: paused is a RESULT (token + gate content),
     never a raised error; success responses gain run identity."""
 
+    @pytest.mark.trace_files
     def test_paused_run_returns_token_and_gate_content(self, tmp_path):
         workflow_path = tmp_path / "gated.pflow.md"
         write_workflow_file(dict(GATED_IR), workflow_path)
 
         text = ExecutionService.execute_workflow(str(workflow_path))
 
+        assert text.startswith("⏸ Workflow paused at 'guarded' — a human decision is required.\n")
         assert "status: paused" in text
-        assert "paused_node_id: guarded" in text
+        assert "paused_node_id:" not in text  # the header names the step; the document has gate.node_id
         # The token is real and the resume command is kind-correct.
         exec_id = next(line.split(": ", 1)[1] for line in text.splitlines() if line.startswith("execution_id: "))
         assert f"resume_command: pflow resume {exec_id} --approve yes|no" in text
@@ -351,20 +353,18 @@ class TestExecuteWorkflowPaused:
         assert "✓ Workflow completed" in text
         assert "status: paused" not in text
 
-    def test_success_text_carries_execution_id(self, tmp_path):
-        """Run identity renders even when no trace file exists (streaming is
-        suppressed here by the autouse no-op) — and it is a real id, never a
-        rendered "None". The identity↔trace-file cross-check lives in the
-        trace_files test below."""
-        import uuid
-
+    def test_identity_lines_need_a_trace_file(self, tmp_path):
+        """Run identity is the trace FILE: with streaming suppressed (the autouse no-op) the text
+        names no ``execution_id``/``trace_path`` rather than an id nothing resolves against. The
+        presence half — a real file whose id matches the line — is the trace_files test below."""
         workflow_path = tmp_path / "simple.pflow.md"
         write_workflow_file(dict(SIMPLE_ECHO_IR), workflow_path)
 
         text = ExecutionService.execute_workflow(str(workflow_path))
 
-        exec_id = next(line.split(": ", 1)[1] for line in text.splitlines() if line.startswith("execution_id: "))
-        uuid.UUID(exec_id)  # raises if the line rendered a non-id (e.g. "None")
+        assert text.splitlines()[-1] == "status: success"
+        assert "execution_id:" not in text
+        assert "trace_path:" not in text
 
     def test_stream_faulted_pause_raises_not_a_dead_token(self, tmp_path, monkeypatch):
         """Pause = promise, on the MCP surface too. If the trace stream dies
@@ -444,11 +444,11 @@ class TestExecuteWorkflowPaused:
         assert "status: paused" in text
         assert "Gate:\n  Loop iteration 1 of up to 3\n" in text
         token = next(line.split(": ", 1)[1] for line in text.splitlines() if line.startswith("execution_id: "))
-        assert (
+        assert text.endswith(
             f"resume_command: pflow resume {token} --approve yes|no\n"
             f"To approve this and every remaining iteration of 'gated' (only with your human's OK): "
-            f"pflow resume {token} --approve yes --auto-approve gated\n"
-        ) in text
+            f"pflow resume {token} --approve yes --auto-approve gated"
+        )
 
         exit_codes = []
         for _ in range(3):

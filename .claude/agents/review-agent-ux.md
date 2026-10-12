@@ -115,7 +115,7 @@ Check:
 Historical examples:
 - Task 106: `--only` output went through 5 design iterations because each attempt produced output agents couldn't use
 - Task 108: Report system needed token breakdowns, LLM parameters, runtime warnings — all missing initially
-- Task 96: Batch info missing from CLI's own `_display_execution_summary()` — agents using CLI didn't see batch results
+- Task 96: Batch info missing from the CLI's own summary path (a separate renderer then; Task 184 folded every ending into `run_outcome.py`) — agents using CLI didn't see batch results
 
 ### 5. Output Scaling
 

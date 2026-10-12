@@ -183,3 +183,621 @@ Append-only. Spec: `../task-184.md` · Plan: `implementation-plan.md` · Checkpo
   not a separable renderer section → design choice, task-review note, not built. The resume hint on a no-side-effect workflow
   is `has_resumable_step()` policy (the one resumability suppressor) → task-review note, not built.
 - Next: resume I1 (Opus, high) with P1.
+
+## [2026-10-12 00:13] implementer I1b (Opus, high) — P1 the builder + unit guards
+- Did: `git mv success_formatter.py → run_outcome.py`; `RunOutcome` (+ `exit_code` property over `EXIT_CODES`), `build_run_outcome`
+  per §3 (identity keyed on `trace.trace_path`, status normalization, `errors` always a list, `execution` for every status built
+  from `build_execution_steps`, `gate` paused/denied, `resume_command` paused/resumable-failure); §4.1 section functions moved in
+  (`completion_line`, `mode_lines`, `errors_block`, `diagnostic_sections`, `gate_lines`, `answer_lines`, `resolved_outputs_note`,
+  `identity_lines`, `format_cost_summary_lines`, `format_only_indicator(…, *, ran)`, `format_resume_indicator`,
+  `format_stderr_warnings` → `head_tail_preview` (#755), `_append_outputs`); `format_error_text` + probe repointed
+  (`execution_service.py` ~:787, the one call); `error_formatter.py` deleted; `core/metrics.py` `"nodes_executed": len(node_timings)` deleted.
+- Changed: `src/pflow/execution/formatters/{run_outcome.py (R from success_formatter.py), error_formatter.py (D), __init__.py (comment)}`,
+  `src/pflow/core/metrics.py`, `src/pflow/mcp_server/services/execution_service.py` (probe call only);
+  tests: `tests/test_execution/formatters/test_run_outcome.py` (R from test_success_formatter.py, rewritten; folds the kept parts of
+  `test_error_formatter.py` (D)), `tests/test_runtime/test_resume_engine.py`, `tests/test_core/test_metrics.py`,
+  `tests/test_mcp_server/test_registry_run_mcp.py`, `tests/test_cli/test_agent_ux_fixes.py` (two `_build_error_text` tests MOVED out),
+  `tests/test_execution/test_runner.py` (stale docstring fixed, per P0 carry).
+- Verified: P1 gate `uv run pytest tests/test_execution tests/test_core/test_metrics.py tests/test_runtime/test_resume_engine.py
+  tests/test_mcp_server/test_registry_run_mcp.py` + both AST ratchets (`test_printed_documents_never_serialize_a_diagnostic_raw`,
+  `test_only_the_runtime_takes_the_raw_batch_compactor` — `test_json_diagnostic_redaction.py` COLLECTS: `pflow.cli.main` still imports,
+  every old-name import in `cli/`/`mcp_server/` is function-local) → **710 passed** (baseline same paths: 703); `ruff check
+  src/pflow/execution src/pflow/core` clean; `mypy run_outcome.py` clean; `ruff check/format --check src tests` clean.
+  The five documents from REAL in-process runs (isolated HOME), key order as emitted — match `show-before-code.md` AFTER exactly:
+  - success: `success, status, workflow, execution_id, trace_path, result, errors, warnings, advisories, diagnostics, duration_ms,
+    total_cost_usd, metrics, execution` (execution: `duration_ms, nodes_executed=2, nodes_total, steps`)
+  - failure-by-exception (strict template): `success, status, workflow, execution_id, trace_path, error, errors, warnings, advisories,
+    diagnostics, duration_ms, total_cost_usd, metrics, execution, resume_command` (nodes_executed=1 — #699 metrics present)
+  - failure-by-action (shell exit 1): same key set as by-exception (nodes_executed=1; `"nodes_executed"` occurs once in the JSON)
+  - paused: `success, status, workflow, execution_id, trace_path, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd,
+    metrics, execution, gate, resume_command` (`gate` = masked GateRequest dict, `question: null`; `resume_command … --approve yes|no`)
+  - denied (after resume): `success, status, workflow, execution_id, trace_path, error, errors, warnings, advisories, diagnostics,
+    duration_ms, total_cost_usd, metrics, execution, gate` (execution adds `resumed_from, nodes_restored=2, resume_entry_node,
+    resume_entry_iteration`, nodes_executed=0); fresh denial nodes_executed=2, no lineage.
+  Extra endings checked: output-resolution failure → `result: {"good": 1, "nul": null}`, identity, NO `resume_command`; `--no-trace`
+  failure → no identity/no `resume_command`, metrics kept; resumed-then-failed carries the lineage block.
+  Full `make test` on this tree (by design red): 334 failed + 3 collection errors. Attribution verified by temporarily restoring the
+  two old modules from HEAD (untracked, deleted after; tree confirmed clean of them): the same set then fails only **5** — 3 in
+  `test_metrics_integration.py` (top-level `nodes_executed`, plan P2's rewrite list) + 2 `test_compiler_integration.py`
+  `TestPerformanceBenchmarks` timing tests (pass alone, 25/25 — load flake). Everything else is the old-name import in `cli/`/`mcp_server/`.
+  `uv run pflow ok.pflow.md` (isolated HOME) now prints `No module named 'pflow.execution.formatters.success_formatter'` — expected until P2.
+  | Assumed: P2/P3 compose the renderers from these sections without changing the document (the mid-task review's job to challenge).
+- Deviations/surprises:
+  (1) **Renderers stay P2/P3; their tests moved onto the section functions.** §5 says the moved MCP-text classes "render through
+  `render_mcp_text`/`render_cli_stderr`" and `test_resume_engine` asserts the ⤷ line "via `render_cli_stderr`", but P1's phase line
+  builds only §4.1 ("moved … with their tests"). Followed the phase line: `TestFormatSuccessAsText`/`TestOnlyNodeDisplay`/
+  `TestCacheStatsDisplay`/`TestDeniedStatusRendering`/… now assert `completion_line`/`mode_lines`/`diagnostic_sections` etc. on
+  outcomes built from real (or directly-constructed) `ExecutionResult`s; `test_resume_engine` uses `mode_lines(document)` (P2 may
+  switch to `render_cli_stderr` — one line each). No renderer, no shim.
+  (2) **`_outcome_status` has a second normalization not in §3.3:** `not result.success` with status SUCCESS/DEGRADED → FAILED. The
+  dataclass default status is SUCCESS, so `ExecutionResult(success=False, …)` (23 test constructions, e.g. P2's `mock_compile` failures)
+  would otherwise render `status: "success"` and exit 0. No production producer emits that pair (both runner constructions set status).
+  (3) `exit_code` is a property (`EXIT_CODES[status]`), not a stored field — it cannot disagree with `status`.
+  (4) No `batch_error_details`/`shell_stderr_block` wrappers (deletion test: they would just rename): renderers call
+  `format_batch_errors_section` / `format_stderr_warnings` (public name kept — 3 existing importers).
+  (5) **`gate_lines` renders for PAUSED only** (§4.1 + plan-review #3 + show-before §4 "a denial renders no gate preview"). §4.3 says
+  the MCP layout has a "`Gate:` block (paused/denied)" — contradiction for P3 to settle; the denied `gate` stays in the document either way.
+  (6) `errors_block([])` returns `[]`; `format_error_text` supplies `❌ Workflow execution failed`. A FAILED outcome with zero errors
+  (today's CLI prints "cli: Workflow execution failed - Node returned error action") needs its fallback in P2's renderer.
+  (7) Probe text changes (#748 surface, intended by §3.4/§4.1): multi-error header gains the count, no 3-error cap, headings unified to
+  `⚠️ Warnings:` / `ℹ️ Advisories:`, trace line is `trace_path: …` (never shown — the probe is traceless).
+  (8) Test moves outside the literal line ranges: the two `_build_error_text` tests in `test_agent_ux_fixes.py` were MOVED into
+  `TestFormatErrorText` (that file can't collect in P1 — line 13 imports `cli.workflow_errors` → `success_formatter`); the
+  single-error `_build_error_text` test in `test_registry_run_mcp.py` deleted as a duplicate of `TestFormatErrorText`, and that file's
+  e2e probe test deepened (exact text through `run_registry_node`).
+  (9) **For P2 (not in the plan's P2 file list):** `tests/test_cli/test_shell_stderr_warnings.py:14` imports `format_stderr_warnings`
+  from the old module and its `TestDisplayStderrWarnings` (~:351-420) duplicates `test_run_outcome.py::TestStderrWarnings`;
+  `test_truncates_long_stderr` pins the pre-#755 `[:300]` cut (400 chars is now ≤ head+tail and kept whole) → delete the class, keep
+  the file's CLI integration tests. **For P4:** `runtime/engine/engine.py:875` comment names `success_formatter.py`/`error_formatter.py`
+  as `__trace_collector__` readers (now stale; the builder reads `result.trace`) — engine file, not touched; formatters `CLAUDE.md` rows.
+  (10) **Real-HOME contact (hand-back, not self-repaired):** one ad-hoc probe `uv run python -c "…run_registry_node(…)"` ran WITHOUT
+  the HOME redirect (~23:55). Afterwards `~/.pflow/cache/` showed a directory-mtime bump only; `find ~/.pflow -mmin -8` lists no new or
+  modified file from it (the cache.db/trace mtimes there are 23:47–23:49, other sessions). Traceless, cache-disabled run; no content
+  written that I can find. Every other probe used `HOME=<scratchpad>`.
+- Self-checks: fully happy — doubts raised: (a) the absent-vs-null rule only binds the outcome's own keys — pinned both halves
+  (`TestAbsentNeverNull`); (b) a test-only paused fixture without `trace_files` would carry `resume_command` with no identity (the
+  conftest no-ops `_open_stream`) — production impossible (a durable pause streams), left; (c) `diagnostics` is now errors-first
+  (plan §3.1) — failure documents reorder vs today. test-reflect (directed): ran 16 real source mutations (identity on trace only,
+  paused keeps errors, no durability normalization, skipped counts target, null step duration, resume w/o resumable, diagnostics drop
+  errors, outputs on every status, lineage dropped, statusless failure, head-only stderr, denied gate lost, gate lines on denial,
+  `ran` always true, metrics only on success, gate unmasked) — every one killed with a counted failure (1–8 failed each), original
+  written back. Deepened: `test_every_error_is_numbered…` (exact `Error N:` blocks, was `"4." or "Error 4"`), probe e2e test (exact
+  text); added `test_a_paused_gate_preview_is_masked` (no test caught an unmasked paused gate). Deleted: three `find_auto_output`
+  tests (duplicates of `test_output_utils.py`), `test_formatter_runs_in_under_10ms` + the three `checkpoint` tests (plan §5), the
+  registry single-error duplicate.
+- Next: mid-task review (impact-completeness + silent-failures) on the uncommitted P1 diff; then P2+P3.
+
+## [2026-10-12 00:20] implementer I1b (Opus) — P1 mid-task review (gate-runner)
+- Did: dispatched the plan's P1 mid-task review via the pflow fan-out on codex — `review-impact-completeness` +
+  `review-silent-failures`, both on the WHOLE uncommitted P1 diff (`git diff HEAD`, HEAD `8531eb67`, staged renames + deleted
+  `error_formatter.py`/`test_error_formatter.py` named; cli/+mcp_server/ old-name imports stated as by-design). Launched from the MAIN
+  checkout's `uv run pflow` with `cwd=<this worktree>` — this worktree's CLI is import-broken until P2, so its own `pflow` cannot
+  render the workflow's output. Report: `implementation/reviews/p1-midtask-review.md` (stdout tee'd; stderr in the gitignored
+  `p1-midtask-review.stderr.log`), read in full.
+- Changed: nothing in code/tests (no findings to fix); this entry + the review file.
+- Verified: `run-codex 2/2 147.8s`, workflow `✓ completed in 170.1s`, Coverage table lists both lenses, "Failed or missing lenses:
+  None". Findings: **Critical 0, Warning 0, Suggestion 0.** Both lenses returned specific verified-clean sections (not empty): field
+  migration from every named old builder incl. pricing discriminators, partial outputs, lineage, gate payloads, resume commands;
+  §3.4 drops; None tolerance (trace/metrics/empty store/`pause_request=None`); both `_outcome_status` arms; stream fault clears
+  `trace_path` → no identity/resume; `--no-trace` gate stop → runner FAILED; `head_tail_preview` move; `format_error_text` probe.
+  P1 gate re-run after the review: **710 passed** (+ both AST ratchets). | Assumed: the lenses read statically (no tests/probes run —
+  their own stated limit); end-to-end rendering stays unverified until P2/P3.
+- Deviations/surprises: dispatch from the main checkout (above) — the reviewed tree is still the worktree (`cwd=`), the main
+  checkout only supplied a working `pflow` binary; the run's trace landed in the real `~/.pflow/debug` as every fan-out run does
+  (process tooling, not a test/probe). A zero-finding mid-task review is weaker evidence than a found-and-fixed one; the P1 mutation
+  pass (16/16 killed, prior entry) is the complementary check.
+- Self-checks: dispositions — none to record (0 findings); coverage complete, no re-run needed. test-reflect: not re-run — no
+  test changed since the directed pass in the P1 entry.
+- Next: P2+P3 on the orchestrator's resume (with the #5 ruling: gate block PAUSED-only on both channels).
+
+## [2026-10-12 01:13] implementer I1b (Opus, high) — P2 the CLI renders the outcome
+- Did: `render_cli_stderr` (tier table §2) in `run_outcome.py`; `run.py::_display_execution_result` rewritten to §4.4 order
+  (non-success → finalize first; build; `set_json_output` on json success only; finalize; echo stderr lines; stdout = document /
+  text data / paused token line; `ctx.exit(outcome.exit_code)`); `_finalize_trace_and_report` keeps only `--report`;
+  `execute_json_workflow`'s `except` passes only `exception=`. Deleted per §5: `run.py` `_handle_workflow_success`,
+  `_emit_failure_tag`, `_resumable_execution_id`, `_display_paused_result`, `_display_denied_result`, `_maybe_echo_resume_hint`;
+  `workflow_output.py` summary/JSON functions (`_handle_text_output` keeps only its data part); `cli/workflow_errors.py`;
+  `error_output.py` result path + metrics branch (now exception-only, 3 functions).
+- Changed: `src/pflow/cli/{commands/run.py, workflow_output.py, error_output.py, workflow_errors.py (D)}`,
+  `src/pflow/execution/formatters/run_outcome.py`; tests: new `tests/test_cli/test_run_outcome_cli.py` (P2-T1..T9, 22 tests),
+  `test_run_outcome.py::TestRenderCliStderr`, rewrites in `test_paused_cli.py`, `test_approval_gate_cli.py`, `test_resume_cli.py`,
+  `test_metrics_integration.py`, `test_workflow_output_handling.py`, `test_agent_ux_fixes.py`, `test_direct_execution_helpers.py`,
+  `test_enhanced_error_output.py`, `test_json_diagnostic_redaction.py`, `test_shell_stderr_warnings.py`; `.claude/agents/review-{agent-ux,
+  feature-interactions,impact-completeness,silent-failures}.md` (+ `make sync-claude-assets`); Task-159 baseline: 4 cases re-recorded.
+- Verified: end-of-P3 tree `make check` green; `make test` **11603 passed** (pre-P1 baseline 11586 → net **+17**). Baseline oracle: the
+  four named dirs PASS, and the FULL `verify.sh` **87/87** after re-recording 4 cases, each moved by a ruled/authorized order change,
+  none carries a raw duration: `02-validator-errors/02, 03, 05` (warnings now render BEFORE the errors block — the orchestrator's
+  authorized order; 05 also gains one blank line before the multi-error header) and `15-run-flag-interactions/03` (the `⤷` mode line
+  now sits directly under the completion line, show-before §4/§5; durations already `<DURATION>`-masked). `15/05` (`-p --only`)
+  stays unchanged because `-p` output drops the summary's leading blank (no progress stream above it). The eleven show-before
+  commands re-run as AFTER on the five fixtures (isolated HOME; `fail-exc` = HTTP timeout to 10.255.255.1:9), condensed transcript
+  (ids → `<id>`, trace paths → `<trace>`, durations → `Xs`) pasted below. | Assumed: interleaving on a real terminal (stderr before
+  stdout, CliRunner splits streams) — not exercised on a TTY.
+- Deviations/surprises:
+  (1) **Final CLI stderr order** (one shared order for both channels): completion line + `⤷` mode lines (same block) · batch item
+  errors · shell stderr · cost · `⚠️ Warnings:` / `ℹ️ Advisories:` · errors block · resolved-outputs note · gate lines (3-space indent)
+  · `To answer:` + bulk hint · `To resume from the failed step:` · `Workflow trace saved:`. Warnings sit after cost (not first) so the
+  SUCCESS summary order is unchanged and the error block — the cause — is last but for the hint/trace lines.
+  (2) **A denial renders no errors block on either channel** — the denied line says it; the gate diagnostic stays in the document's
+  `errors`. (The first AFTER run showed `Error: Gate denied` beneath the denied line; show-before §4's denied text has only the denied
+  line + `⤷`.) Pinned: `test_resumed_then_denied…` asserts no `Error: Gate denied`; MCP twin in `test_run_outcome.py`.
+  (3) Deviation-6 fallback: a FAILED outcome with no error diagnostic renders `❌ Workflow execution failed — no error details were
+  recorded` (in `errors_block`, so the probe shares it); today's CLI said `cli: Workflow execution failed - Node returned error
+  action` + `Check node output above` — a guess about the cause, dropped.
+  (4) `-p` drops the leading blank line (it separates the summary from the progress stream, which `-p` never prints) — keeps 15/05.
+  (5) The denied line loses its yellow `click.style` (renderers return plain strings; tests never saw the colour under CliRunner).
+  (6) JSON-mode paused/failure stderr no longer carries the resume hint (it is in the document — Q1/Q4 as ruled); paused text now
+  renders warnings before the gate lines (shared order), and they are summary tier, so `-p` hides them (Q1).
+  (7) `test_resume_engine` keeps `mode_lines(document)` for its ⤷ assertions (my call — it asserts the document's lineage; the
+  renderer is pinned by `test_run_outcome_cli.py`).
+  (8) Test deletions: `test_direct_execution_helpers.py::TestDisplayCostSummary` (duplicate of `test_run_outcome.py::TestCostLines`,
+  which drives real collectors), `TestDisplayExecutionSummaryAdvisories::test_legacy_warnings_dict_key…` (the legacy key no longer
+  exists to resurrect); the advisory/failure-advisory/subscription-to-stderr tests moved to `TestRenderCliStderr`;
+  `test_shell_stderr_warnings.py::TestDisplayStderrWarnings` deleted per the ruling (incl. the pre-#755 300-char pin).
+  `test_resume_cli.py::test_output_resolution_failure_json_omits_resume_fields` now asserts `execution_id` IS present (D1) and
+  `resume_command` absent; `test_failed_run_json_document_carries_resume_fields` proves the id against the trace's meta line instead
+  of the (now JSON-absent) stderr hint. `test_json_diagnostic_redaction.py::test_http_401…` gains `trace_files` (resume_command names
+  a trace file; without one the run has no identity — the spec's rule).
+  (9) Agent files (`.claude/agents/review-*.md`, 4 rows naming the deleted paths/symbols) edited now, not P4 — `make test` cannot be
+  green with them stale (`test_agent_references`). Minimal edits; P4 should still re-read them.
+  (10) Noticed for P4: `src/pflow/cli/CLAUDE.md` owner rows + the DENIED/PAUSED dispatch paragraph, formatters `CLAUDE.md`,
+  `guide/features/resume.md:31` (`paused_node_id`, `gate_request`), and `engine.py:875`'s comment are stale now.
+- Self-checks: fully happy — doubts raised + fixed during the AFTER pass: the denied errors block (2), a double blank after shell
+  diagnostics (`format_diagnostic`'s trailing newline — stripped in `errors_block`), the `⤷` line's placement. Remaining doubt, left:
+  the CLI now prints stderr BEFORE the paused token line on stdout (was after) — streams are separate; only terminal interleaving
+  moves. test-reflect (directed): 15 real renderer mutations (must-act in JSON, `-p` ignored, failed batch as summary, warnings after
+  errors, completion on pause, errors on denial, resume hint on any status, trace line under `-p`, mode lines hidden without the
+  completion line, leading blank under `-p`, MCP gate on denial, MCP all advisories, MCP no identity, MCP errors on denial, no
+  zero-error fallback) — 14 killed on first run; "MCP errors on denial" survived → deepened `test_a_pause_renders_its_gate…` with the
+  MCP denied text (now killed). Deepened `TestTiersUnderPrint.test_pause` (no `To resume` on a pause) and the resumed-denial test (no
+  error block; `⤷` directly under the denied line). Every absence assertion in `test_run_outcome_cli.py` has its presence twin in the
+  same stream (plain vs `-p`, paused vs denied).
+  Follow-up (orchestrator-directed, 01:25): the open doubt settled to show-before §3 — paused TEXT echoes the stdout token line
+  BEFORE the stderr gate/answer lines again (JSON keeps Q4's trace-line-before-payload); pinned by
+  `test_the_paused_token_line_comes_before_the_gate_content` on CliRunner's mixed `output` (mutation: token line moved after the
+  stderr lines → 1 failed); affected files 1583 passed, `make check` green, baseline 15/* 5/5. Loose ends: none in P2/P3 code; noted
+  only — the probe's `format_error_text` keeps errors-before-warnings (#748's lane) and §8's `tests/fixtures/run_outcome/` copy is P4's.
+- Next: P3 (built in the same pass — entry below).
+
+AFTER — the show-before-code commands (five fixtures, isolated HOME):
+```text
+
+$ pflow FX/ok.pflow.md
+--- stdout:
+two-value
+--- stderr:
+Executing workflow (2 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+✓ Workflow completed in Xs
+
+Workflow trace saved: <trace>
+
+Workflow output (The second step's text.):
+
+--- exit 0
+
+$ pflow FX/ok.pflow.md --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, result, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution
+execution: {'nodes_executed': 2, 'nodes_total': 2}
+--- stderr:
+Executing workflow (2 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+✓ Workflow completed in Xs
+
+Workflow trace saved: <trace>
+--- exit 0
+
+$ pflow FX/ok.pflow.md -p
+--- stdout:
+two-value
+--- stderr:
+--- exit 0
+
+$ pflow FX/ok.pflow.md -p --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, result, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution
+execution: {'nodes_executed': 2, 'nodes_total': 2}
+--- stderr:
+--- exit 0
+
+$ pflow FX/fail-action.pflow.md
+--- stdout:
+--- stderr:
+Executing workflow (2 nodes):
+  one... ✓ 0.0s
+  two... ✗ Failed
+
+❌ Workflow failed after Xs
+
+Error: Execution Failed
+
+Command failed with exit code 1: boom
+
+  At: node 'two'
+
+  Shell details:
+    Command: echo boom >&2; exit 1
+    Stderr: boom
+
+To resume from the failed step: pflow resume <id>
+
+Workflow trace saved: <trace>
+--- exit 1
+
+$ pflow FX/fail-action.pflow.md --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, error, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution, resume_command
+execution: {'nodes_executed': 1, 'nodes_total': 2}
+error: Command failed with exit code 1: boom
+
+resume_command: pflow resume <id>
+--- stderr:
+Executing workflow (2 nodes):
+  one... ✓ 0.0s
+  two... ✗ Failed
+
+❌ Workflow failed after Xs
+
+Workflow trace saved: <trace>
+--- exit 1
+
+$ pflow FX/fail-exc.pflow.md
+--- stdout:
+--- stderr:
+Executing workflow (2 nodes):
+  one... ✓ 0.0s
+  slow-fetch... ✗ Failed
+
+❌ Workflow failed after Xs
+
+Error: Execution Failed
+
+Request to http://10.255.255.1:9/ timed out after 1 seconds. Increase the step's timeout (e.g. `- timeout: 60`) or check if the service is responding.
+  At: node 'slow-fetch'
+
+To resume from the failed step: pflow resume <id>
+
+Workflow trace saved: <trace>
+--- exit 1
+
+$ pflow FX/fail-exc.pflow.md --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, error, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution, resume_command
+execution: {'nodes_executed': 1, 'nodes_total': 2}
+error: Request to http://10.255.255.1:9/ timed out after 1 seconds. Increase the step's timeout (e.g. `- timeout: 60`) or check if the service is responding.
+resume_command: pflow resume <id>
+--- stderr:
+Executing workflow (2 nodes):
+  one... ✓ 0.0s
+  slow-fetch... ✗ Failed
+
+❌ Workflow failed after Xs
+
+Workflow trace saved: <trace>
+--- exit 1
+
+$ pflow FX/fail-exc.pflow.md -p
+--- stdout:
+--- stderr:
+Error: Execution Failed
+
+Request to http://10.255.255.1:9/ timed out after 1 seconds. Increase the step's timeout (e.g. `- timeout: 60`) or check if the service is responding.
+  At: node 'slow-fetch'
+
+To resume from the failed step: pflow resume <id>
+--- exit 1
+
+$ pflow FX/gate.pflow.md
+--- stdout:
+Paused at 'three'. Resume token: <id> (exit 4)
+--- stderr:
+Executing workflow (3 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+   command:  echo three-value
+
+To answer: pflow resume <id> --approve yes|no
+
+Workflow trace saved: <trace>
+--- exit 4
+
+$ pflow FX/gate.pflow.md --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution, gate, resume_command
+execution: {'nodes_executed': 2, 'nodes_total': 3}
+resume_command: pflow resume <id> --approve yes|no
+gate: {'node_id': 'three', 'node_type': 'ShellNode', 'kind': 'action_approval', 'preview': {'command': 'echo three-value'}, 'question': None, 'options': [], 'recommendation': None, 'iteration': None, 'max_iterations': None}
+--- stderr:
+Executing workflow (3 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+Workflow trace saved: <trace>
+--- exit 4
+
+$ pflow FX/gate.pflow.md -p
+--- stdout:
+Paused at 'three'. Resume token: <id> (exit 4)
+--- stderr:
+   command:  echo three-value
+
+To answer: pflow resume <id> --approve yes|no
+--- exit 4
+
+$ pflow resume <id> --approve no
+--- stdout:
+--- stderr:
+Executing workflow (3 nodes):
+
+✗ Denied at gate 'three'. Workflow stopped cleanly before the step ran. Steps completed: 0 of 3. (exit 3)
+  ⤷ Resumed from <id> at 'three' — 2 upstream steps restored
+
+Workflow trace saved: <trace>
+--- exit 3
+
+$ pflow FX/gate.pflow.md --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution, gate, resume_command
+execution: {'nodes_executed': 2, 'nodes_total': 3}
+resume_command: pflow resume <id> --approve yes|no
+gate: {'node_id': 'three', 'node_type': 'ShellNode', 'kind': 'action_approval', 'preview': {'command': 'echo three-value'}, 'question': None, 'options': [], 'recommendation': None, 'iteration': None, 'max_iterations': None}
+--- stderr:
+Executing workflow (3 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+Workflow trace saved: <trace>
+--- exit 4
+
+$ pflow resume <id> --approve no --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, error, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution, gate
+execution: {'nodes_executed': 0, 'nodes_total': 3, 'resumed_from': '<id>', 'nodes_restored': 2, 'resume_entry_node': 'three', 'resume_entry_iteration': 1}
+error: Denied at gate 'three'.
+gate: {'node_id': 'three', 'node_type': 'ShellNode', 'kind': 'action_approval', 'preview': {'command': 'echo three-value'}, 'question': None, 'options': [], 'recommendation': None, 'iteration': None, 'max_iterations': None}
+--- stderr:
+Executing workflow (3 nodes):
+
+  ⤷ Resumed from <id> at 'three' — 2 upstream steps restored
+
+Workflow trace saved: <trace>
+--- exit 3
+
+$ pflow resume <id> --approve no -p
+--- stdout:
+--- stderr:
+✗ Denied at gate 'three'. Workflow stopped cleanly before the step ran. Steps completed: 0 of 3. (exit 3)
+  ⤷ Resumed from <id> at 'three' — 2 upstream steps restored
+--- exit 3
+
+$ pflow FX/gate-fail.pflow.md
+--- stdout:
+Paused at 'three'. Resume token: <id> (exit 4)
+--- stderr:
+Executing workflow (3 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+   command:  exit 1
+
+To answer: pflow resume <id> --approve yes|no
+
+Workflow trace saved: <trace>
+--- exit 4
+
+$ pflow resume <id> --approve yes
+--- stdout:
+--- stderr:
+Executing workflow (3 nodes):
+✓ Gate 'three' approved via --approve yes
+  three... ✗ Failed
+
+❌ Workflow failed after Xs
+  ⤷ Resumed from <id> at 'three' — 2 upstream steps restored
+
+Error: Execution Failed
+
+Command failed with exit code 1
+  At: node 'three'
+
+  Shell details:
+    Command: exit 1
+
+To resume from the failed step: pflow resume <id>
+
+Workflow trace saved: <trace>
+--- exit 1
+
+$ pflow FX/gate-fail.pflow.md
+--- stdout:
+Paused at 'three'. Resume token: <id> (exit 4)
+--- stderr:
+Executing workflow (3 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+   command:  exit 1
+
+To answer: pflow resume <id> --approve yes|no
+
+Workflow trace saved: <trace>
+--- exit 4
+
+$ pflow resume <id> --approve yes --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, error, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution, resume_command
+execution: {'nodes_executed': 0, 'nodes_total': 3, 'resumed_from': '<id>', 'nodes_restored': 2, 'resume_entry_node': 'three', 'resume_entry_iteration': 1}
+error: Command failed with exit code 1
+resume_command: pflow resume <id>
+--- stderr:
+Executing workflow (3 nodes):
+✓ Gate 'three' approved via --approve yes
+  three... ✗ Failed
+
+❌ Workflow failed after Xs
+  ⤷ Resumed from <id> at 'three' — 2 upstream steps restored
+
+Workflow trace saved: <trace>
+--- exit 1
+
+$ pflow FX/gate.pflow.md
+--- stdout:
+Paused at 'three'. Resume token: <id> (exit 4)
+--- stderr:
+Executing workflow (3 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+   command:  echo three-value
+
+To answer: pflow resume <id> --approve yes|no
+
+Workflow trace saved: <trace>
+--- exit 4
+
+$ pflow resume <id> --approve yes
+--- stdout:
+three-value
+--- stderr:
+Executing workflow (3 nodes):
+✓ Gate 'three' approved via --approve yes
+  three... ✓ 0.0s
+
+✓ Workflow completed in Xs
+  ⤷ Resumed from <id> at 'three' — 2 upstream steps restored
+
+Workflow trace saved: <trace>
+
+cli: No outputs declared — showing auto-detected key 'stdout'. Declare outputs for reliable results.
+
+Workflow output:
+
+--- exit 0
+
+```
+
+## [2026-10-12 01:15] implementer I1b (Opus, high) — P3 MCP renders the outcome
+- Did: `render_mcp_text` (§4.3) over the same section functions; `ExecutionService.execute_workflow` = build → render → return on
+  SUCCESS/DEGRADED/PAUSED, else `raise RuntimeError(text)` (outer `except Exception` wrapper kept); `_workflow_metadata` extracted.
+  Deleted per §5: `_format_success_result`, `_build_error_text`, `_format_resolved_outputs_section`, `_format_paused_text`,
+  `_trace_path_str`. `workflow_execute` docstring Returns block rewritten to the one layout.
+- Changed: `src/pflow/mcp_server/services/execution_service.py`, `src/pflow/mcp_server/tools/execution_tools.py`,
+  `src/pflow/execution/formatters/run_outcome.py`; tests: `tests/test_integration/test_cli_mcp_parity.py` (P3-T1..T5 + P2-T8's MCP
+  half, 7 tests), `test_run_outcome.py` (P3-T6 on the in-process resumed-then-failed outcome; MCP denied text),
+  `tests/test_mcp_server/test_execution_workflow.py` (paused line, loop bulk-hint position, identity test rewritten).
+- Verified: same end-of-P3 gate as P2 (`make check` green, `make test` 11603 passed, baseline 87/87). `ExecutionService
+  .execute_workflow` on the five fixtures (isolated HOME), condensed below — failure texts now carry the ❌ line, `execution_id`,
+  `trace_path` and `resume_command` (#699 twin on MCP); the pause leads with the step and keeps the `Gate:` block. | Assumed: the
+  MCP server boundary renders the raised text verbatim (unchanged code; `tests/test_mcp_server/test_execution_workflow.py:145-176` green).
+- Deviations/surprises:
+  (1) **#5 settled as ruled:** `gate_lines` renders PAUSED-only on BOTH channels (§4.3's "paused/denied" → paused); MCP denied text =
+  denied line (+ `⤷`) + identity, no `Gate:`, no errors block.
+  (2) **Final MCP order** (shared with the CLI): `{name} was executed` (library/created only) · completion line · `⤷` lines · batch
+  errors · shell stderr · cost · `⚠️ Warnings:` / `ℹ️ Advisories:` (advisories filtered to parser/validator, §3.7) · errors block
+  (FAILED only) · resolved-outputs note · `Workflow output:` + value (success) · `Gate:` (paused) · identity lines (+ bulk hint after
+  `resume_command:` on a looping pause). Success text = today's + `status: success`. MCP headings unified on the CLI glyph wording.
+  (3) **Bug found by P3-T3 and fixed:** a failure with no completion line (pre-collector validation failure) started the MCP text with
+  a blank line; `render_mcp_text` now drops the leading separator when the head is empty.
+  (4) `_trace_path_str` deleted and `format_error_text` lost its `trace_path` parameter: the probe runs `trace_enabled=False`, so the
+  path was always empty — a parameter nothing could ever fill (plan §3.4 named it; deletion test). `test_execution_workflow.py
+  ::test_success_text_carries_execution_id` (asserted an id renders with NO trace file) reversed to the spec's rule —
+  `test_identity_lines_need_a_trace_file`; the presence twin is the existing `trace_files` test (`test_mcp_run_streams_a_real_trace`).
+  (5) Inline-IR runs (no file) render `status:` but no identity when the stream is off — production MCP always streams, so identity is
+  present whenever a trace file exists.
+- Self-checks: fully happy — doubt raised: the probe (`format_error_text`) still renders errors BEFORE warnings while the run renderers
+  put warnings first; left as is (the probe is a different surface, #748's lane; the orchestrator's order change named the run
+  renderers). test-reflect (my judgment, run): the MCP mutations (gate on denial, all advisories, no identity, errors on denial) are in
+  the P2 mutation pass — all killed after the one deepening; P3 tests assert exact lines/prefixes, each absence paired with a presence
+  in the same text (paused vs denied, parser vs runtime advisory, CLI JSON warning vs MCP text).
+- Next: hand back (orchestrator merges origin/main; P4 docs + Task-170 example re-record).
+
+MCP `execute_workflow` on the five fixtures:
+```text
+### execute_workflow(ok.pflow.md)
+✓ Workflow completed in Xs
+
+Workflow output:
+
+two-value
+
+status: success
+execution_id: <id>
+trace_path: <trace>
+
+### execute_workflow(fail-action.pflow.md)
+[raised RuntimeError]
+❌ Workflow failed after Xs
+
+Error: Execution Failed
+
+Command failed with exit code 1: boom
+
+  At: node 'two'
+
+  Shell details:
+    Command: echo boom >&2; exit 1
+    Stderr: boom
+
+status: failed
+execution_id: <id>
+trace_path: <trace>
+resume_command: pflow resume <id>
+
+### execute_workflow(fail-exc.pflow.md)
+[raised RuntimeError]
+❌ Workflow failed after Xs
+
+Error: Execution Failed
+
+Request to http://10.255.255.1:9/ timed out after 1 seconds. Increase the step's timeout (e.g. `- timeout: 60`) or check if the service is responding.
+  At: node 'slow-fetch'
+
+status: failed
+execution_id: <id>
+trace_path: <trace>
+resume_command: pflow resume <id>
+
+### execute_workflow(gate.pflow.md)
+⏸ Workflow paused at 'three' — a human decision is required.
+
+Gate:
+  command:  echo three-value
+
+status: paused
+execution_id: <id>
+trace_path: <trace>
+resume_command: pflow resume <id> --approve yes|no
+
+### execute_workflow(gate-fail.pflow.md)
+⏸ Workflow paused at 'three' — a human decision is required.
+
+Gate:
+  command:  exit 1
+
+status: paused
+execution_id: <id>
+trace_path: <trace>
+resume_command: pflow resume <id> --approve yes|no
+
+
+```
+
+## [2026-10-12 01:25] task-orchestrator (Opus) — P1–P3 accepted; committing; main merge next
+- Did: verified I1b's P1 (+ mid-task review: impact-completeness + silent-failures on codex, 0 findings — report
+  `reviews/p1-midtask-review.md`), P2, P3 handbacks; my gate on the end-of-P3 tree: `make check` green; `make test` 11602 passed
+  + 1 failed `tests/test_third_party_compile_warnings.py::test_no_runtime_dependency_emits_a_compile_time_warning` (litellm
+  `ResourceWarning: unclosed event loop` under xdist load; passes alone 2/2; diff touches no import path it scans — load flake,
+  re-checked at the P4 gate).
+- Fresh-launch reason (P1): the plan routes P1 at effort `high`; the P0 implementer ran at `medium` and held only P0 context, so
+  I1b was launched fresh for P1 and resumed (continuity) for the mid-task review and P2+P3.
+- Rulings made here (1–2/5, logged): §4.3's MCP "Gate: block (paused/denied)" → PAUSED-only on both channels (plan-review #3;
+  MCP never produces a denial); warnings/advisories render before the errors block (main-orchestrator-authorized order; final
+  order in the P2 entry); paused TEXT keeps the token line FIRST on stdout (show-before §3 "Text unchanged" — loose-ends round,
+  pinned by `test_the_paused_token_line_comes_before_the_gate_content`, mutation-checked).
+- Accepted deviations: denial renders no errors block (gate diagnostic stays in the document); zero-error failure fallback text;
+  `format_error_text` lost the never-fillable `trace_path` param; `_outcome_status`'s second arm (`success=False` + default
+  SUCCESS → FAILED) — a test-fixture-only pair today, kept as the two fields' coherence guard (the completion gate's simplicity
+  lens may challenge it); four `.claude/agents/review-*.md` rows edited in P2 (agent-reference test).
+- Text deltas received: #810 (Task-170 examples capture now in `baseline-oracle` — re-record affected examples in this PR, name
+  them); #818 (59 Task-159 cases re-recorded on main — no overlap with this branch's four re-records `02/02, 02/03, 02/05, 15/03`,
+  checked by `git diff --name-only`; missing-input diagnostics now carry `suggestions`; #804 member (d) `_show_workflow_help` →
+  P4 evaluates, one-line caller fix only).
+- Next: commit P1–P3; `git merge origin/main`; gates; P4 to I1b (window ~570k — P4 is docs it already holds; rotation if degraded).

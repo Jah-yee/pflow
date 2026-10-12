@@ -319,7 +319,11 @@ class TestEnhancedErrorOutput:
         assert ". Item:" not in result.stderr
         assert "expectations. Item:" not in result.stderr
         assert "Batch 'fail-batch' errors:" in result.stderr
-        assert "Suggestions:" not in result.stderr.split("Batch 'fail-batch' errors:", 1)[1]
+        # The batch block (up to its closing blank line) lists item headlines, never the step error's
+        # Suggestions — those belong to the error block, which renders after it (the cause last).
+        batch_block = result.stderr.split("Batch 'fail-batch' errors:", 1)[1].split("\n\n", 1)[0]
+        assert "[0]" in batch_block
+        assert "Suggestions:" not in batch_block
         assert "PAYLOAD-START" not in result.stderr
         assert "PAYLOAD-END" not in result.stderr
         assert "token199" not in result.stderr

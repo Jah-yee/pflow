@@ -10,13 +10,21 @@ Fix 4: Error category uses _determine_error_category (not hardcoded)
 from typing import Any
 from unittest.mock import patch
 
-from pflow.cli.workflow_errors import _display_single_error
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.workflow.status import WorkflowStatus
 from pflow.execution.executor_service import determine_error_category
+from pflow.execution.formatters.run_outcome import build_run_outcome, render_cli_stderr
 from pflow.execution.result import ExecutionResult
 from pflow.runtime.workflow_executor import WorkflowExecutor
 from pflow.runtime.workflow_trace import WorkflowTraceCollector
+
+
+def _failure_stderr(error: Diagnostic) -> str:
+    """The CLI's stderr for a run that failed with this one error (text mode, no ``-p``)."""
+    result = ExecutionResult(success=False, status=WorkflowStatus.FAILED, diagnostics=[error])
+    outcome = build_run_outcome(result, {}, workflow_metadata=None)
+    return "\n".join(render_cli_stderr(outcome, text_mode=True, print_flag=False, verbose=False))
+
 
 # ---------------------------------------------------------------------------
 # Fix 1: Shell stderr always visible (no verbose gate)
@@ -42,17 +50,7 @@ def test_shell_stderr_shown_without_verbose() -> None:
         },
     )
 
-    # Capture all click.echo calls to stderr
-    captured: list[str] = []
-
-    def capture_echo(message: Any = "", err: bool = False, **kwargs: Any) -> None:
-        if err:
-            captured.append(str(message))
-
-    with patch("pflow.cli.workflow_errors.click.echo", side_effect=capture_echo):
-        _display_single_error(error, error_number=1, verbose=False)
-
-    output = "\n".join(captured)
+    output = _failure_stderr(error)
 
     # Shell details must appear even with verbose=False
     assert "Shell details:" in output
@@ -75,16 +73,7 @@ def test_shell_stdout_also_shown_without_verbose() -> None:
         },
     )
 
-    captured: list[str] = []
-
-    def capture_echo(message: Any = "", err: bool = False, **kwargs: Any) -> None:
-        if err:
-            captured.append(str(message))
-
-    with patch("pflow.cli.workflow_errors.click.echo", side_effect=capture_echo):
-        _display_single_error(error, error_number=1, verbose=False)
-
-    output = "\n".join(captured)
+    output = _failure_stderr(error)
 
     assert "Stdout:" in output
     assert "FAILED tests/test_foo.py::test_bar" in output
@@ -93,11 +82,7 @@ def test_shell_stdout_also_shown_without_verbose() -> None:
 
 
 def test_single_cli_error_is_not_numbered() -> None:
-    """Single-error display should omit the redundant "Error 1" label.
-
-    The unified titled format renders "Error: <title>" for a single error
-    (error_number=None) and "Error N: <title>" for multiple errors.
-    """
+    """A run's single error omits the redundant "Error 1" label ("Error N:" is the multi-error form)."""
     error = Diagnostic(
         severity=Severity.ERROR,
         message="Shell command failed with exit code 1",
@@ -110,16 +95,7 @@ def test_single_cli_error_is_not_numbered() -> None:
         },
     )
 
-    captured: list[str] = []
-
-    def capture_echo(message: Any = "", err: bool = False, **kwargs: Any) -> None:
-        if err:
-            captured.append(str(message))
-
-    with patch("pflow.cli.workflow_errors.click.echo", side_effect=capture_echo):
-        _display_single_error(error, error_number=None, verbose=False)
-
-    output = "\n".join(captured)
+    output = _failure_stderr(error)
     # Unified titled format: "Error: Execution Failed" (no number for single error)
     assert "Error: Execution Failed" in output
     assert "Error 1:" not in output
@@ -399,52 +375,3 @@ def test_runner_exception_to_result_includes_category() -> None:
 
     assert result.success is False
     assert (result.errors[0].context or {}).get("category") == "validation"  # ValueError → validation category
-
-
-# ---------------------------------------------------------------------------
-# Fix 5: MCP _build_error_text includes shell details
-# ---------------------------------------------------------------------------
-
-
-def test_mcp_build_error_text_includes_shell_details() -> None:
-    """MCP error text should include shell command and stderr for agent diagnosis."""
-    from pflow.mcp_server.services.execution_service import _build_error_text
-
-    errors = [
-        Diagnostic(
-            severity=Severity.ERROR,
-            message="exit 1",
-            node_id="build",
-            source="runtime",
-            context={
-                "category": "execution_failure",
-                "shell_command": "npm run build",
-                "shell_stderr": "Error: Cannot find module 'webpack'",
-            },
-        )
-    ]
-    text = _build_error_text(errors, warnings=[], trace_path="")
-    assert "npm run build" in text
-    assert "Cannot find module" in text
-    assert "build" in text
-
-
-def test_mcp_build_error_text_truncates_long_values(tmp_path: Any) -> None:
-    """MCP error text truncates long commands and stderr."""
-    from pflow.mcp_server.services.execution_service import _build_error_text
-
-    errors = [
-        Diagnostic(
-            severity=Severity.ERROR,
-            message="exit 1",
-            node_id="run",
-            source="runtime",
-            context={
-                "category": "execution_failure",
-                "shell_command": "x" * 250,
-                "shell_stderr": "y" * 350,
-            },
-        )
-    ]
-    text = _build_error_text(errors, warnings=[], trace_path="")
-    assert "..." in text  # Truncation happened

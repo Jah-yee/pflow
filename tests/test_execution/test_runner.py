@@ -772,14 +772,12 @@ class TestExceptionToResultCategorization:
 def test_node_valueerror_categorized_as_execution_failure():
     """E2E: ValueError raised inside a node gets 'execution_failure', not 'validation'.
 
-    This tests the full chain: engine.run() → node raises ValueError →
-    engine annotates _pflow_node_id → runner._exception_to_result →
-    ExecutionResult with category 'execution_failure'.
+    The ``code`` node catches the raise and returns an ``error`` action, so this run ends
+    on the runner's NORMAL return (``_build_errors``), not ``_exception_to_result`` — it
+    pins the category a node's own failure gets on that path.
 
     Before Task 141, ALL ValueErrors got category 'validation' — including
-    node execution errors like HTTP timeouts and API failures. The fix uses
-    _pflow_node_id (set by the engine on any exception from a running node)
-    as a discriminator.
+    node execution errors like HTTP timeouts and API failures.
     """
     workflow_ir = {
         "nodes": [

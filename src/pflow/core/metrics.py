@@ -313,7 +313,6 @@ class MetricsCollector:
 
         metrics = {
             "duration_ms": round(duration, 2) if duration else None,
-            "nodes_executed": len(node_timings),
             "cost_usd": cost_data.get("total_cost_usd"),
             "tokens_input": tokens["input"],
             "tokens_output": tokens["output"],

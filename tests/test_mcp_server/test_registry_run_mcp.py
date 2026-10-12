@@ -8,7 +8,7 @@ at the Runner level or using real shell execution where feasible.
 from unittest.mock import MagicMock, patch
 
 from pflow.execution.result import ExecutionResult
-from pflow.mcp_server.services.execution_service import ExecutionService, _build_error_text
+from pflow.mcp_server.services.execution_service import ExecutionService
 
 
 class TestRegistryRunMCP:
@@ -228,42 +228,12 @@ class TestRegistryRunMCP:
             assert "MISSING_VAR" in result
 
     def test_execution_failure_shows_actual_error(self):
-        """Verify run_registry_node propagates actual error details on failure.
+        """A failed probe answers with the run's own error text (``format_error_text``), shell details
+        included — never a bare "Workflow execution failed" — and names no trace (the probe is traceless)."""
+        result = ExecutionService.run_registry_node("shell", parameters={"command": "echo oops >&2; exit 1"})
 
-        When a shell command fails, the error text returned to MCP agents
-        should contain the actual error message — not just "Workflow execution failed".
-        Regression guard for _build_error_text shape mismatch.
-        """
-        result = ExecutionService.run_registry_node("shell", parameters={"command": "exit 1"})
         assert isinstance(result, str)
-        # Must contain actual error context, not generic fallback
-        assert "Workflow execution failed" not in result or "exit" in result.lower()
-
-    def test_build_error_text_omits_error_number_for_single_error(self):
-        """Single-error MCP text should not use numbered prefix 'Error 1'.
-
-        After diagnostic rendering redesign (Task 144), _build_error_text
-        accepts list[Diagnostic] instead of a dict. Single errors render
-        without numbering (just 'Error: <title>').
-        """
-        from pflow.core.diagnostic import Diagnostic, Severity
-
-        error_text = _build_error_text(
-            errors=[
-                Diagnostic(
-                    severity=Severity.ERROR,
-                    message="Shell command failed",
-                    title="Execution Failed",
-                    node_id="run-tests",
-                    source="runtime",
-                )
-            ],
-            warnings=[],
-            trace_path="",
-        )
-
-        # Single error should NOT have "Error 1" numbering
-        assert "Error 1" not in error_text
-        # Should include the error title and node context
-        assert "Execution Failed" in error_text
-        assert "run-tests" in error_text
+        assert result.startswith("Error: Execution Failed\n\nCommand failed with exit code 1: oops")
+        assert "Command: echo oops >&2; exit 1" in result
+        assert "Workflow execution failed" not in result
+        assert "trace_path:" not in result

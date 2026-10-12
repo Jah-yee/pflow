@@ -174,11 +174,10 @@ Multiple output paths that must all be updated:
 
 | Path | File | Common miss |
 |---|---|---|
-| CLI success display | `execution/formatters/success_formatter.py` + `cli/workflow_output.py` (`_display_execution_summary`) | Updated shared formatter but not CLI's own per-workflow summary path (Task 96) |
-| CLI error display | `execution/formatters/error_formatter.py` | |
+| Run outcome (every status: CLI text, CLI JSON, MCP) | `execution/formatters/run_outcome.py` — `build_run_outcome` (the one document) + `render_cli_stderr` / `render_mcp_text` over shared section functions | A field added to the document but rendered by no section function, or by one channel's renderer only (the pre-Task-184 parallel paths missed this way — Task 96) |
 | Trace reports | `core/trace_report.py` | Empty blocks, missing tables, wrong costs (Task 108) |
 | MCP responses | `mcp_server/services/execution_service.py` | Different code path from CLI |
-| JSON output mode | Errors unified via `cli/error_output.py` (Task 149); success paths still parallel | Verify both JSON and text branches when changing success output |
+| JSON output mode | A run's JSON is `RunOutcome.document` for every status; failures with no run (pre-execution exceptions) via `cli/error_output.py` | Verify the document AND both text renderers when changing a run's output |
 
 ## Three-Way Interactions
 
