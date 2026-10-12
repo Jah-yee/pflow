@@ -176,7 +176,7 @@ Data input from stdin pipe.
 - stdin: true
 ```
 
-Piped data routes to this input automatically. CLI parameters override stdin if both are provided:
+Piped data routes to this input automatically, and a file redirect works the same way (`pflow my-workflow < data.csv`). pflow reads stdin only for this input: a workflow with no `stdin: true` input never reads it, so piping into one is ignored, not an error. CLI parameters override stdin if both are provided, and stdin is then left unread:
 
 ```bash
 # CLI parameter wins - "override" is used, not piped content

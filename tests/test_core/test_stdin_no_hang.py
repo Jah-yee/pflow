@@ -5,12 +5,12 @@ stdin/stdout are non-TTY but have no actual data (like Claude Code or
 when piped through grep).
 
 Key behavior tested:
-- FIFO pipes (real shell pipes): stdin_has_data() returns True
-- Non-FIFO (char devices, sockets): stdin_has_data() returns False
+- FIFO pipes (real shell pipes) and regular files (`< file`): stdin_has_data() returns True
+- Char devices, sockets: stdin_has_data() returns False
 - StringIO (CliRunner): stdin_has_data() returns False
 - Integration: pflow subprocess doesn't hang with non-TTY stdout
 
-Note: stdin_has_data() uses FIFO-only detection (stat.S_ISFIFO), NOT select().
+Note: stdin_has_data() uses descriptor-type detection (S_ISFIFO or S_ISREG), NOT select().
 select() was removed in Task 115 Session 6 because it lies on character devices
 (returns "ready" even when no data exists, causing stdin.read() to hang forever).
 See shell_integration.py docstring and Task 115 progress log for full history.
@@ -64,12 +64,27 @@ def test_stdin_has_data_returns_true_for_fifo(monkeypatch):
     assert stdin_has_data() is True
 
 
+def test_stdin_has_data_returns_true_for_regular_file(monkeypatch, tmp_path):
+    """stdin_has_data returns True for a regular-file redirect (`pflow < file`, #666).
+
+    A real file descriptor, not a mocked mode: a file always reaches EOF, so reading it cannot hang.
+    """
+    from pflow.core.shell_integration import stdin_has_data
+
+    monkeypatch.setattr("sys.platform", "linux")
+    path = tmp_path / "input.txt"
+    path.write_text("data", encoding="utf-8")
+    with path.open(encoding="utf-8") as f:
+        monkeypatch.setattr("sys.stdin", f)
+        assert stdin_has_data() is True
+
+
 def test_stdin_has_data_returns_false_for_char_device(monkeypatch):
     """stdin_has_data returns False for character devices (e.g. Claude Code).
 
     This is the original regression case (BF-20250112-stdin-hang-nontty-grep):
     Claude Code's stdin is a char device (S_ISCHR=True) where select() returns
-    "ready" but read() hangs forever. FIFO-only detection avoids this.
+    "ready" but read() hangs forever. Descriptor-type detection avoids this.
     Not a duplicate of the socket test — char device is the specific environment
     that triggered the original bug.
     """
@@ -136,7 +151,7 @@ def test_stdin_has_data_returns_false_for_stringio(monkeypatch):
 
 
 def test_read_stdin_returns_none_without_fifo(monkeypatch):
-    """read_stdin returns None when stdin is not a FIFO pipe."""
+    """read_stdin returns None when stdin is neither a pipe nor a file."""
     import io
 
     from pflow.core.shell_integration import read_stdin
@@ -149,7 +164,7 @@ def test_read_stdin_returns_none_without_fifo(monkeypatch):
 
 
 def test_read_stdin_enhanced_returns_none_without_fifo(monkeypatch):
-    """read_stdin_enhanced returns None when stdin is not a FIFO pipe."""
+    """read_stdin_enhanced returns None when stdin is neither a pipe nor a file."""
     import io
 
     from pflow.core.shell_integration import read_stdin_enhanced

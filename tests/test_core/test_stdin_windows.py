@@ -1,11 +1,12 @@
-"""Windows stdin pipe detection and UTF-8 decode (Task 116).
+"""Windows stdin pipe/file detection and UTF-8 decode (Task 116, #814).
 
 These tests run on Linux by faking the win32 seams the production code uses:
 `sys.platform`, a `msvcrt` module injected into `sys.modules`, and a
 `ctypes.windll` attribute (absent on non-Windows ctypes). The real-Windows
 ground truth is the inverse-skip e2e test in
-tests/test_cli/test_dual_mode_stdin.py — without it a wrong GetFileType
-constant here would return False forever and stay green.
+tests/test_cli/test_dual_mode_stdin.py (pipes) and the cross-platform file-redirect
+test in tests/test_cli/test_run_stdin_subprocess.py — without them a wrong
+GetFileType constant here would return False forever and stay green.
 """
 
 import ctypes
@@ -16,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from pflow.core.shell_integration import _stdin_is_pipe_windows, read_stdin, stdin_has_data
+from pflow.core.shell_integration import _stdin_is_readable_windows, read_stdin, stdin_has_data
 
 FILE_TYPE_UNKNOWN = 0
 FILE_TYPE_DISK = 1
@@ -53,36 +54,36 @@ class _FakeStdin:
         return 0
 
 
-class TestStdinIsPipeWindows:
+class TestStdinIsReadableWindows:
     """Behavior table for the GetFileType-based detector."""
 
     def test_pipe_returns_true(self, monkeypatch):
         _install_fake_win32_api(monkeypatch, file_type=FILE_TYPE_PIPE)
-        assert _stdin_is_pipe_windows(0) is True
+        assert _stdin_is_readable_windows(0) is True
 
     def test_console_returns_false(self, monkeypatch):
         _install_fake_win32_api(monkeypatch, file_type=FILE_TYPE_CHAR)
-        assert _stdin_is_pipe_windows(0) is False
+        assert _stdin_is_readable_windows(0) is False
 
-    def test_disk_redirect_returns_false(self, monkeypatch):
-        """File redirects (pflow < file) are not pipes — mirrors Unix S_ISFIFO."""
+    def test_disk_redirect_returns_true(self, monkeypatch):
+        """File redirects (pflow < file) are read — mirrors Unix S_ISREG (#666)."""
         _install_fake_win32_api(monkeypatch, file_type=FILE_TYPE_DISK)
-        assert _stdin_is_pipe_windows(0) is False
+        assert _stdin_is_readable_windows(0) is True
 
     def test_unknown_type_returns_false(self, monkeypatch):
         _install_fake_win32_api(monkeypatch, file_type=FILE_TYPE_UNKNOWN)
-        assert _stdin_is_pipe_windows(0) is False
+        assert _stdin_is_readable_windows(0) is False
 
     def test_get_osfhandle_failure_returns_false(self, monkeypatch):
         """A bad/closed fd degrades to False, matching the module's defensive style."""
         _install_fake_win32_api(monkeypatch, get_osfhandle_exc=OSError("bad fd"))
-        assert _stdin_is_pipe_windows(0) is False
+        assert _stdin_is_readable_windows(0) is False
 
     @pytest.mark.skipif(sys.platform == "win32", reason="on real Windows the API exists; this tests its absence")
     def test_missing_win32_api_returns_false(self):
         """Without fakes (i.e. on a real non-Windows box) the broad except catches
         the missing msvcrt/windll and returns False instead of crashing."""
-        assert _stdin_is_pipe_windows(0) is False
+        assert _stdin_is_readable_windows(0) is False
 
 
 class TestStdinHasDataWindowsRouting:
@@ -100,9 +101,20 @@ class TestStdinHasDataWindowsRouting:
         monkeypatch.setattr(sys, "stdin", _FakeStdin())
         assert stdin_has_data() is False
 
-    def test_non_win32_still_uses_fifo_path(self, monkeypatch):
-        """On Unix the S_ISFIFO path is untouched: a regular fd is not a FIFO."""
-        monkeypatch.setattr(sys, "stdin", _FakeStdin())  # fd 0 in pytest: not a FIFO
+    def test_disk_redirect_detected_on_win32(self, monkeypatch):
+        _install_fake_win32_api(monkeypatch, file_type=FILE_TYPE_DISK)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(sys, "stdin", _FakeStdin())
+        assert stdin_has_data() is True
+
+    def test_non_win32_uses_the_fstat_path(self, monkeypatch):
+        """Off win32 the Win32 answer is never consulted: fstat decides (a char device is skipped)."""
+        import stat
+
+        _install_fake_win32_api(monkeypatch, file_type=FILE_TYPE_PIPE)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(sys, "stdin", _FakeStdin())
+        monkeypatch.setattr("os.fstat", lambda fd: type("StatResult", (), {"st_mode": stat.S_IFCHR | 0o644})())
         assert stdin_has_data() is False
 
 

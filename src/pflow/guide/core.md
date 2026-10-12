@@ -295,7 +295,7 @@ Parsed record array from the fetch response.
 - source: ${fetch-records.response.items}
 `````
 
-**Input fields**: `type` (string|number|integer|boolean|array|object|any — omitted means `any`), `required` (true|false), `default` (fills in when no value arrives, so a defaulted input is never missing; must fit `type`), `stdin` (true|false — only one input can have this), description as prose.
+**Input fields**: `type` (string|number|integer|boolean|array|object|any — omitted means `any`), `required` (true|false), `default` (fills in when no value arrives, so a defaulted input is never missing; must fit `type`), `stdin` (true|false — only one input can have this; a pipe or `< file` fills it, and pflow reads stdin for nothing else — piping into a workflow without one is ignored), description as prose.
 
 **Output fields**: `source` (required — template expression like `${node.key}`), `type` (optional hint), `stdout` (true|false — at most one output may set this; marks the output that streams to stdout in text mode), description as prose. A `source` that cannot resolve fails the run (exit 1) — for a field that may be absent write `${node.field ?? null}` (a `??` chain whose nodes all never ran omits the output instead); the outputs that did resolve stay in the `--output-format json` failure document's `result`.
 
