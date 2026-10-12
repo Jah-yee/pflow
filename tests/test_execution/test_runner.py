@@ -678,7 +678,7 @@ class TestExceptionToResultCategorization:
     def _run(self, exception):
         """Helper to call _exception_to_result with minimal args."""
         runner = WorkflowRunner()
-        return runner._exception_to_result(exception, 0.0, None, metrics_collector=None)
+        return runner._exception_to_result(exception, 0.0, None, metrics_collector=None, engine_started=True)
 
     def test_valueerror_with_node_annotation_is_execution_failure(self):
         """ValueError from node execution (annotated) -> execution_failure."""
@@ -1547,3 +1547,91 @@ class TestResultCarriesRunMetrics:
         assert finalized is not None
         assert finalized.is_file()
         assert result.trace.trace_path == finalized
+
+
+_STRICT_TEMPLATE_IR: dict[str, Any] = {
+    "nodes": [
+        {"id": "first", "type": "shell", "params": {"command": "echo '{\"a\": 1}'"}},
+        {"id": "second", "type": "shell", "params": {"command": 'echo "$X"', "env": {"X": "${first.stdout.b}"}}},
+    ],
+    "edges": [{"from": "first", "to": "second"}],
+}
+
+
+class TestTheResultRecordsWhetherTheEngineStarted:
+    """``engine_started`` is the run's phase (#815): False only for a failure raised before the
+    runner hands the compiled workflow to the engine — the CLI exits 2 for it, 1 for a run failure.
+    """
+
+    @pytest.mark.parametrize(
+        ("ir", "params", "only_node"),
+        [
+            # The validator refuses it (an edge to a step that does not exist).
+            (
+                {
+                    "nodes": [{"id": "a", "type": "shell", "params": {"command": "echo a"}}],
+                    "edges": [{"from": "a", "to": "nowhere"}],
+                },
+                {},
+                None,
+            ),
+            # The input boundary refuses it (compile time, after the collectors exist).
+            (
+                {
+                    "inputs": {"topic": {"type": "string", "required": True, "description": "the topic"}},
+                    "nodes": [
+                        {"id": "say", "type": "shell", "params": {"command": 'echo "$T"', "env": {"T": "${topic}"}}}
+                    ],
+                    "edges": [],
+                },
+                {},
+                None,
+            ),
+            # An unknown --only target is refused before the engine (#815 D2), not inside it.
+            (
+                {"nodes": [{"id": "a", "type": "shell", "params": {"command": "echo a"}}], "edges": []},
+                {},
+                "nosuch",
+            ),
+        ],
+        ids=["validator", "missing_input", "unknown_only_target"],
+    )
+    def test_a_failure_before_the_engine_is_recorded_as_not_started(
+        self, ir: dict[str, Any], params: dict[str, Any], only_node: str | None
+    ) -> None:
+        result = WorkflowRunner().run(ir, params, RunnerConfig(trace_enabled=False, only_node=only_node))
+
+        assert result.status is WorkflowStatus.FAILED
+        assert result.errors
+        assert result.engine_started is False
+
+    def test_the_unknown_only_target_keeps_the_engines_words(self) -> None:
+        ir = {"nodes": [{"id": "a", "type": "shell", "params": {"command": "echo a"}}], "edges": []}
+
+        result = WorkflowRunner().run(ir, {}, RunnerConfig(trace_enabled=False, only_node="nosuch"))
+
+        assert result.errors[0].message == "Node 'nosuch' not found"
+        assert result.errors[0].suggestions == ["Available nodes: a"]
+
+    @pytest.mark.parametrize(
+        ("ir", "status"),
+        [
+            (
+                {"nodes": [{"id": "a", "type": "shell", "params": {"command": "echo ok"}}], "edges": []},
+                WorkflowStatus.SUCCESS,
+            ),
+            # A failing step is an error ACTION: the runner's normal return.
+            (
+                {"nodes": [{"id": "a", "type": "shell", "params": {"command": "exit 3"}}], "edges": []},
+                WorkflowStatus.FAILED,
+            ),
+            # Strict template resolution raises out of the engine: the runner's exception return.
+            (_STRICT_TEMPLATE_IR, WorkflowStatus.FAILED),
+        ],
+        ids=["success", "failed_step", "raised_in_the_engine"],
+    )
+    def test_a_run_the_engine_started_is_recorded_as_started(self, ir: dict[str, Any], status: WorkflowStatus) -> None:
+        result = WorkflowRunner().run(ir, {}, RunnerConfig(trace_enabled=False))
+
+        assert result.status is status
+        assert result.engine_started is True

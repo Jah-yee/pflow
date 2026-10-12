@@ -85,7 +85,7 @@ class TestWorkflowSaveCLI:
         # With planner validation, unquoted multi-word input now errors
         result = runner.invoke(main, ["create", "a", "backup", "workflow"])
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "Invalid input" in result.output or "must be quoted" in result.output
 
     def test_save_prompt_not_shown_after_execution_failure(self, runner, tmp_path):
@@ -110,7 +110,7 @@ class TestWorkflowSaveCLI:
 
         result = runner.invoke(main, [str(workflow_file)])
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "Save this workflow?" not in result.output
         # Check that the specific error is shown (validation catches unknown node type)
         assert "non-existent-node" in result.output or "Unknown node type" in result.output

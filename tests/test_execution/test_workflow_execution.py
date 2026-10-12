@@ -24,7 +24,7 @@ class TestWorkflowExecution:
             "edges": [],
         }
 
-        with patch("pflow.execution.runner.WorkflowRunner._compile_and_execute") as mock_exec:
+        with patch("pflow.execution.runner.WorkflowRunner._execute") as mock_exec:
             mock_exec.return_value = ExecutionResult(success=True)
             result = WorkflowRunner().run(workflow_ir, {}, RunnerConfig())
             assert result.success is True
@@ -44,7 +44,7 @@ class TestWorkflowExecution:
             "edges": [],
         }
 
-        # Patch compile_workflow where it's imported (lazy import in _compile_and_execute)
+        # Patch compile_workflow where it's imported (lazy import in _compile_for_run)
         with patch("pflow.runtime.compile_workflow") as mock_compile:
             mock_compile.side_effect = CompilationError(
                 message="bad template",
@@ -77,7 +77,7 @@ class TestWorkflowExecution:
             "edges": [],
         }
 
-        with patch("pflow.execution.runner.WorkflowRunner._compile_and_execute") as mock_exec:
+        with patch("pflow.execution.runner.WorkflowRunner._execute") as mock_exec:
             mock_exec.return_value = ExecutionResult(
                 success=False,
                 status=WorkflowStatus.FAILED,

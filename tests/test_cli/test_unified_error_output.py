@@ -287,7 +287,7 @@ class TestStructuredFieldPreservation:
         # Invoke WITHOUT providing the required "data" parameter
         result = runner.invoke(main, ["--output-format", "json", str(tmp_path / "test.pflow.md")])
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         output = _parse_json_output(result)
         assert output["success"] is False
         assert len(output["errors"]) > 0

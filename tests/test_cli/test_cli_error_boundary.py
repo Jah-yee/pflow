@@ -170,7 +170,7 @@ class TestDescribeParseError:
         validate_result = _run_pflow_in_process([str(standalone), "--validate-only"], env)
 
         assert describe_result.exit_code == 1
-        assert validate_result.exit_code == 1
+        assert validate_result.exit_code == 2
         assert logging.getLogger().level == original_root_level
         assert logging.getLogger("pflow").level == original_pflow_level
 

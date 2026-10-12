@@ -191,8 +191,8 @@ def test_dry_run_exits_zero_on_success(tmp_path) -> None:
     assert result.exit_code == 0
 
 
-def test_dry_run_exits_one_on_missing_required_input(tmp_path) -> None:
-    """Planning failures should exit 1."""
+def test_dry_run_exits_two_on_missing_required_input(tmp_path) -> None:
+    """Planning failures exit 2: the run would be refused before it starts."""
     workflow_path = tmp_path / "dry-run-missing-input.pflow.md"
     write_workflow_file(
         {
@@ -207,7 +207,7 @@ def test_dry_run_exits_one_on_missing_required_input(tmp_path) -> None:
 
     result = invoke_cli(["--dry-run", str(workflow_path)])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
 
 
 def test_dry_run_rejects_agent_invalid_schema_before_plan(tmp_path) -> None:
@@ -223,7 +223,7 @@ def test_dry_run_rejects_agent_invalid_schema_before_plan(tmp_path) -> None:
 
     result = invoke_cli(["--dry-run", str(workflow_path)])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "top-level type: object" in result.stderr
 
 
@@ -247,7 +247,7 @@ def test_validation_modes_reject_literal_invalid_llm_schema_before_dispatch(tmp_
     with patch("pflow.nodes.llm.llm.complete") as mock_complete:
         result = invoke_cli([*mode, str(workflow_path)])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Invalid output_schema" in result.output + result.stderr
     mock_complete.assert_not_called()
 
@@ -283,8 +283,8 @@ def test_dry_run_codex_with_unpriced_model_degrades_to_unknown_cost(tmp_path) ->
     assert "1 agent" in result.output
 
 
-def test_dry_run_exits_one_when_plan_contains_error_diagnostic(tmp_path) -> None:
-    """Plans that build but carry an ERROR-severity diagnostic must exit 1.
+def test_dry_run_exits_two_when_plan_contains_error_diagnostic(tmp_path) -> None:
+    """Plans that build but carry an ERROR-severity diagnostic must exit 2.
 
     Mirrors `validate()`'s `len(errors) == 0` convention — any ERROR-severity
     diagnostic (template_error, sub-workflow compile failure, etc.) is
@@ -334,14 +334,14 @@ def test_dry_run_exits_one_when_plan_contains_error_diagnostic(tmp_path) -> None
     with patch("pflow.execution.runner.WorkflowRunner.plan", return_value=error_plan):
         result = invoke_cli(["--dry-run", str(workflow_path)])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
 
 
-def test_dry_run_circular_subworkflow_exits_one(tmp_path) -> None:
-    """Broken sub-workflow topology (cycle) must exit 1.
+def test_dry_run_circular_subworkflow_exits_two(tmp_path) -> None:
+    """Broken sub-workflow topology (cycle) must exit 2.
 
     Before the severity fix, `_sub_workflow_error_entry` emitted WARNING
-    and `_display_plan_result` only exits 1 on ERROR — so cycles, max-depth,
+    and `_display_plan_result` only exits 2 on ERROR — so cycles, max-depth,
     unresolvable refs, and bad `inputs:` shapes all silently exited 0.
     Agents cost-gating via `exit != 0` missed these broken workflows.
 
@@ -362,8 +362,8 @@ def test_dry_run_circular_subworkflow_exits_one(tmp_path) -> None:
 
     result = invoke_cli(["--dry-run", str(parent_path)])
 
-    assert result.exit_code == 1, (
-        f"Circular sub-workflow should exit 1 (was 0 before the severity fix). Output: {result.output}"
+    assert result.exit_code == 2, (
+        f"Circular sub-workflow should exit 2 (was 0 before the severity fix). Output: {result.output}"
     )
 
 
@@ -391,7 +391,7 @@ def test_dry_run_text_output_contains_boundary_divider(tmp_path) -> None:
     assert "─── nothing cached — full run ───" in result.output
 
 
-def test_dry_run_plus_validate_only_exits_one_with_clear_error(tmp_path) -> None:
+def test_dry_run_plus_validate_only_exits_two_with_clear_error(tmp_path) -> None:
     """--dry-run and --validate-only are mutually exclusive."""
     workflow_path = tmp_path / "dry-run-conflict.pflow.md"
     write_workflow_file(
@@ -404,14 +404,14 @@ def test_dry_run_plus_validate_only_exits_one_with_clear_error(tmp_path) -> None
 
     result = invoke_cli(["--dry-run", "--validate-only", str(workflow_path)])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     # Error messages go to stderr per pflow's convention — tightening the
     # assertion to stderr-only catches regressions where the message
     # accidentally lands on stdout (would break `pflow ... -f json 2>/dev/null`).
     assert "Cannot combine --dry-run and --validate-only" in result.stderr
 
 
-def test_dry_run_plus_report_exits_one_with_clear_error(tmp_path) -> None:
+def test_dry_run_plus_report_exits_two_with_clear_error(tmp_path) -> None:
     """--dry-run and --report are mutually exclusive."""
     workflow_path = tmp_path / "dry-run-report.pflow.md"
     write_workflow_file(
@@ -424,7 +424,7 @@ def test_dry_run_plus_report_exits_one_with_clear_error(tmp_path) -> None:
 
     result = invoke_cli(["--dry-run", "--report", str(workflow_path)])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Cannot combine --dry-run and --report" in result.stderr
 
 
@@ -501,7 +501,7 @@ def test_dry_run_only_without_prior_run_errors(tmp_path) -> None:
 
     result = invoke_cli(["--dry-run", "--output-format", "json", "--only", "b", str(workflow_path)])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     payload = json.loads(result.output)
     messages = " ".join(d.get("message", "") for d in payload.get("diagnostics", []))
     assert "needs a prior full run" in messages

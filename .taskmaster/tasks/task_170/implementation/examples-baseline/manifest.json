@@ -150,13 +150,13 @@
   {
     "example": "examples/invalid/code-annotation-type-mismatch.pflow.md",
     "params": {},
-    "exit_code": 1,
+    "exit_code": 2,
     "output": "invalid__code-annotation-type-mismatch.json"
   },
   {
     "example": "examples/invalid/code-missing-result-annotation.pflow.md",
     "params": {},
-    "exit_code": 1,
+    "exit_code": 2,
     "output": "invalid__code-missing-result-annotation.json"
   },
   {

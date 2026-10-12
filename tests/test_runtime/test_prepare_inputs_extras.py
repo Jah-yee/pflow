@@ -276,7 +276,7 @@ The output.
         )
         _skip_uv_sandbox_panic(result)
 
-        assert result.returncode == 1, f"expected exit 1, got {result.returncode}\nstderr: {result.stderr!r}"
+        assert result.returncode == 2, f"expected exit 2, got {result.returncode}\nstderr: {result.stderr!r}"
         assert "Traceback" not in result.stderr
         assert "Unknown input 'lyric'" in result.stderr
         assert "Did you mean 'lyrics'?" in result.stderr

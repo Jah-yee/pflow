@@ -115,7 +115,7 @@ class TestDualModeStdinBehavior:
         result = runner.invoke(main, ["nonexistent-test-workflow-xyz123"], input="This is data, not workflow")
 
         # With new system, non-existent workflow names will fail
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "not found" in result.output.lower()
 
     def test_plain_text_stdin_without_workflow_shows_clear_error(self):
@@ -148,7 +148,7 @@ class TestDualModeStdinBehavior:
         runner = CliRunner()
         result = runner.invoke(main, ["something", "from", "args"])
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "Invalid input" in result.output or "must be quoted" in result.output
 
     def test_empty_stdin_falls_back_to_args(self):
@@ -160,7 +160,7 @@ class TestDualModeStdinBehavior:
         result = runner.invoke(main, ["nonexistent-empty-test-abc789"], input="")
 
         # With new system, non-existent workflow names will fail
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "not found" in result.output.lower()
 
     @patch("pflow.core.shell_integration.stdin_has_data", return_value=True)
@@ -192,7 +192,7 @@ class TestDualModeStdinBehavior:
         result = runner.invoke(main, [str(workflow_file)], input="piped data")
 
         # Should fail with helpful error message
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         # The remedy names the `.pflow.md` bullet the author types, never JSON-key syntax (#700's class)
         assert "add `- stdin: true` to one input declaration" in result.output
         assert '"stdin": true' not in result.output
@@ -221,7 +221,7 @@ class TestDualModeStdinBehavior:
         result = runner.invoke(main, [str(workflow_file)])
 
         # Should fail validation
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         # Error should mention both input names
         assert "input_a" in result.output
         assert "input_b" in result.output
@@ -293,7 +293,7 @@ class TestDualModeStdinBehavior:
         result = runner.invoke(main, [str(workflow_file)], input="")
 
         # Should fail with "requires input" error (empty stdin = no stdin)
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "data" in result.output.lower()  # Missing required input 'data'
 
 
@@ -717,7 +717,7 @@ class TestWorkflowChaining:
         )
 
         _skip_uv_sandbox_panic(result)
-        assert result.returncode == 1, f"Should fail: stdout={result.stdout}, stderr={result.stderr}"
+        assert result.returncode == 2, f"Should fail: stdout={result.stdout}, stderr={result.stderr}"
         assert "empty" in result.stderr.lower()
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Unix pipe test")
@@ -785,7 +785,7 @@ class TestJSONOutputFormat:
         runner = CliRunner(mix_stderr=False)
         result = runner.invoke(main, ["--output-format", "json", str(workflow_file)], input="piped data")
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         # Output should be valid JSON
         output = json.loads(result.stdout)
         assert output["success"] is False
@@ -812,7 +812,7 @@ class TestJSONOutputFormat:
         runner = CliRunner()
         result = runner.invoke(main, [str(workflow_file)], input="piped data")
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         # Output should be plain text error
         assert "stdin" in result.output.lower()
         # Should NOT be valid JSON
@@ -843,7 +843,7 @@ class TestJSONOutputFormat:
         runner = CliRunner(mix_stderr=False)
         result = runner.invoke(main, ["--output-format", "json", str(workflow_file)], input="piped data")
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         # Output should be valid JSON
         output = json.loads(result.stdout)
         assert output["success"] is False
@@ -881,7 +881,7 @@ class TestJSONOutputFormat:
         runner = CliRunner()
         result = runner.invoke(main, [str(workflow_file)], input="piped data")
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         # Output should be plain text with emoji and structure
         assert "❌" in result.output
         assert "Multiple inputs" in result.output or "stdin" in result.output.lower()

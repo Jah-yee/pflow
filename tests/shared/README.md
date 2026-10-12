@@ -69,7 +69,7 @@ write_workflow_file(ir_dict, tmp_path / "workflow.pflow.md")
 
 ### engine_utils.py
 
-Provides `compile_and_run()` — the standard pattern for compiling IR, seeding the shared store, and executing via `WorkflowEngine`. Matches the production path in `WorkflowRunner._compile_and_execute()`.
+Provides `compile_and_run()` — the standard pattern for compiling IR, seeding the shared store, and executing via `WorkflowEngine`. Matches the production path in `WorkflowRunner._compile_for_run()` + `_execute()`.
 
 #### Key Function:
 

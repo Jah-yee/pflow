@@ -614,7 +614,7 @@ class TestCompileTimeFailureCarriesIdentity:
     def test_json(self, home: Path, tmp_path: Path) -> None:
         result, document = _json(_write(tmp_path, "needs", _REQUIRED_INPUT))
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert document["status"] == "failed"
         assert "topic" in document["error"]
         assert document.keys() >= IDENTITY_KEYS
@@ -623,7 +623,7 @@ class TestCompileTimeFailureCarriesIdentity:
     def test_text_names_the_trace_once(self, home: Path, tmp_path: Path) -> None:
         result = _invoke(_write(tmp_path, "needs", _REQUIRED_INPUT))
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert result.stderr.count("Workflow trace saved:") == 1
 
 
@@ -673,3 +673,122 @@ class TestADenialRendersNoAnswer:
         assert "To approve this and every remaining iteration" not in denied.stderr
         assert "Loop iteration" not in denied.stderr
         assert marker.read_text(encoding="utf-8").splitlines() == ["effect 1"]
+
+
+# The issue's repro (#815): a step that prints a verdict and exits 3.
+_EXIT_3 = """# Exit 3
+
+A step that reports a failure and exits 3.
+
+## Steps
+
+### check
+
+Report and fail.
+
+- type: shell
+
+```shell command
+echo '{"ok": false}'; echo "the reason" >&2; exit 3
+```
+"""
+
+_CHILD_NEEDS_A_NUMBER = """# Child
+
+Needs a number.
+
+## Inputs
+
+### n
+
+A number.
+
+- type: number
+- required: true
+
+## Steps
+
+### show
+
+Show it.
+
+- type: shell
+- env: { N: "${n}" }
+
+```shell command
+echo "$N"
+```
+"""
+
+# The child's input check fails at RUN time (the value comes from a step): a validation-category
+# error inside a run that started.
+_PARENT_PASSES_TEXT = """# Parent
+
+Passes text where the child wants a number.
+
+## Steps
+
+### make
+
+Emit text.
+
+- type: shell
+
+```shell command
+echo not-a-number
+```
+
+### call
+
+Call the child.
+
+- type: workflow
+- workflow: {child}
+- inputs: {{ n: "${{make.stdout}}" }}
+"""
+
+
+class TestTheExitCodeSaysWhetherTheRunStarted:
+    """#815: a wrong call exits 2 and a failed job exits 1 — decided by phase, never by category."""
+
+    def test_a_failed_step_exits_1_and_a_missing_input_exits_2_with_the_same_document_shape(
+        self, home: Path, tmp_path: Path
+    ) -> None:
+        failed, failed_doc = _json(_write(tmp_path, "exit3", _EXIT_3))
+        refused, refused_doc = _json(_write(tmp_path, "needs", _REQUIRED_INPUT))
+
+        assert failed.exit_code == 1, failed.stderr
+        assert refused.exit_code == 2, refused.stderr
+        assert failed_doc["status"] == refused_doc["status"] == "failed"
+        assert failed_doc["success"] is refused_doc["success"] is False
+
+    def test_a_validation_error_raised_while_the_run_is_going_is_a_run_failure(
+        self, home: Path, tmp_path: Path
+    ) -> None:
+        child = _write(tmp_path, "child", _CHILD_NEEDS_A_NUMBER)
+        parent = _write(tmp_path, "parent", _PARENT_PASSES_TEXT.format(child=child))
+
+        result, document = _json(parent)
+
+        assert result.exit_code == 1, result.stderr
+        assert document["errors"][0]["context"]["category"] == "validation"
+        assert [(step["node_id"], step["status"]) for step in document["execution"]["steps"]] == [
+            ("make", "completed"),
+            ("call", "failed"),
+        ]
+
+    def test_an_unknown_only_target_is_a_wrong_call(self, home: Path, tmp_path: Path) -> None:
+        workflow = _write(tmp_path, "ok", _OK)
+        assert _invoke(workflow).exit_code == 0
+
+        result = _invoke("--only", "nosuch", workflow)
+
+        assert result.exit_code == 2
+        assert "Node 'nosuch' not found" in result.stderr
+
+    def test_only_without_a_snapshot_is_a_run_failure(self, home: Path, tmp_path: Path) -> None:
+        """The snapshot is loaded inside the engine, so this stays exit 1 (documented in the table)."""
+        result = _invoke("--only", "two", _write(tmp_path, "never-ran", _OK))
+
+        assert result.exit_code == 1
+        assert "needs a prior full run" in result.stderr

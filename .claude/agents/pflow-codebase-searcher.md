@@ -161,7 +161,7 @@ These are search surprises — where a thing lives can differ from where you'd e
 | When MCP tools get discovered | Only `pflow mcp add` (the servers it saved) and `pflow mcp sync`, both in `cli/commands/mcp.py` — workflow runs never sync |
 | Two-tier exception hierarchy | `core/exceptions.py` (internal `PflowError` tree) + `core/user_errors.py` (`UserFriendlyError` branch) |
 | Output routing files | `core/output_controller.py`, `cli/workflow_output.py` (a successful run's stdout data), `cli/error_output.py` (failures with no run), `runtime/output_resolver.py` |
-| How a run's ending is reported (JSON document, CLI stderr summary, MCP text, exit code) | `execution/formatters/run_outcome.py` — `build_run_outcome` (the one document, every status), `render_cli_stderr`, `render_mcp_text`, `EXIT_CODES`; wired in `cli/commands/run.py::_display_execution_result` and `mcp_server/services/execution_service.py::execute_workflow` |
+| How a run's ending is reported (JSON document, CLI stderr summary, MCP text, exit code) | `execution/formatters/run_outcome.py` — `build_run_outcome` (the one document, every status), `render_cli_stderr`, `render_mcp_text`, `EXIT_CODES` + `EXIT_REJECTED` (exit 2: the run never started — `ExecutionResult.engine_started`); wired in `cli/commands/run.py::_display_execution_result` and `mcp_server/services/execution_service.py::execute_workflow` |
 | LLM seam | `core/llm_client.py` (LiteLLM adapter, `complete()`) + `core/llm_config.py` (model resolution). Replaced Simon Willison's `llm` library in Task 158. |
 | Skill management split | `core/workflow/skill_service.py` (logic) + `cli/commands/skills.py` (CLI) |
 | Workflow save (shared CLI+MCP) | `core/workflow/save_service.py` |

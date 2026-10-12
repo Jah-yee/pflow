@@ -351,13 +351,18 @@ Suppresses the "Workflow output:" header, the execution summary, warnings, and t
 
 ## Exit codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Workflow completed, including runs that completed with warnings (`status: "degraded"`) |
-| `1` | Workflow failed |
-| `3` | Denied at an approval gate — a human said no; nothing after the gate ran |
-| `4` | Paused at an approval gate — answer with the resume token on stdout |
-| `130` | Workflow interrupted |
+The exit code tells a wrong call apart from a failed job. The difference is whether the run started, not what kind of error it was.
+
+| Code | Meaning | What to do |
+|------|---------|------------|
+| `0` | Workflow completed, including runs that completed with warnings (`status: "degraded"`) | — |
+| `1` | The run started and failed: a step failed (a shell exit code, an HTTP error, a raised exception), an output could not resolve, a sub-workflow refused a value at run time, or `--only` found no earlier full run to restore from | Read the errors; fix the step or its data, or `pflow resume` |
+| `2` | The call was refused before the run started: the workflow file or name did not resolve, an unknown or misplaced flag, a missing or mistyped input, a validation or compile error, an unknown `--only` step, a `--validate-only` or `--dry-run` that found errors, or a `pflow resume` that was refused | Fix the call or the workflow, then run again. Nothing ran |
+| `3` | Denied at an approval gate — a human said no; nothing after the gate ran | — |
+| `4` | Paused at an approval gate — answer with the resume token on stdout | `pflow resume <token> --approve yes\|no` |
+| `130` | Workflow interrupted | — |
+
+Exit `2` is also what pflow's argument parser returns for a bad option value (`--output-format xml`), so one code means "the call was wrong" whichever layer caught it. With `--output-format json`, a refused run and a failed run print the same document (`status: "failed"`); only the exit code tells them apart. Declining the confirmation prompt of `pflow resume` exits `1`.
 
 Runtime warnings remain visible in stderr, JSON output, traces, and reports; they do not make a completed workflow a process failure.
 
@@ -370,7 +375,7 @@ pflow --validate-only workflow.pflow.md
 pflow --validate-only my-saved-workflow
 ```
 
-Agents use this to check workflows before running them — pflow catches template errors, type mismatches, and missing inputs during validation, so problems surface immediately instead of after step 5 fails. Exit code 0 means valid.
+Agents use this to check workflows before running them — pflow catches template errors, type mismatches, and missing inputs during validation, so problems surface immediately instead of after step 5 fails. Exit code 0 means valid; 2 means the run would be refused (see [Exit codes](#exit-codes)).
 
 ## Dry-run mode
 
@@ -435,13 +440,13 @@ Agents cost-gating on `estimated_cost_usd` should check `opaque_count == 0` and 
 
 | Flag | With `--dry-run` |
 |------|------------------|
-| `--validate-only` | Rejected with exit 1 — different audiences, different exit contracts |
-| `--report`, `--report-dir` | Rejected with exit 1 — no execution means no report |
+| `--validate-only` | Rejected with exit 2 — different audiences, different exit contracts |
+| `--report`, `--report-dir` | Rejected with exit 2 — no execution means no report |
 | `--no-cache` | Every node shows as would-execute |
 | `--only NODE` | Plan stops at the named node |
 | `--no-trace`, `-p`, `-o` | Accepted silently — dry-run writes no traces, and the plan itself is the result |
 
-Exit 0 on a successful plan, 1 on planner-level failures (missing input, compile error, unresolvable sub-workflow, cycle, max depth exceeded).
+Exit 0 on a successful plan, 2 on planner-level failures (missing input, compile error, unresolvable sub-workflow, cycle, max depth exceeded) — the run would be refused.
 
 ## Iteration and caching
 

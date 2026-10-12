@@ -236,7 +236,7 @@ def test_approve_no_denies_cleanly_and_double_deny_is_superseded(home, gate_wf):
     assert "gated action" not in denied.stdout
 
     again = _runner().invoke(cli, ["resume", token, "--approve", "no"])
-    assert again.exit_code == 1
+    assert again.exit_code == 2
     assert "already resumed by a newer attempt" in again.stdout + again.stderr
 
 
@@ -245,7 +245,7 @@ def test_paused_resume_without_answer_renders_gate_and_exact_command(home, gate_
     (secret-masked) approval preview + the exact kind-correct command."""
     token = _pause(gate_wf)
     result = _runner().invoke(cli, ["resume", token])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     combined = result.stdout + result.stderr
     assert "needs an answer" in combined
     assert "gated action" in combined  # the preview content
@@ -257,7 +257,7 @@ def test_paused_resume_without_answer_renders_gate_and_exact_command(home, gate_
 def test_choose_on_approval_refuses_with_the_right_flag(home, gate_wf):
     token = _pause(gate_wf)
     result = _runner().invoke(cli, ["resume", token, "--choose", "2"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--approve yes|no" in result.stdout + result.stderr
 
 
@@ -280,7 +280,7 @@ def test_dry_run_without_answer_on_paused_requires_the_answer(home, gate_wf):
     unknowable, so the answer requirement applies to previews too."""
     token = _pause(gate_wf)
     result = _runner().invoke(cli, ["resume", token, "--dry-run"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "needs an answer" in result.stdout + result.stderr
 
 
@@ -318,7 +318,7 @@ def test_editing_the_approved_step_refuses_and_force_proceeds(home, gate_wf):
     token = _pause(gate_wf)
     gate_wf.write_text(gate_wf.read_text(encoding="utf-8").replace("gated action", "gated action v2"), "utf-8")
     refused = _runner().invoke(cli, ["resume", token, "--approve", "yes"])
-    assert refused.exit_code == 1
+    assert refused.exit_code == 2
     combined = refused.stdout + refused.stderr
     assert "'gated' was edited after it was approved — the approval covered the earlier version." in combined
     assert "Resuming would run the edited 'gated' under that earlier approval." in combined
@@ -345,7 +345,7 @@ def test_editing_a_step_before_the_paused_gate_refuses_naming_it(home, gate_wf):
     token = _pause(gate_wf)
     gate_wf.write_text(gate_wf.read_text(encoding="utf-8").replace('"g1-value"', '"g1-value-2"'), "utf-8")
     refused = _runner().invoke(cli, ["resume", token, "--approve", "yes"])
-    assert refused.exit_code == 1
+    assert refused.exit_code == 2
     combined = refused.stdout + refused.stderr
     # Neutral wording ("original run") — a paused run was not a failure (Task 171).
     assert "Workflow changed since the original run" in combined
@@ -447,7 +447,7 @@ def test_multiple_gates_chain_pauses_again_and_supersedes(home, tmp_path):
     assert "Paused at 'second'" in paused_again.stdout
 
     stale = _runner().invoke(cli, ["resume", token_a, "--approve", "yes"])
-    assert stale.exit_code == 1
+    assert stale.exit_code == 2
     assert "already resumed by a newer attempt" in stale.stdout + stale.stderr
 
     done = _runner().invoke(cli, ["resume", token_b, "--approve", "yes"])
@@ -539,7 +539,7 @@ def test_approve_yes_on_loop_gate_pauses_each_iteration_until_done(home, loop_ga
     assert len(set(tokens)) == 3
     for stale in tokens:
         refused = _runner().invoke(cli, ["resume", stale, "--approve", "yes"])
-        assert refused.exit_code == 1
+        assert refused.exit_code == 2
         assert "already resumed by a newer attempt" in refused.stdout + refused.stderr
     assert _effects(marker) == ["effect 1", "effect 2", "effect 3"]
 
@@ -564,7 +564,7 @@ def test_loop_gate_position_reaches_every_pause_surface(home, loop_gate):
     assert [(row["execution_id"], row["iteration"], row["max_iterations"]) for row in rows] == [(token, 2, 3)]
 
     unanswered = _runner().invoke(cli, ["resume", token])
-    assert unanswered.exit_code == 1
+    assert unanswered.exit_code == 2
     combined = unanswered.stdout + unanswered.stderr
     assert "  Loop iteration 2 of up to 3\n" in combined
     assert f"pflow resume {token} --approve yes|no" in combined
@@ -901,7 +901,7 @@ def test_editing_the_paused_escalation_step_refuses(home, esc_wf):
     token = _pause(esc_wf)
     esc_wf.write_text(esc_wf.read_text(encoding="utf-8").replace("pick a or b", "pick c or d"), "utf-8")
     refused = _runner().invoke(cli, ["resume", token, "--choose", "1"])
-    assert refused.exit_code == 1
+    assert refused.exit_code == 2
     combined = refused.stdout + refused.stderr
     assert "'esc' was edited. Resume re-runs nothing up to and including 'esc'" in combined
 
@@ -926,7 +926,7 @@ def test_a_step_inserted_after_the_escalation_refuses_without_claiming_a_skip(ho
         "utf-8",
     )
     refused = _runner().invoke(cli, ["resume", token, "--choose", "1"])
-    assert refused.exit_code == 1
+    assert refused.exit_code == 2
     combined = refused.stdout + refused.stderr
     assert "'esc' now continues to 'check' instead of 'after'." in combined
     assert "Resume would continue at 'check' with the saved outputs up to and including 'esc'." in combined
@@ -936,7 +936,7 @@ def test_a_step_inserted_after_the_escalation_refuses_without_claiming_a_skip(ho
 def test_approve_on_escalation_refuses_with_the_right_flag(home, esc_wf):
     token = _pause(esc_wf)
     result = _runner().invoke(cli, ["resume", token, "--approve", "yes"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--choose" in result.stdout + result.stderr
 
 
@@ -992,7 +992,7 @@ def test_restored_only_paused_attempt_supersedes_its_source(home, tmp_path, esca
     assert "Paused at 'gated'" in paused_b.stdout
 
     forked = _runner().invoke(cli, ["resume", token_a, "--choose", "1"])
-    assert forked.exit_code == 1
+    assert forked.exit_code == 2
     assert "already resumed by a newer attempt" in forked.stdout + forked.stderr
 
     done = _runner().invoke(cli, ["resume", token_b, "--approve", "yes"])
@@ -1016,7 +1016,7 @@ def test_escalation_on_edited_final_step_gets_paused_specific_refusal(home, tmp_
         encoding="utf-8",
     )
     result = _runner().invoke(cli, ["resume", token, "--choose", "1", "--force"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     combined = result.stdout + result.stderr
     assert "was the final step" in combined
     assert "its answer has nothing left to run" in combined

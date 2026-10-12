@@ -111,6 +111,9 @@ class ExecutionResult:
     diagnostics: list[Diagnostic] = field(default_factory=list)
     trace: Any | None = None  # WorkflowTraceCollector | None
     metrics: Any | None = None  # MetricsCollector | None
+    # False when the run failed before the engine started (resolution, validation, inputs,
+    # compilation, the --only target): the call or the workflow is wrong, no step ran.
+    engine_started: bool = True
 
     @property
     def errors(self) -> list[Diagnostic]:

@@ -37,6 +37,8 @@ from .workflow_resolver import resolve_workflow
 
 if TYPE_CHECKING:
     from pflow.core.param_coercion import InputSource
+    from pflow.runtime.engine import WorkflowEngine
+    from pflow.runtime.engine.types import CompiledWorkflow
     from pflow.runtime.resume_source import ResumeSource
 
 logger = logging.getLogger(__name__)
@@ -184,6 +186,9 @@ class WorkflowRunner:
         metrics_collector = None
         validation_warnings: list[Diagnostic] = []
         start_time = time.perf_counter()
+        # The run's phase: False until the engine is handed the compiled workflow. A failure before
+        # that (resolution, validation, inputs, compilation, the --only target) is a wrong call.
+        engine_started = False
 
         try:
             # Resolve, validate, prepare
@@ -236,17 +241,12 @@ class WorkflowRunner:
             mcp_pool = MCPConnectionPool()
             cache = MemoizationCache(read_enabled=config.cache_enabled)
 
-            # Compile, execute, build result
-            result = self._compile_and_execute(
+            compiled, shared_store, engine = self._compile_for_run(
                 resolved,
                 params,
                 config,
                 progress_callback,
                 gate_resolver,
-                workflow_manager,
-                workflow_name,
-                validation_warnings,
-                start_time,
                 metrics_collector,
                 trace_collector,
                 mcp_pool,
@@ -254,7 +254,19 @@ class WorkflowRunner:
                 resume_source,
                 input_sources,
             )
-            return result
+            engine_started = True
+            return self._execute(
+                engine,
+                compiled,
+                shared_store,
+                params,
+                workflow_manager,
+                workflow_name,
+                validation_warnings,
+                start_time,
+                metrics_collector,
+                trace_collector,
+            )
 
         except (KeyboardInterrupt, SystemExit):
             raise
@@ -267,6 +279,7 @@ class WorkflowRunner:
                 validation_warnings,
                 trace_enabled=config.trace_enabled,
                 metrics_collector=metrics_collector,
+                engine_started=engine_started,
             )
 
         finally:
@@ -316,32 +329,29 @@ class WorkflowRunner:
 
         return resolved
 
-    def _compile_and_execute(
+    def _compile_for_run(
         self,
         resolved: ResolvedWorkflow,
         params: dict[str, Any],
         config: RunnerConfig,
         progress_callback: Callable | None,
         gate_resolver: Callable | None,
-        workflow_manager: WorkflowManager | None,
-        workflow_name: str | None,
-        validation_warnings: list[Diagnostic],
-        start_time: float,
         metrics_collector: Any,
         trace_collector: Any,
         mcp_pool: Any,
         cache: Any,
-        resume_source: "ResumeSource | None" = None,
-        input_sources: "Mapping[str, InputSource] | None" = None,
-    ) -> ExecutionResult:
-        """Compile IR, execute flow, build result.
+        resume_source: "ResumeSource | None",
+        input_sources: "Mapping[str, InputSource] | None",
+    ) -> "tuple[CompiledWorkflow, dict[str, Any], WorkflowEngine]":
+        """Compile the IR, seed the shared store and build the engine — everything before the run.
 
-        Resources (metrics, trace, mcp_pool, cache) are created by the caller
-        and passed in so the caller's finally block can clean them up even if
+        Returns ``(compiled, shared_store, engine)``. Resources (metrics, trace, mcp_pool, cache) are
+        created by the caller and passed in so the caller's finally block can clean them up even if
         this method raises.
         """
         from pflow.registry import Registry
         from pflow.runtime import WorkflowEngine, compile_workflow
+        from pflow.runtime.engine.engine import validate_only_target
 
         # Strip validation placeholders BEFORE seeding shared store — a KeyError
         # on direct shared["input"] access is more honest than a placeholder string.
@@ -403,7 +413,25 @@ class WorkflowRunner:
             workflow_path=_workflow_path_id(resolved),
             **_resume_kwargs(resume_source),
         )
+        # An unknown --only target is a wrong call: reject it here, before the run, as the planner
+        # does. The engine re-checks it (its backstop for direct callers).
+        validate_only_target(workflow, config.only_node)
+        return workflow, shared_store, engine
 
+    def _execute(
+        self,
+        engine: "WorkflowEngine",
+        workflow: "CompiledWorkflow",
+        shared_store: dict[str, Any],
+        params: dict[str, Any],
+        workflow_manager: WorkflowManager | None,
+        workflow_name: str | None,
+        validation_warnings: list[Diagnostic],
+        start_time: float,
+        metrics_collector: Any,
+        trace_collector: Any,
+    ) -> ExecutionResult:
+        """Run the compiled workflow on the engine and build its result."""
         try:
             action_result = engine.run(workflow, shared_store)
         except Exception as e:
@@ -879,11 +907,12 @@ class WorkflowRunner:
         *,
         trace_enabled: bool = True,
         metrics_collector: Any,
+        engine_started: bool,
     ) -> ExecutionResult:
         """Convert any exception to ExecutionResult.
 
         If the exception was annotated with ``_pflow_shared_store`` (by the
-        engine's exception handler in ``_compile_and_execute``), the rich
+        engine's exception handler in ``_execute``), the rich
         shared store — including ``__failures__``, per-node outputs, and
         batch metadata — is surfaced via ``ExecutionResult.shared_after``.
         Without this, CLI/MCP formatters lose all failure detail on
@@ -956,6 +985,7 @@ class WorkflowRunner:
             trace=trace_collector,
             metrics=metrics_collector,
             diagnostics=diagnostics,
+            engine_started=engine_started,
         )
 
     def _cleanup(self, mcp_pool: Any, trace_collector: Any, metrics_collector: Any) -> None:
