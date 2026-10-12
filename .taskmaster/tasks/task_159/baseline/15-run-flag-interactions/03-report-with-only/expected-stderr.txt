@@ -2,7 +2,6 @@ Executing workflow (2 nodes):
   first... ✓ <DURATION>
 
 ✓ Workflow completed in <DURATION>
-
   ⤷ Ran only 'first' (--only), 1 other node not executed
 
 Workflow trace saved: <BASELINE_CASE_DIR>/.run-home/.pflow/debug/workflow-trace-<HASH>-<TIMESTAMP>.json

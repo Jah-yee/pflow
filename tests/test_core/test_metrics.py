@@ -82,7 +82,7 @@ class TestMetricsCollector:
 
         # Check workflow metrics
         workflow_metrics = summary["metrics"]["workflow"]
-        assert workflow_metrics["nodes_executed"] == 2
+        assert "nodes_executed" not in workflow_metrics  # the Run outcome's execution.nodes_executed is the one count
         assert workflow_metrics["duration_ms"] > 0
         assert workflow_metrics["node_timings"] == {"node1": 10.5, "node2": 20.3}
 

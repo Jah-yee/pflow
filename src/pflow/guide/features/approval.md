@@ -9,7 +9,7 @@ Two gate kinds, one primitive (the run pauses, a human decides, the run continue
 | Declared by | the workflow author (`approval: required`) | raised by an agent step at runtime |
 | Human sees | the step's **resolved** params — what is about to happen | a question + options + the agent's recommendation |
 | Human answers | yes / no | picks an option or types an answer |
-| On "no" | run stops cleanly (exit 3) — not a failure | n/a — an escalation is a choice, not a veto |
+| On "no" | run stops cleanly: exit 3, `status: denied` (not `failed`) | n/a — an escalation is a choice, not a veto |
 
 ## Declaring an approval gate
 

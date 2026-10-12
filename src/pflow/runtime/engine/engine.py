@@ -872,8 +872,7 @@ class WorkflowEngine:
         # Write-back form (not .pop()) because shared may be a
         # NamespacedSharedStore (sub-workflow path) which doesn't implement
         # pop. All consumers of __trace_collector__ use .get() (verified by
-        # grep — runner.py, success_formatter.py, error_formatter.py,
-        # cli/error_output.py, workflow_executor.py), so writing None back
+        # grep — runner.py, nodes/llm/llm.py, workflow_executor.py), so writing None back
         # when the key was originally absent is indistinguishable from
         # absence to every reader.
         # Task 159 B3.2: install per-workflow CacheRenderContext map. Always

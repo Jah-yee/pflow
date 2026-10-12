@@ -97,7 +97,7 @@ An [approval gate](/how-it-works/approval-gates) reached in a non-interactive ru
 Paused at 'notify-slack'. Resume token: 7a9e4afb-2095-447e-8043-0660438104f9 (exit 4)
 ```
 
-The gate's content follows on stderr — an approval's resolved preview, or an escalation's question, options, and recommendation — so a calling process can compose the answer from the output alone. With `--output-format json`, the paused document carries `status: "paused"`, `execution_id`, `paused_node_id`, `gate_request`, `resume_command`, an empty `errors`, and the run's `diagnostics` (same entry shape as a run's result document).
+The gate's content follows on stderr — an approval's resolved preview, or an escalation's question, options, and recommendation — so a calling process can compose the answer from the output alone. With `--output-format json`, the paused run prints the same document every run ending prints (see [JSON mode](#json-mode)) with `status: "paused"`, an empty `errors`, `gate` (the gated step's `node_id` and its content) and `resume_command` — the exact answer command.
 
 Answer it later — hours or days on — and the run continues from the gated step without re-running anything upstream:
 
@@ -241,86 +241,78 @@ Structured output on stdout for machine parsing:
 pflow --output-format json workflow.pflow.md
 ```
 
-All workflow results, metrics, and errors serialize to a single JSON object on stdout. Progress and execution summary go to stderr (suppressed with `-p`).
+Every way a run ends — success, failure, a paused gate, a denied gate — prints one document with one shape on stdout; `status` says which. Progress and the execution summary go to stderr (suppressed with `-p`, which never changes the document).
 
 <Expandable title="JSON output structure">
 
-**Success response:**
+**Success:**
 
 ```json
 {
   "success": true,
-  "result": {
-    "summary": "Analysis complete",
-    "count": 42
-  },
-  "duration_ms": 456.78,
-  "total_cost_usd": 0.02,
-  "nodes_executed": 3,
-  "execution": {
-    "duration_ms": 456.78,
-    "nodes_executed": 3,
-    "nodes_total": 3,
-    "cache_hits": 2,
-    "steps": [
-      {
-        "node_id": "fetch-data",
-        "status": "completed",
-        "duration_ms": 0,
-        "cached": true
-      },
-      {
-        "node_id": "read-data",
-        "status": "completed",
-        "duration_ms": 50.12,
-        "cached": false
-      }
-    ]
-  },
+  "status": "success",
+  "workflow": {"action": "unsaved", "name": "/path/to/report.pflow.md"},
+  "execution_id": "75b7b20d-3513-4ba7-8ac8-21374cb106a6",
+  "trace_path": "/home/you/.pflow/debug/workflow-trace-aa1da5d4-report-20261012-012756-179612.json",
+  "result": {"verdict": "two-value"},
+  "errors": [],
+  "warnings": [],
+  "advisories": [],
+  "diagnostics": [],
+  "duration_ms": 37.8,
+  "total_cost_usd": 0.0,
   "metrics": {
-    "workflow": {
-      "duration_ms": 456.78,
-      "nodes_executed": 3,
-      "nodes_cached": 0
-    },
-    "total": {
-      "duration_ms": 456.78,
-      "total_cost_usd": 0.02,
-      "total_tokens": 1500,
-      "llm_calls": 1
-    }
+    "workflow": {"duration_ms": 34.92, "cost_usd": 0.0, "tokens_total": 0, "models_used": [], "node_timings": {"one": 9.78, "two": 9.03}},
+    "total": {"tokens_total": 0, "total_calls": 0, "cost_usd": 0.0}
+  },
+  "execution": {
+    "duration_ms": 37.8,
+    "nodes_executed": 2,
+    "nodes_total": 2,
+    "steps": [
+      {"node_id": "one", "status": "completed", "duration_ms": 9.78, "cached": false},
+      {"node_id": "two", "status": "completed", "duration_ms": 9.03, "cached": false}
+    ]
   }
 }
 ```
 
-**Error response:**
+**Failure** (the same keys, plus `error` and, when the failed step can be resumed, `resume_command`):
 
 ```json
 {
   "success": false,
   "status": "failed",
-  "error": "HTTP 401",
+  "workflow": {"action": "unsaved", "name": "/path/to/report.pflow.md"},
+  "execution_id": "b1473c07-7a53-41a4-8f47-47d3b0d24c38",
+  "trace_path": "/home/you/.pflow/debug/workflow-trace-863aff80-report-20261012-012756-628402.json",
+  "error": "Command failed with exit code 1: boom",
   "errors": [
     {
       "severity": "error",
-      "message": "HTTP 401",
+      "message": "Command failed with exit code 1: boom",
       "source": "runtime",
       "title": "Execution Failed",
-      "node_id": "fetch-issues",
-      "context": {
-        "category": "execution_failure",
-        "status_code": 401,
-        "raw_response": {"access_token": "<REDACTED>", "error": "bad credentials"},
-        "response_headers": {"Content-Type": "application/json", "Set-Cookie": "<REDACTED>"}
-      }
+      "node_id": "two",
+      "context": {"category": "execution_failure", "shell_command": "echo boom >&2; exit 1", "shell_exit_code": 1, "shell_stderr": "boom"}
     }
   ],
-  "diagnostics": [ ... ],
+  "warnings": [],
+  "advisories": [],
+  "diagnostics": [ "…the errors, then the warnings and advisories…" ],
+  "duration_ms": 29.42,
+  "total_cost_usd": 0.0,
+  "metrics": { "…as on success…" },
   "execution": {
+    "duration_ms": 29.42,
+    "nodes_executed": 1,
+    "nodes_total": 2,
     "steps": [
-      {"node_id": "fetch-issues", "status": "failed", "duration_ms": 120.5}
+      {"node_id": "one", "status": "completed", "duration_ms": 8.15, "cached": false},
+      {"node_id": "two", "status": "failed", "duration_ms": 6.96, "cached": false}
     ]
-  }
+  },
+  "resume_command": "pflow resume b1473c07-7a53-41a4-8f47-47d3b0d24c38"
 }
 ```
 
@@ -328,13 +320,20 @@ All workflow results, metrics, and errors serialize to a single JSON object on s
 
 | Field | Description |
 |-------|-------------|
-| `success` | `true` if workflow completed, `false` if failed |
+| `success` | `true` when the run completed (exit 0, `status` `success` or `degraded`); `false` when it failed, paused or was denied — branch on `status` to tell those apart |
+| `status` | `success`, `degraded` (completed with warnings), `failed`, `paused` or `denied` |
+| `execution_id`, `trace_path` | The run's id and its trace file — present together whenever the trace was written (absent under `--no-trace`). Pass `trace_path` to `pflow report` |
 | `result` | Workflow output (object, string, or array based on declared outputs). On failure, present only when a declared output failed to resolve: it holds the outputs that did |
-| `duration_ms` | Total execution time in milliseconds |
-| `total_cost_usd` | LLM API cost (0.0 if no LLM calls) |
-| `execution.cache_hits` | Number of nodes served from memoization cache |
-| `errors[]` | The failure's error diagnostics: `message`, `title`, `suggestions`, `node_id`, and the details under `context` (e.g. `context.available_fields` — valid fields for a template variable) |
+| `error` | One-line summary of the failure or denial |
+| `errors[]` | The failure's error diagnostics — always a list, empty on success and on a pause: `message`, `title`, `suggestions`, `node_id`, and the details under `context` (e.g. `context.available_fields` — valid fields for a template variable) |
 | `diagnostics[]` / `warnings[]` / `advisories[]` | Every diagnostic, the warnings, and the non-degrading notes — same entry shape as `errors[]` |
+| `duration_ms` | Total execution time in milliseconds (absent when the run failed before it started) |
+| `total_cost_usd` | LLM API cost (0.0 if no LLM calls; `null` when a call's cost is unknown — `pricing_available`/`subscription` say why) |
+| `execution.nodes_executed` | Steps completed in this run — steps restored by a resume or `--only` are not counted |
+| `execution.cache_hits` | Number of nodes served from memoization cache |
+| `execution.resumed_from`, `execution.nodes_restored` | On a resumed run: the run it resumed and how many upstream steps it restored |
+| `gate` | Paused or denied at an approval gate: the gate's `node_id`, `kind` and content (secrets masked) |
+| `resume_command` | The exact next command: `pflow resume <id>` on a resumable failure, the `--approve`/`--choose` answer on a pause |
 
 Values under a sensitive name (`token`, `password`, `authorization`, `cookie`, …) print as `<REDACTED>` at any depth of a diagnostic, in every JSON document — a run's result, a pause, a denial, `--validate-only`, and `--dry-run`. The trace keeps them raw for `pflow resume`; `pflow report` masks them too.
 
@@ -348,7 +347,7 @@ Minimal stderr output when you want the cleanest possible data stream:
 pflow -p workflow.pflow.md | jq '.data'
 ```
 
-Suppresses the "Workflow output:" header, the execution summary, and stderr warnings. Data still goes to stdout (same as default mode). Useful for piping into tools that should only see the result.
+Suppresses the "Workflow output:" header, the execution summary, warnings, and the trace line. What you must act on still prints to stderr: a failure's errors and resume command, a pause's gate and answer command, a denial, and the `⤷` resume/`--only` mode lines. Data still goes to stdout (same as default mode). Useful for piping into tools that should only see the result.
 
 ## Exit codes
 
@@ -356,6 +355,8 @@ Suppresses the "Workflow output:" header, the execution summary, and stderr warn
 |------|---------|
 | `0` | Workflow completed, including runs that completed with warnings (`status: "degraded"`) |
 | `1` | Workflow failed |
+| `3` | Denied at an approval gate — a human said no; nothing after the gate ran |
+| `4` | Paused at an approval gate — answer with the resume token on stdout |
 | `130` | Workflow interrupted |
 
 Runtime warnings remain visible in stderr, JSON output, traces, and reports; they do not make a completed workflow a process failure.

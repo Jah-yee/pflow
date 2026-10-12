@@ -11,14 +11,15 @@ A failed run prints the exact command to use:
 
 ```
 ❌ Workflow failed after 12.4s
-Workflow trace saved: ~/.pflow/debug/workflow-trace-….json
+…the error…
 To resume from the failed step: pflow resume 7a9e4afb-2095-447e-8043-0660438104f9
+Workflow trace saved: ~/.pflow/debug/workflow-trace-….json
 ```
 
-With `--output-format json`, the failure document carries the same target as machine-readable
-fields: `execution_id` and `resume_command`.
+With `--output-format json`, the document names the run (`execution_id`, `trace_path` — on every
+run that wrote a trace) and, when the failed step can be resumed, carries the literal `resume_command`.
 
-Resume restores the already-completed upstream steps' outputs from the saved run (it does **not** re-run them) and continues execution from the failed step onward. The resumed attempt is a **new run with its own trace**, linked to the original run by the `resumed_from` field in its JSON output.
+Resume restores the already-completed upstream steps' outputs from the saved run (it does **not** re-run them) and continues execution from the failed step onward. The resumed attempt is a **new run with its own trace**, linked to the original run by `execution.resumed_from` (with `execution.nodes_restored`) in its JSON output and a `⤷ Resumed from <id> at '<step>'` line on stderr — whatever it ends in: success, failure, a pause or a denial. Its `execution.nodes_executed` counts only the steps it ran.
 
 ## Answering a paused gate
 
@@ -28,7 +29,7 @@ A gate reached in a non-interactive run (a pipe, CI, MCP, the web UI) does not f
 Paused at 'notify-slack'. Resume token: 7a9e4afb-2095-447e-8043-0660438104f9 (exit 4)
 ```
 
-The gate content follows on stderr — an approval gate's resolved preview, or an escalation's question, options, and recommendation — so the answer can be composed from the output alone. With `--output-format json`, the paused document carries `status: "paused"`, `execution_id`, `paused_node_id`, `gate_request`, and `resume_command`.
+The gate content follows on stderr — an approval gate's resolved preview, or an escalation's question, options, and recommendation — so the answer can be composed from the output alone. With `--output-format json`, the paused document carries `status: "paused"`, `execution_id`, `trace_path`, `gate` (the step's `node_id` and the gate content), and `resume_command` (the answer command).
 
 Answer it — hours or days later:
 
