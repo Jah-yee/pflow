@@ -90,17 +90,9 @@ Do NOT proceed until the user confirms the version, warnings (if any), and conte
 
 ### 5. Bump version
 
-Once the user confirms the version (which may differ from the suggested one), update two locations:
-
-**pyproject.toml** — the package version (without `v` prefix):
+Once the user confirms the version (which may differ from the suggested one), update the package version in **pyproject.toml** (without `v` prefix) — the only place it lives; `pflow.get_version()` reads it from the installed metadata:
 ```
 version = "<confirmed-version>"
-```
-
-**src/pflow/cli/main.py** — the hardcoded fallback version in `_get_version()` (the `except Exception` block near `pkg_version("pflow-cli")`). Replace the returned literal:
-```python
-    except Exception:
-        return "<confirmed-version>"
 ```
 
 Then update the lockfile and verify:
@@ -121,7 +113,7 @@ Read `docs/roadmap.mdx` and check if any items listed under "Now" or "Later" wer
 Stage the release artifacts, then **STOP and show the user the full diff before committing**:
 
 ```bash
-git add pyproject.toml src/pflow/cli/main.py uv.lock CHANGELOG.md docs/changelog.mdx releases/<version>-context.md
+git add pyproject.toml uv.lock CHANGELOG.md docs/changelog.mdx releases/<version>-context.md
 git diff --cached
 ```
 
