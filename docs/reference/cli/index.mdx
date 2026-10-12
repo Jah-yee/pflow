@@ -356,13 +356,13 @@ The exit code tells a wrong call apart from a failed job. The difference is whet
 | Code | Meaning | What to do |
 |------|---------|------------|
 | `0` | Workflow completed, including runs that completed with warnings (`status: "degraded"`) | — |
-| `1` | The run started and failed: a step failed (a shell exit code, an HTTP error, a raised exception), an output could not resolve, a sub-workflow refused a value at run time, or `--only` found no earlier full run to restore from | Read the errors; fix the step or its data, or `pflow resume` |
+| `1` | The run started and failed: a step failed (a shell exit code, an HTTP error, a raised exception), an output could not resolve, a sub-workflow refused a value at run time, or `--only` found no earlier full run to restore from | Read the errors and fix the step or its data; when the output prints a `resume_command`, it resumes from the failed step |
 | `2` | The call was refused before the run started: the workflow file or name did not resolve, an unknown or misplaced flag, a missing or mistyped input, a validation or compile error, an unknown `--only` step, a `--validate-only` or `--dry-run` that found errors, or a `pflow resume` that was refused | Fix the call or the workflow, then run again. Nothing ran |
 | `3` | Denied at an approval gate — a human said no; nothing after the gate ran | — |
-| `4` | Paused at an approval gate — answer with the resume token on stdout | `pflow resume <token> --approve yes\|no` |
+| `4` | Paused at a gate (an approval or an escalation) — the resume token is on stdout | Answer with the command it prints (`--approve yes\|no`, or `--choose` for an escalation) |
 | `130` | Workflow interrupted | — |
 
-Exit `2` is also what pflow's argument parser returns for a bad option value (`--output-format xml`), so one code means "the call was wrong" whichever layer caught it. With `--output-format json`, a refused run and a failed run print the same document (`status: "failed"`); only the exit code tells them apart. Declining the confirmation prompt of `pflow resume` exits `1`.
+Exit `2` is also what pflow's argument parser returns for a bad option value (`--output-format xml`), so one code means "the call was wrong" whichever layer caught it. With `--output-format json`, a refused run's document says `status: "failed"` just like a failed run's; only the exit code tells them apart. The exception is an error the argument parser itself catches (a bad option value, an unknown `pflow resume` flag): it prints a plain-text usage error on stderr and nothing on stdout. Declining the confirmation prompt of `pflow resume` exits `1`.
 
 Runtime warnings remain visible in stderr, JSON output, traces, and reports; they do not make a completed workflow a process failure.
 

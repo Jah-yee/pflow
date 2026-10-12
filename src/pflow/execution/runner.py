@@ -237,6 +237,10 @@ class WorkflowRunner:
                 # start_streaming — because it rides the meta line (_meta_fields).
                 resumed_from=resume_source.execution_id if resume_source is not None else None,
             )
+            # Mark an --only attempt now, not only when the engine starts: a run refused before the
+            # engine (an unknown target, a missing input) still finalizes a trace, and unmarked it
+            # would pass as a full run to the snapshot, overlay and cache-analysis readers.
+            trace_collector.only_node = config.only_node
 
             mcp_pool = MCPConnectionPool()
             cache = MemoizationCache(read_enabled=config.cache_enabled)

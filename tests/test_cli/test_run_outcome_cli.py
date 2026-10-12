@@ -782,9 +782,15 @@ class TestTheExitCodeSaysWhetherTheRunStarted:
         assert _invoke(workflow).exit_code == 0
 
         result = _invoke("--only", "nosuch", workflow)
+        _, document = _json("--only", "nosuch", workflow)
 
         assert result.exit_code == 2
         assert "Node 'nosuch' not found" in result.stderr
+        # Refused before the engine, its trace still says it was an --only attempt — so the snapshot,
+        # overlay and analyze-cache readers never take it for a full run.
+        meta = json.loads(Path(document["trace_path"]).read_text(encoding="utf-8").splitlines()[0])
+        assert meta["kind"] == "meta"
+        assert meta["only_node"] == "nosuch"
 
     def test_only_without_a_snapshot_is_a_run_failure(self, home: Path, tmp_path: Path) -> None:
         """The snapshot is loaded inside the engine, so this stays exit 1 (documented in the table)."""
