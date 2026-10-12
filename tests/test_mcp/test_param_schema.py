@@ -19,6 +19,7 @@ import pytest
 
 from pflow.cli.commands.mcp import mcp
 from pflow.cli.main import cli
+from pflow.core.exceptions import PflowError
 from pflow.mcp import MCPRegistrar, MCPServerManager
 from pflow.mcp.schema import pflow_params
 from pflow.registry import Registry
@@ -40,6 +41,35 @@ def _tool_schema(prop: dict[str, Any], *, required: bool = True) -> dict[str, An
     return schema
 
 
+# Four required params with optional ones between them: the snippet sets all four and no other.
+FILL_SCHEMA = {
+    "$defs": DEFS
+    | {
+        "Opts": {
+            "properties": {"mode": {"enum": ["draft", "submit"], "type": "string", "default": "draft"}},
+            "type": "object",
+        }
+    },
+    "type": "object",
+    "properties": {
+        "fields": {"items": {"$ref": "#/$defs/Field"}, "type": "array"},
+        "color": {"$ref": "#/$defs/Color", "default": "red"},
+        "title": {"type": "string"},
+        "limit": {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None},
+        "count": {"type": "integer"},
+        "opts": {"$ref": "#/$defs/Opts"},
+        "tags": {"items": {"type": "string"}, "type": "array"},
+    },
+    "required": ["fields", "title", "count", "tags"],
+}
+REQUIRED_SNIPPET = [
+    "- type: mcp-fixture-fill",
+    "- fields: value",
+    "- title: ${previous-step.response}",
+    "- count: 0",
+    "- tags: ${previous-step.response}",
+]
+
 # (row id, property schema, required, type on main before #811, type now, whether shell text validates)
 ROWS: list[tuple[str, dict[str, Any], bool, str, str, bool]] = [
     # Types that were wrong: ``str`` for a value the server reads as an object or number.
@@ -55,7 +85,6 @@ ROWS: list[tuple[str, dict[str, Any], bool, str, str, bool]] = [
     ("optional_int", {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None}, False, "str", "int", False),
     ("allof_model", {"allOf": [{"$ref": "#/$defs/Field"}], "description": "wrapped"}, True, "str", "dict", True),
     ("int_or_str", {"anyOf": [{"type": "integer"}, {"type": "string"}]}, True, "str", "int|str", True),
-    ("type_list", {"type": ["string", "integer"]}, True, "str", "str|int", True),
     ("any", {"title": "P"}, True, "str", "any", True),
     # Arrays gain their item type; the runtime compares the outer type only, so no verdict moves.
     ("list_of_models", {"items": {"$ref": "#/$defs/Field"}, "type": "array"}, True, "list", "list[dict]", True),
@@ -68,6 +97,9 @@ ROWS: list[tuple[str, dict[str, Any], bool, str, str, bool]] = [
     ("literal", {"enum": ["a", "b"], "type": "string"}, True, "str", "str", True),
     ("enum_ref", {"$ref": "#/$defs/Color"}, True, "str", "str", True),
     ("dict", {"additionalProperties": {"type": "integer"}, "type": "object"}, True, "dict", "dict", True),
+    # A ``type`` list keeps its first non-null member: the runtime cannot parse JSON text into a union.
+    ("type_list", {"type": ["string", "integer"]}, True, "str", "str", True),
+    ("object_or_array", {"type": ["object", "array"]}, True, "dict", "dict", True),
 ]
 
 PROBE_WORKFLOW = """# Probe
@@ -164,6 +196,17 @@ def test_an_optional_list_of_objects_keeps_its_item_fields() -> None:
     assert list(param["structure"]) == ["name", "value"]
 
 
+def test_a_property_that_is_not_a_schema_fails_conversion() -> None:
+    """Sync then reports the tool and keeps the server's prior entries (``registrar.sync_servers``),
+    rather than registering the tool without a required param."""
+    with pytest.raises(PflowError, match="property schemas must be objects or booleans"):
+        pflow_params({"type": "object", "properties": {"query": None}, "required": ["query"]})
+    # ``true`` is a schema: any value.
+    assert pflow_params({"type": "object", "properties": {"x": True}}) == [
+        {"key": "x", "type": "any", "required": False}
+    ]
+
+
 def test_self_referencing_schema_stops_at_the_depth_cap() -> None:
     tree = {
         "properties": {"label": {"type": "string"}, "children": {"items": {"$ref": "#/$defs/Tree"}, "type": "array"}},
@@ -204,22 +247,20 @@ def test_edge_shapes(prop: dict[str, Any], expected: str) -> None:
     assert param["type"] == expected
 
 
-def test_component_context_paths_index_into_a_list_param() -> None:
-    entry = MCPRegistrar()._create_registry_entry(
-        "fixture", {"name": "fill", "inputSchema": _tool_schema({"items": {"$ref": "#/$defs/Field"}, "type": "array"})}
-    )
+def test_component_context_shows_fields_and_a_snippet_of_every_required_param() -> None:
+    entry = MCPRegistrar()._create_registry_entry("fixture", {"name": "fill", "inputSchema": FILL_SCHEMA})
     registry = Registry()
     registry.save(registry.load(include_filtered=True) | {"mcp-fixture-fill": entry})
 
     context = build_component_context(["mcp-fixture-fill"], [], registry.load())
+    assert isinstance(context, str)
 
-    assert '"p": [\n    {\n      "name": "str",' in context
-    assert "- p[].name (str)" in context
-    # The snippet sets the required param only; timeout and result_format keep their defaults.
-    snippet = context.split("**Usage in .pflow.md:**", 1)[1]
-    assert "    - p: value" in snippet
-    assert "timeout" not in snippet
-    assert "result_format" not in snippet
+    assert '"fields": [\n    {\n      "name": "str",' in context
+    assert "- fields[].name (str) (required)" in context
+    assert "- opts.mode (str) (default: draft) (one of: draft, submit)" in context
+    # Every required param, in schema order, and nothing that has a default or is optional.
+    snippet = context.split("**Usage in .pflow.md:**", 1)[1].strip().splitlines()
+    assert [line.strip() for line in snippet[-5:]] == REQUIRED_SNIPPET
 
 
 # ── Real stdio server ──────────────────────────────────────────────────────────
@@ -253,17 +294,6 @@ async def main() -> None:
 anyio.run(main)
 """
 
-FILL_SCHEMA = {
-    "$defs": DEFS,
-    "type": "object",
-    "properties": {
-        "fields": {"items": {"$ref": "#/$defs/Field"}, "type": "array"},
-        "color": {"$ref": "#/$defs/Color", "default": "red"},
-        "limit": {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None},
-    },
-    "required": ["fields"],
-}
-
 
 @pytest.fixture
 def synced_server(tmp_path: Path) -> None:
@@ -285,15 +315,19 @@ def test_describe_shows_fields_defaults_and_a_snippet_of_required_params() -> No
 
     assert result.exit_code == 0, result.output
     parameters = result.output.split("Parameters:\n", 1)[1].split("\n\n", 1)[0].splitlines()
-    assert parameters[:5] == [
+    assert parameters[:9] == [
         "  - fields: list[dict] (required)",
         "      - name: str (required)",
         "      - value: str (required)",
         "  - color: str (default: red) (one of: red, blue)",
+        "  - title: str (required)",
         "  - limit: int (default: null)",
+        "  - count: int (required)",
+        "  - opts: dict",
+        "      - mode: str (default: draft) (one of: draft, submit)",
     ]
     snippet = [line.strip() for line in result.output.split("Usage in .pflow.md:\n", 1)[1].strip().splitlines()]
-    assert snippet[-2:] == ["- type: mcp-fixture-fill", "- fields: value"]
+    assert snippet[-5:] == REQUIRED_SNIPPET
 
 
 OBJECT_WORKFLOW = """# Pass

@@ -5,8 +5,9 @@ Both walks resolve local ``$ref`` pointers the same way; neither contacts a serv
 
 from __future__ import annotations
 
-import json
 from typing import Any
+
+from pflow.core.exceptions import PflowError
 
 # A param's nested ``structure`` stops after this many object/array levels, which also ends a
 # self-referencing schema (a tree node whose children are tree nodes).
@@ -83,13 +84,24 @@ def pflow_params(input_schema: dict[str, Any]) -> list[dict[str, Any]]:
     """
     if input_schema.get("type") != "object":
         return []
-    properties = input_schema.get("properties", {})
     required = input_schema.get("required", [])
     return [
         {"key": name, **_param_shape(input_schema, prop, required=name in required, depth=0)}
-        for name, prop in properties.items()
-        if isinstance(prop, dict)
+        for name, prop in _properties(input_schema).items()
     ]
+
+
+def _properties(schema: dict) -> dict[str, dict]:
+    """A schema's properties by name. A boolean schema reads as ``{}``; anything else that is not a
+    schema fails, so sync reports the tool and keeps the server's prior entries rather than
+    registering it without the param."""
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        raise PflowError(f"'properties' must be an object, got {properties!r}")
+    malformed = {name: prop for name, prop in properties.items() if not isinstance(prop, (dict, bool))}
+    if malformed:
+        raise PflowError(f"property schemas must be objects or booleans, got {malformed!r}")
+    return {name: prop if isinstance(prop, dict) else {} for name, prop in properties.items()}
 
 
 def _param_shape(root: dict, schema: dict, *, required: bool, depth: int) -> dict[str, Any]:
@@ -130,16 +142,15 @@ def _non_null_branches(root: dict, schema: dict) -> list[dict]:
 def _param_type(root: dict, schema: dict, depth: int) -> str:
     """The registry type of a concrete schema: ``str``, ``dict``, ``list[str]``, ``list[dict]``, ``int|str``.
 
-    A union names each distinct non-null member; one with a single distinct member (two object
-    branches) is that member. No declared shape at all (``{}``) accepts anything: ``any``; a type
-    name outside JSON Schema keeps the text fallback ``str``.
+    An ``anyOf`` / ``oneOf`` union names each distinct non-null member; one with a single distinct
+    member (two object branches) is that member. No declared shape at all (``{}``) accepts
+    anything: ``any``; a type name outside JSON Schema keeps the text fallback ``str``.
     """
     declared = schema.get("type")
     if isinstance(declared, list):
-        members = [t for t in declared if t != "null"]
-        if len(members) != 1:
-            return _union([_PYTHON_TYPE_NAMES.get(t, "str") for t in members]) or "None"
-        declared = members[0]
+        # Its first non-null member, never a union: the runtime cannot parse JSON text into a
+        # union, so ``["object", "array"]`` as ``dict|list`` would stop parsing what ``dict`` parses.
+        declared = next((t for t in declared if t != "null"), "null")
     if isinstance(declared, str):
         name = _PYTHON_TYPE_NAMES.get(declared, "str")
     elif depth < _MAX_PARAM_DEPTH and (branches := _non_null_branches(root, schema)):
@@ -171,16 +182,12 @@ def _structure(root: dict, schema: dict, depth: int) -> dict[str, Any]:
     if not isinstance(properties, dict):
         return {}
     required = schema.get("required", [])
+    # Display only, unlike a top-level param: a field that is not a schema is left out, never fails sync.
     return {
-        name: _param_shape(root, prop, required=name in required, depth=depth + 1)
+        name: _param_shape(root, prop if isinstance(prop, dict) else {}, required=name in required, depth=depth + 1)
         for name, prop in properties.items()
-        if isinstance(prop, dict)
+        if isinstance(prop, (dict, bool))
     }
-
-
-def format_default(value: Any) -> str:
-    """A default as an agent would write it: text as is, anything else as JSON."""
-    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
 # ── Output schema → declared result paths ──────────────────────────────────────

@@ -14,7 +14,7 @@ import click
 from pflow.core.suggestion_utils import find_similar_items, format_did_you_mean
 from pflow.mcp import MCPRegistrar, MCPServerManager
 from pflow.mcp.registrar import ServerSyncResult, SyncBatchResult
-from pflow.mcp.schema import declared_output_paths, format_default
+from pflow.mcp.schema import declared_output_paths
 
 logger = logging.getLogger(__name__)
 
@@ -788,11 +788,11 @@ def _format_parameters(params: list[dict], node_type: str) -> None:
 
 
 def _echo_param(key: str, param: dict, *, note: str = "", indent: int) -> None:
+    from pflow.registry.context_builder import value_constraints
+
     required = " (required)" if param.get("required", True) else ""
-    default = f" (default: {format_default(param['default'])})" if "default" in param else ""
-    choices = f" (one of: {', '.join(format_default(v) for v in param['enum'])})" if param.get("enum") else ""
     desc = f" - {param['description']}" if param.get("description") else ""
-    click.echo(f"{' ' * indent}- {key}: {param['type']}{required}{default}{choices}{note}{desc}")
+    click.echo(f"{' ' * indent}- {key}: {param['type']}{required}{value_constraints(param)}{note}{desc}")
     for field, field_param in (param.get("structure") or {}).items():
         _echo_param(field, field_param, indent=indent + 4)
 

@@ -161,7 +161,7 @@ def _group_nodes_by_category(nodes: dict[str, dict]) -> dict[str, list[str]]:
 
 def _format_structure_combined(
     structure: dict[str, Any], parent_path: str = ""
-) -> tuple[dict[str, Any], list[tuple[str, str, str]]]:
+) -> tuple[dict[str, Any], list[tuple[str, str, str, str]]]:
     """Transform nested structure into JSON representation and path list.
 
     This is the preferred method for displaying structures in discovery output.
@@ -178,10 +178,10 @@ def _format_structure_combined(
     Returns:
         Tuple of:
         - JSON dict with types only (for clean display)
-        - List of (path, type, description) tuples
+        - List of (path, type, constraints, description) tuples — constraints from ``field_constraints``
     """
     json_struct: dict[str, Any] = {}
-    paths: list[tuple[str, str, str]] = []
+    paths: list[tuple[str, str, str, str]] = []
 
     for field_name, field_info in structure.items():
         if isinstance(field_info, dict):
@@ -192,7 +192,7 @@ def _format_structure_combined(
             current_path = f"{parent_path}.{field_name}" if parent_path else field_name
 
             # Add to paths list
-            paths.append((current_path, field_type, field_desc))
+            paths.append((current_path, field_type, field_constraints(field_info), field_desc))
 
             # Handle nested structures
             if "structure" in field_info and isinstance(field_info["structure"], dict):
@@ -565,6 +565,23 @@ def param_note(node_type: str, key: str) -> str:
     return ""
 
 
+def value_constraints(param: dict[str, Any]) -> str:
+    """What a listing appends after a param's or field's type: its default and allowed values."""
+    default = f" (default: {_as_written(param['default'])})" if "default" in param else ""
+    choices = f" (one of: {', '.join(_as_written(v) for v in param['enum'])})" if param.get("enum") else ""
+    return default + choices
+
+
+def field_constraints(field: dict[str, Any]) -> str:
+    """``value_constraints`` led by ``(required)`` when a structure field says it is (MCP fields do)."""
+    return (" (required)" if field.get("required") else "") + value_constraints(field)
+
+
+def _as_written(value: Any) -> str:
+    """A value as an agent would write it: text as is, anything else as JSON."""
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
 def snippet_placeholder(node_type: str, key: str, ptype: str, *, first: bool) -> str:
     """The value a generated ``.pflow.md`` snippet shows for one param: embedded code a
     function with a JSON insert, the first other param a literal (typically a target —
@@ -746,8 +763,8 @@ def _add_enhanced_structure_display(lines: list[str], key: str, type_str: str, s
 
     # Add paths list
     lines.append("Available paths:")
-    for path, field_type, desc in paths:
-        line = f"- {path} ({field_type})"
+    for path, field_type, constraints, desc in paths:
+        line = f"- {path} ({field_type}){constraints}"
         if desc:
             line += f" - {desc}"
         lines.append(line)
