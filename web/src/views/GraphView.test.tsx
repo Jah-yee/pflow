@@ -956,6 +956,18 @@ describe("GraphView mount", () => {
       }
     });
 
+    it("closing the details panel keeps it — the narrow-canvas viewer closes the panel to see it", async () => {
+      const container = await mount();
+      act(() => live.handlers!.focus({ kind: "node", ref: GRAPH.nodes[0]!.ref }));
+      await waitFor(() => expect(container.querySelector(".read-panel")).toBeTruthy());
+      act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[1]!.ref }));
+      await waitFor(() => expect(marked(container)).toEqual(["n1"]));
+
+      fireEvent.click(container.querySelector(".read-panel-header .icon-button")!);
+      await waitFor(() => expect(container.querySelector(".read-panel")).toBeNull());
+      expect(marked(container)).toEqual(["n1"]);
+    });
+
     it("a click on empty canvas drops it even when nothing was focused", async () => {
       const container = await mount();
       act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[1]!.ref }));

@@ -229,10 +229,10 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
   // The agent's `frame` target (#823), marked through the same channel (frameMarksFor) so a narrated step
   // is findable even when the camera barely moves. Its own state, so a user's hover adds to it but never
   // erases it. It lasts until the next agent point (frame replaces it; focus/clear drop it — see
-  // pointHandlers), a focus/selection change (which supersedes it as it does hover), or a pane click
-  // (onPaneClick — which may change neither). NOT keyed on collapse: a frame's reveal expands ancestors.
+  // pointHandlers) or a deliberate user point (reportUserPoint). Deliberately NOT a reaction to
+  // focus/selection state: a live-reload remap rewrites those, and closing a panel clears selection —
+  // neither is the user pointing elsewhere, and the narrow-canvas viewer closes panels to see the ring.
   const [framed, setFramed] = useState<PointTarget | null>(null);
-  useEffect(() => setFramed(null), [focus, selectedId]);
 
   // The root IO cards' title line: the workflow's display name (basename, no
   // extension — the toolbar keeps the full path).
@@ -472,6 +472,15 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
     },
     [density, direction, focus, graph, workflow],
   );
+  // A deliberate user POINT (click, search, chip, port row, clear): reported like any interaction, and it
+  // supersedes the agent's frame ring. View changes (density/direction) are not points.
+  const reportUserPoint = useCallback(
+    (type: string, target: InteractionTarget | undefined, nextFocus: string | null): void => {
+      setFramed(null);
+      reportUser(type, target, nextFocus);
+    },
+    [reportUser],
+  );
 
   const changeDensity = useCallback(
     (next: Density) => {
@@ -526,8 +535,8 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
     // beautiful-mode rows still open via focus (expansion IS its focus state).
     setFocus(node.id);
     setSelectedId(node.id);
-    reportUser("node_click", interactionTargetForNode(node.id), node.id);
-  }, [interactionTargetForNode, reportUser]);
+    reportUserPoint("node_click", interactionTargetForNode(node.id), node.id);
+  }, [interactionTargetForNode, reportUserPoint]);
 
   const onNodeDoubleClick = useCallback(
     (_: unknown, node: Node) => {
@@ -544,8 +553,8 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
     const action = edgeClickAction(edge);
     setFocus(action.focus);
     setSelectedId(action.selectedId);
-    reportUser("edge_click", interactionTargetForEdge(edge.id), action.focus);
-  }, [interactionTargetForEdge, reportUser]);
+    reportUserPoint("edge_click", interactionTargetForEdge(edge.id), action.focus);
+  }, [interactionTargetForEdge, reportUserPoint]);
 
   // A selected EDGE id has no `from`/`to` escape hatch through rebuilds: a
   // single-group collapse can re-anchor + dedupe the focused edge's id out of the
@@ -566,15 +575,14 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
   }, [focus, graph, builtEdgeIds]);
 
   const onPaneClick = useCallback(() => {
-    setFramed(null);
     setFocus(null);
     setSelectedId(null);
-    reportUser("focus_clear", undefined, null);
-  }, [reportUser]);
+    reportUserPoint("focus_clear", undefined, null);
+  }, [reportUserPoint]);
   const onClearFocus = useCallback(() => {
     setFocus(null);
-    reportUser("focus_clear", undefined, null);
-  }, [reportUser]);
+    reportUserPoint("focus_clear", undefined, null);
+  }, [reportUserPoint]);
 
   // Clicking a single IO ROW focuses just that port — its connections reveal, the
   // row highlights. On a ROOT IO card the row ALSO opens the interface panel with
@@ -603,9 +611,9 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
       }
       setFocus(portId);
       if (isRootWrapper) setSelectedId(owner!);
-      if (report) reportUser("port_click", interactionTargetForNode(portId), portId);
+      if (report) reportUserPoint("port_click", interactionTargetForNode(portId), portId);
     },
-    [interactionTargetForNode, ioOwnership, reportUser],
+    [interactionTargetForNode, ioOwnership, reportUserPoint],
   );
 
   const interaction = useMemo(
@@ -696,9 +704,9 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
   const onNavigate = useCallback(
     (focusId: string, selected?: string | null): void => {
       navigate(focusId, selected);
-      reportUser("focus_change", interactionTargetForNode(focusId), focusId);
+      reportUserPoint("focus_change", interactionTargetForNode(focusId), focusId);
     },
-    [interactionTargetForNode, navigate, reportUser],
+    [interactionTargetForNode, navigate, reportUserPoint],
   );
 
   // Collapse-all folds every collapsible container and clears focus (the focused
@@ -709,8 +717,8 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
     setCollapsed(new Set(collapsibleIds));
     setFocus(null);
     setSelectedId(null);
-    reportUser("focus_clear", undefined, null);
-  }, [collapsibleIds, reportUser]);
+    reportUserPoint("focus_clear", undefined, null);
+  }, [collapsibleIds, reportUserPoint]);
   const onExpandAll = useCallback(() => setCollapsed(new Set()), []);
 
   // The rail's search: the searchable subjects are the workflow's STEPS + container
@@ -884,9 +892,9 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
       reveal([node.id]);
       const repId = representativeFor(node);
       navigate(repId, repId);
-      if (report) reportUser("node_click", interactionTargetForNode(repId), repId);
+      if (report) reportUserPoint("node_click", interactionTargetForNode(repId), repId);
     },
-    [graph, interactionTargetForNode, navigate, reportUser, representativeFor, reveal],
+    [graph, interactionTargetForNode, navigate, reportUserPoint, representativeFor, reveal],
   );
   const onSelectNode = useCallback((node: RFNode) => selectNode(node, true), [selectNode]);
 
