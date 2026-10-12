@@ -105,6 +105,32 @@ Run the child.
 """
 
 
+RETRIED = """# Retried
+
+## Steps
+
+### quit
+
+Count attempts, then exit or raise.
+
+- type: code
+- inputs: {log: "LOG", how: "HOW"}
+- retry: { max: 3 }
+
+```python code
+import sys
+log: str
+how: str
+with open(log, "a", encoding="utf-8") as fh:
+    fh.write("x")
+if how == "exit":
+    sys.exit(1)
+raise RuntimeError("flaky")
+result: int = 1
+```
+"""
+
+
 def _run(path: Path) -> dict:
     run = CliRunner(mix_stderr=False).invoke(main, ["--output-format", "json", str(path)])
     assert run.exit_code == 1, f"exit {run.exit_code}\n{run.stdout}{run.stderr}"
@@ -136,3 +162,15 @@ def test_sys_exit_inside_batch_item_or_child_fails_the_run(tmp_path: Path, files
     document = _run(tmp_path / list(files)[-1])
 
     assert f"Code called {shown}" in document["error"]
+
+
+@pytest.mark.parametrize(("how", "error"), [("exit", "Code called sys.exit(1)"), ("raise", "RuntimeError: flaky")])
+def test_step_retry_reruns_a_sys_exit_like_a_raised_exception(tmp_path: Path, how: str, error: str) -> None:
+    log = tmp_path / "attempts.txt"
+    workflow = tmp_path / "retried.pflow.md"
+    workflow.write_text(RETRIED.replace("LOG", log.as_posix()).replace("HOW", how), encoding="utf-8")
+
+    document = _run(workflow)
+
+    assert document["error"].startswith(error)
+    assert log.read_text(encoding="utf-8") == "xxx"

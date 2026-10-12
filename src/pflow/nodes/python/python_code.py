@@ -609,6 +609,21 @@ def _extract_error_location(exc: BaseException, code: str, code_source_line: int
     return location
 
 
+def _format_sys_exit(exc: SystemExit, location: str, stderr: str) -> str:
+    """The error for a body that called ``sys.exit`` — whose reason, if any, is what it printed to stderr."""
+    call = "sys.exit()" if exc.code is None else f"sys.exit({exc.code!r})"
+    msg = f"Code called {call} — a code step ends by assigning its outputs, not by exiting"
+    if location:
+        msg += f"\n{location}"
+    if stderr.strip():
+        msg += f"\n  Stderr: {head_tail_preview(stderr.strip())}"
+    return msg + (
+        "\n\nSuggestions:\n"
+        "  - Assign the outcome instead: `result: int = main()` rather than `sys.exit(main())`\n"
+        '  - To fail the step on purpose, raise an exception: `raise RuntimeError("why")`'
+    )
+
+
 class PythonCodeNode(Node):
     """Execute Python code with typed inputs and result capture.
 
@@ -748,18 +763,18 @@ class PythonCodeNode(Node):
         stdout = namespace.pop("__stdout__", "")
         stderr = namespace.pop("__stderr__", "")
 
+        if body_exit is not None:
+            # Raised like any exception the body raises, so a step's `retry:` and exec_fallback apply.
+            raise NodeError(
+                self._format_exec_error(body_exit, prep_res, has_inputs="inputs" in self.params, stderr=stderr)
+            ) from body_exit
+
         has_result = prep_res["has_result"]
         exec_result: dict[str, Any] = {
-            "result": namespace.get("result") if has_result and body_exit is None else None,
+            "result": namespace.get("result") if has_result else None,
             "stdout": stdout,
             "stderr": stderr,
         }
-        if body_exit is not None:
-            # As deterministic as a missing result, and routed the same way — keeping the output.
-            exec_result["error"] = self._format_exec_error(
-                body_exit, prep_res, has_inputs="inputs" in self.params, stderr=stderr
-            )
-            return exec_result
         if has_result and "result" not in namespace:
             # A deterministic code bug, not worth a retry: route it like exec_fallback's error dict.
             exec_result["error"] = "Code must set 'result' variable. Add: result = <your_value>"
@@ -1009,9 +1024,9 @@ class PythonCodeNode(Node):
 
         Extracts line number from traceback when available, and provides
         actionable suggestions for each error type so AI agents can self-correct.
-        A ``sys.exit`` carries no message of its own — its reason is what the code
-        printed to stderr first, so that output is previewed in the error.
         """
+        if isinstance(exc, NodeError):  # exec() formatted it already (a body's sys.exit)
+            return str(exc)
         code = prep_res.get("code", "")
         code_source_line = prep_res.get("code_source_line", 0)
         location = _extract_error_location(exc, code, code_source_line)
@@ -1026,18 +1041,7 @@ class PythonCodeNode(Node):
                 f"  - Break long computation into multiple code nodes"
             )
         if isinstance(exc, SystemExit):
-            call = "sys.exit()" if exc.code is None else f"sys.exit({exc.code!r})"
-            msg = f"Code called {call} — a code step ends by assigning its outputs, not by exiting"
-            if location:
-                msg += f"\n{location}"
-            if stderr.strip():
-                msg += f"\n  Stderr: {head_tail_preview(stderr.strip())}"
-            msg += (
-                "\n\nSuggestions:\n"
-                "  - Assign the outcome instead: `result: int = main()` rather than `sys.exit(main())`\n"
-                '  - To fail the step on purpose, raise an exception: `raise RuntimeError("why")`'
-            )
-            return msg
+            return _format_sys_exit(exc, location, stderr)
         if isinstance(exc, NameError):
             var_name = getattr(exc, "name", str(exc))
             msg = f"Undefined variable '{var_name}'"

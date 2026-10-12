@@ -858,7 +858,7 @@ class TestBodyExit:
             ('raise SystemExit("bye")', "sys.exit('bye')"),
         ],
     )
-    def test_sys_exit_fails_the_step_keeping_its_output(self, statement, shown):
+    def test_sys_exit_fails_the_step(self, statement, shown):
         shared: dict = {}
         action = run_code_node(
             shared,
@@ -872,7 +872,6 @@ class TestBodyExit:
         assert "Location: line 4 in code block" in shared["error"]
         assert f"Source: {statement}" in shared["error"]
         assert "Stderr:" not in shared["error"]
-        assert shared["stdout"] == "before exit\n"
         assert "result" not in shared
 
     def test_argparse_exit_shows_its_usage_message(self):
@@ -888,7 +887,6 @@ class TestBodyExit:
         assert 'Source: argparse.ArgumentParser().parse_args(["--nope"])' in shared["error"]
         assert "\n  Stderr: usage: " in shared["error"]
         assert "unrecognized arguments: --nope" in shared["error"]
-        assert "unrecognized arguments: --nope" in shared["stderr"]
 
     def test_other_base_exception_fails_the_step(self):
         """asyncio.CancelledError is a BaseException too; it reads like any runtime error."""
