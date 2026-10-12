@@ -98,9 +98,9 @@ def _properties(schema: dict) -> dict[str, dict]:
     properties = schema.get("properties", {})
     if not isinstance(properties, dict):
         raise PflowError(f"'properties' must be an object, got {properties!r}")
-    malformed = {name: prop for name, prop in properties.items() if not isinstance(prop, (dict, bool))}
-    if malformed:
-        raise PflowError(f"property schemas must be objects or booleans, got {malformed!r}")
+    for name, prop in properties.items():
+        if not isinstance(prop, (dict, bool)):
+            raise PflowError(f"property '{name}' is {prop!r}, not a schema (an object or a boolean)")
     return {name: prop if isinstance(prop, dict) else {} for name, prop in properties.items()}
 
 
@@ -142,9 +142,10 @@ def _non_null_branches(root: dict, schema: dict) -> list[dict]:
 def _param_type(root: dict, schema: dict, depth: int) -> str:
     """The registry type of a concrete schema: ``str``, ``dict``, ``list[str]``, ``list[dict]``, ``int|str``.
 
-    An ``anyOf`` / ``oneOf`` union names each distinct non-null member; one with a single distinct
-    member (two object branches) is that member. No declared shape at all (``{}``) accepts
-    anything: ``any``; a type name outside JSON Schema keeps the text fallback ``str``.
+    An ``anyOf`` / ``oneOf`` union names each distinct non-null member — ``str`` when one member is
+    text, the member itself when there is one distinct member (two object branches). No declared
+    shape at all (``{}``) accepts anything: ``any``; a type name outside JSON Schema keeps the text
+    fallback ``str``.
     """
     declared = schema.get("type")
     if isinstance(declared, list):
@@ -154,7 +155,10 @@ def _param_type(root: dict, schema: dict, depth: int) -> str:
     if isinstance(declared, str):
         name = _PYTHON_TYPE_NAMES.get(declared, "str")
     elif depth < _MAX_PARAM_DEPTH and (branches := _non_null_branches(root, schema)):
-        return _union([_param_type(root, _concrete_schema(root, branch), depth + 1) for branch in branches])
+        members = [_param_type(root, _concrete_schema(root, branch), depth + 1) for branch in branches]
+        # The runtime turns an object into JSON text for a ``str`` param but hands a union its value
+        # as is, so a union that text satisfies reads as ``str``.
+        return "str" if "str" in members else _union(members)
     elif "properties" in schema:
         name = "dict"
     elif "items" in schema:

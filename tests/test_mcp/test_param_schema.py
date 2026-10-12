@@ -84,7 +84,8 @@ ROWS: list[tuple[str, dict[str, Any], bool, str, str, bool]] = [
     ),
     ("optional_int", {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None}, False, "str", "int", False),
     ("allof_model", {"allOf": [{"$ref": "#/$defs/Field"}], "description": "wrapped"}, True, "str", "dict", True),
-    ("int_or_str", {"anyOf": [{"type": "integer"}, {"type": "string"}]}, True, "str", "int|str", True),
+    ("int_or_model", {"anyOf": [{"type": "integer"}, {"$ref": "#/$defs/Field"}]}, True, "str", "int|dict", True),
+    ("object_or_list", {"anyOf": [{"type": "object"}, {"type": "array"}]}, True, "str", "dict|list", True),
     ("any", {"title": "P"}, True, "str", "any", True),
     # Arrays gain their item type; the runtime compares the outer type only, so no verdict moves.
     ("list_of_models", {"items": {"$ref": "#/$defs/Field"}, "type": "array"}, True, "list", "list[dict]", True),
@@ -100,6 +101,8 @@ ROWS: list[tuple[str, dict[str, Any], bool, str, str, bool]] = [
     # A ``type`` list keeps its first non-null member: the runtime cannot parse JSON text into a union.
     ("type_list", {"type": ["string", "integer"]}, True, "str", "str", True),
     ("object_or_array", {"type": ["object", "array"]}, True, "dict", "dict", True),
+    # A union text satisfies stays ``str``: the runtime turns an object into text for ``str`` only.
+    ("int_or_str", {"anyOf": [{"type": "integer"}, {"type": "string"}]}, True, "str", "str", True),
 ]
 
 PROBE_WORKFLOW = """# Probe
@@ -196,11 +199,18 @@ def test_an_optional_list_of_objects_keeps_its_item_fields() -> None:
     assert list(param["structure"]) == ["name", "value"]
 
 
-def test_a_property_that_is_not_a_schema_fails_conversion() -> None:
-    """Sync then reports the tool and keeps the server's prior entries (``registrar.sync_servers``),
+def test_a_property_that_is_not_a_schema_fails_conversion_naming_the_tool() -> None:
+    """Sync then reports it and keeps the server's prior entries (``registrar.sync_servers``),
     rather than registering the tool without a required param."""
-    with pytest.raises(PflowError, match="property schemas must be objects or booleans"):
-        pflow_params({"type": "object", "properties": {"query": None}, "required": ["query"]})
+    bad = {"type": "object", "properties": {"query": None}, "required": ["query"]}
+    with pytest.raises(PflowError) as raised:
+        MCPRegistrar()._create_registry_entry("forms", {"name": "search", "inputSchema": bad})
+
+    assert str(raised.value) == (
+        "tool 'search' has an input schema pflow cannot read: property 'query' is None, not a schema "
+        "(an object or a boolean). The server must fix it; until then `pflow mcp sync forms` keeps the "
+        "server's previously registered tools"
+    )
     # ``true`` is a schema: any value.
     assert pflow_params({"type": "object", "properties": {"x": True}}) == [
         {"key": "x", "type": "any", "required": False}
@@ -230,9 +240,11 @@ def test_self_referencing_schema_stops_at_the_depth_cap() -> None:
     [
         # Two object shapes are still an object: no union, so Pass 6's container check still applies.
         pytest.param({"anyOf": [{"$ref": "#/$defs/Field"}, {"type": "object"}]}, "dict", id="two-objects"),
-        # ``list[int|str]`` would read as a union to the runtime's bare-name checks.
+        # ``list[int|bool]`` would read as a union to the runtime's bare-name checks.
         pytest.param(
-            {"type": "array", "items": {"anyOf": [{"type": "integer"}, {"type": "string"}]}}, "list", id="list-of-union"
+            {"type": "array", "items": {"anyOf": [{"type": "integer"}, {"type": "boolean"}]}},
+            "list",
+            id="list-of-union",
         ),
         # Not a JSON Schema type: the long-standing text fallback.
         pytest.param({"type": "quantum"}, "str", id="unknown-type"),
@@ -301,6 +313,7 @@ def synced_server(tmp_path: Path) -> None:
         "fill": FILL_SCHEMA,
         "model": _tool_schema({"$ref": "#/$defs/Field"}),
         "optional_model": _tool_schema({"anyOf": [{"$ref": "#/$defs/Field"}, {"type": "null"}]}, required=False),
+        "int_or_str": _tool_schema({"anyOf": [{"type": "integer"}, {"type": "string"}]}),
     }
     script = tmp_path / "param_server.py"
     script.write_text(textwrap.dedent(SERVER_SOURCE.format(schemas=schemas)), encoding="utf-8")
@@ -354,16 +367,19 @@ SHELL_SOURCE = """- type: shell\n\n```shell command\nprintf '%s' '{"name": "a", 
 
 
 @pytest.mark.usefixtures("synced_server")
-@pytest.mark.parametrize("tool", ["model", "optional_model"])
+@pytest.mark.parametrize(("tool", "received"), [("model", "dict"), ("optional_model", "dict"), ("int_or_str", "str")])
 @pytest.mark.parametrize(
     ("source", "field"), [(CODE_SOURCE, "result"), (SHELL_SOURCE, "stdout")], ids=["code", "shell"]
 )
-def test_an_object_reaches_the_server_as_an_object(tmp_path: Path, tool: str, source: str, field: str) -> None:
-    """Typed ``str``, the param sent a code step's dict — and shell JSON — to the server as text."""
+def test_an_object_reaches_the_server_in_the_shape_its_schema_takes(
+    tmp_path: Path, tool: str, received: str, source: str, field: str
+) -> None:
+    """Typed ``str``, an object param got a code step's dict — and shell JSON — as text. A param whose
+    union includes text still gets text: that member is the one the server can accept."""
     workflow = tmp_path / "pass.pflow.md"
     workflow.write_text(OBJECT_WORKFLOW.format(source=source, tool=tool, field=field), encoding="utf-8")
 
     result = click.testing.CliRunner(mix_stderr=False).invoke(cli, ["--output-format", "json", str(workflow)])
 
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)["result"] == {"result": "dict"}
+    assert json.loads(result.stdout)["result"] == {"result": received}

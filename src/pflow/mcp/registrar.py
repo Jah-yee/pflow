@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pflow.core.diagnostic import Diagnostic
+from pflow.core.exceptions import PflowError
 from pflow.registry import Registry
 from pflow.registry.constants import MCP_CANONICAL_OUTPUT, MCP_NODE_PARAMS
 
@@ -310,7 +311,13 @@ class MCPRegistrar:
         Returns:
             Registry entry dictionary
         """
-        params = pflow_params(tool["inputSchema"])
+        try:
+            params = pflow_params(tool["inputSchema"])
+        except PflowError as error:
+            raise PflowError(
+                f"tool '{tool['name']}' has an input schema pflow cannot read: {error}. The server must fix it; "
+                f"until then `pflow mcp sync {server_name}` keeps the server's previously registered tools"
+            ) from error
         params.extend(param.copy() for param in MCP_NODE_PARAMS)
 
         # MCPNode stores every successful tool response under one canonical
