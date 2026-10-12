@@ -356,7 +356,7 @@ class TestTheCliPassesTextTheDeclarationTypes:
         with patch("pflow.core.shell_integration.stdin_has_data", return_value=True):
             refused = _invoke("--output-format", "json", workflow, stdin="abc\n")
             accepted = _invoke("-p", workflow, stdin="42\n")  # surrounding whitespace is not the value
-        assert refused.exit_code == 1
+        assert refused.exit_code == 2
         (error,) = _json_errors(refused)
         assert _input_error(error)[0] == "text"
         assert error["context"]["source"] == "stdin"
@@ -393,13 +393,13 @@ class TestAValueThatDoesNotFitFailsAtTheBoundary:
             ("ratio=abc", ("ratio", "number", "abc", "argument")),
         ],
     )
-    def test_the_run_exits_1_with_the_typed_input_error(
+    def test_the_run_exits_2_with_the_typed_input_error(
         self, tmp_path: Path, token: str, expected: tuple[str, ...]
     ) -> None:
         workflow = str(_write(tmp_path, "typed", TYPED_WF))
         topics = [] if token.startswith("topics=") else ['topics=["a"]']
         result = _invoke("--output-format", "json", workflow, *topics, token)
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         (error,) = _json_errors(result)
         assert _input_error(error) == expected
         assert error["title"] == "Invalid input value"
@@ -456,7 +456,7 @@ class TestSeveralBadInputsAndNoResumeHint:
             ("inputs.flag", ["Pass true or false (also yes/no, 1/0): flag=true"]),
         ]
         assert "resume_command" not in json.loads(as_json.stdout)  # nothing ran: nothing to resume
-        assert as_text.exit_code == 1
+        assert as_text.exit_code == 2
         assert "Error 1: Invalid input value" in as_text.stderr
         assert "Error 2: Invalid input value" in as_text.stderr
         assert "pflow resume" not in as_text.stderr
@@ -525,7 +525,7 @@ class TestASettingsValueIsLabelledSettings:
         workflow = str(_write(tmp_path, "port", PORT_WF))
         assert self._pflow(cli_env, "settings", "set-env", "port", "abc").returncode == 0
         result = self._pflow(cli_env, workflow)
-        assert result.returncode == 1
+        assert result.returncode == 2
         assert "Input 'port' is declared `- type: integer` but received 'abc' from settings.env." in result.stderr
         assert "→ pflow settings set-env port 3, or pass port=3" in result.stderr
 
@@ -535,7 +535,7 @@ class TestASettingsValueIsLabelledSettings:
         workflow = str(_write(tmp_path, "port", PORT_WF))
         assert self._pflow(cli_env, "settings", "set-env", "port", "abc").returncode == 0
         result = self._pflow({**cli_env, "port": "xyz"}, workflow)
-        assert result.returncode == 1
+        assert result.returncode == 2
         assert "received 'xyz' from the environment variable port." in result.stderr
         assert "from settings.env" not in result.stderr
 
@@ -548,7 +548,7 @@ class TestValidateOnlyChecksTheSuppliedValues:
         validated = _invoke("--validate-only", "--output-format", "json", workflow, "topics=tea", "count=abc")
         ran = _invoke("--output-format", "json", workflow, "topics=tea", "count=abc")
 
-        assert validated.exit_code == ran.exit_code == 1
+        assert validated.exit_code == ran.exit_code == 2
         validated_errors = [(e["message"], e["context"]["path"]) for e in _json_errors(validated)]
         assert validated_errors == [(e["message"], e["context"]["path"]) for e in _json_errors(ran)]
         assert [path for _, path in validated_errors] == ["inputs.topics", "inputs.count"]
@@ -561,7 +561,7 @@ class TestValidateOnlyChecksTheSuppliedValues:
 
         assert nothing.exit_code == 0, nothing.stdout
         assert good.exit_code == 0, good.stdout
-        assert bogus.exit_code == 1
+        assert bogus.exit_code == 2
         assert [e["context"]["path"] for e in _json_errors(bogus)] == ["inputs.BOGUS"]
 
     def test_each_declared_input_reports_before_the_undeclared_ones(self, tmp_path: Path) -> None:

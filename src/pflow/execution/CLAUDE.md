@@ -32,7 +32,11 @@ MCP subprocesses. `run` converts exceptions into `ExecutionResult`, while
 KeyboardInterrupt/SystemExit propagate. Planning shares resolve/validate/compile
 but does not create execution resources or invoke nodes.
 
-`_compile_and_execute` annotates exceptions with the shared store, and
+`run` hands off between `_compile_for_run` (everything before the engine, ending with the
+`--only` target check) and `_execute` (the engine run); a failure before the hand-off carries
+`engine_started=False`, which the CLI exits 2 for (see `cli/CLAUDE.md`).
+
+`_execute` annotates exceptions with the shared store, and
 `_exception_to_result` transfers it to `ExecutionResult.shared_after`. Losing this
 chain hides failed-node/batch details from every consumer. `OutputResolutionError`
 is excluded from stale failed-node attribution: its Diagnostic has `node_id=None`

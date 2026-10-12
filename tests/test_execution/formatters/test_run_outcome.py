@@ -23,6 +23,7 @@ from pflow.core.workflow.status import WorkflowStatus
 from pflow.execution.formatters.batch_errors import _truncate_error_message, format_batch_errors_section
 from pflow.execution.formatters.run_outcome import (
     EXIT_CODES,
+    EXIT_REJECTED,
     RunOutcome,
     _append_outputs,
     _collect_outputs,
@@ -515,6 +516,22 @@ class TestTolerance:
         assert succeeded.document["success"] is True
         assert succeeded.document["status"] == "success"
         assert succeeded.exit_code == 0
+
+    def test_a_failure_before_the_engine_exits_rejected_and_keeps_its_document(self) -> None:
+        """The phase changes the exit code only (#815): the document of a refused run is a failure's."""
+        error = Diagnostic(severity=Severity.ERROR, message="boom", source="validator")
+        refused = ExecutionResult(
+            success=False, status=WorkflowStatus.FAILED, diagnostics=[error], engine_started=False
+        )
+        ran = dataclasses.replace(refused, engine_started=True)
+
+        refused_outcome = build_run_outcome(refused, {}, workflow_metadata=None)
+        ran_outcome = build_run_outcome(ran, {}, workflow_metadata=None)
+
+        assert EXIT_REJECTED == 2
+        assert refused_outcome.exit_code == EXIT_REJECTED
+        assert ran_outcome.exit_code == EXIT_CODES[WorkflowStatus.FAILED] == 1
+        assert refused_outcome.document == ran_outcome.document
 
 
 # --- Redaction and integrity of the printed diagnostics -----------------------------------------

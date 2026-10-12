@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -192,7 +193,7 @@ def test_key_value_overrides_meta_inputs(home, shell_wf):
 def test_side_effect_non_tty_hard_error_names_node_type_and_force(home, shell_wf):
     exec_id = _run_to_failure(shell_wf)
     result = _runner().invoke(cli, ["resume", exec_id, "mode=ok"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     combined = result.stdout + result.stderr
     assert "step2" in combined
     assert "shell" in combined
@@ -224,6 +225,21 @@ def test_side_effect_tty_confirm_no_cancels(home, shell_wf, monkeypatch):
     assert "Resume cancelled" in result.stderr
     # A user's "no" is a clean stop, not the failure rendering.
     assert "❌" not in result.stderr
+
+
+def test_side_effect_tty_confirm_end_of_input_cancels_like_no(home, shell_wf, monkeypatch):
+    """Ctrl-D at the prompt is the same "no": exit 1. ``click.confirm`` raises ``Abort`` on end of input."""
+
+    def _end_of_input(*_args: object, **_kwargs: object) -> bool:
+        raise click.Abort
+
+    exec_id = _run_to_failure(shell_wf)
+    monkeypatch.setattr("pflow.execution.gate_prompt.can_prompt", lambda oc: True)
+    monkeypatch.setattr("pflow.cli.commands.resume.click.confirm", _end_of_input)
+    result = _runner().invoke(cli, ["resume", exec_id, "mode=ok"])
+    assert result.exit_code == 1, result.stderr
+    assert "Resume cancelled" in result.stderr
+    assert "Abort" not in result.stderr
 
 
 # --- llm K resumes silently (IR-type vocabulary pin) -------------------------
@@ -388,7 +404,7 @@ def test_batch_step_failing_template_resolution_still_needs_confirmation(home, t
     assert out.read_text(encoding="utf-8").split() == ["a"]  # item [0] fired
 
     result = _runner().invoke(cli, ["resume", exec_id])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Resume needs confirmation" in result.stdout + result.stderr
     assert out.read_text(encoding="utf-8").split() == ["a"]  # nothing re-fired
 
@@ -441,7 +457,7 @@ def test_step_that_began_on_an_earlier_visit_still_needs_confirmation(home, tmp_
     assert out.read_text(encoding="utf-8").splitlines() == ["fired x"]  # visit 1 fired
 
     result = _runner().invoke(cli, ["resume", exec_id])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Resuming re-runs step 'save' (a shell step)" in result.stdout + result.stderr
     assert out.read_text(encoding="utf-8").splitlines() == ["fired x"]  # nothing re-fired
 
@@ -509,7 +525,7 @@ def test_entry_restored_by_a_resumed_attempt_still_needs_confirmation(home, tmp_
     assert out.read_text(encoding="utf-8").splitlines() == ["K fired a"]  # k fired once, in the first run
 
     result = _runner().invoke(cli, ["resume", attempt_id])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Resuming re-runs step 'k' (a shell step)" in result.stdout + result.stderr
     assert out.read_text(encoding="utf-8").splitlines() == ["K fired a"]  # nothing re-fired
 
@@ -592,7 +608,7 @@ def test_batched_sub_workflow_host_still_needs_confirmation(home, tmp_path):
     assert out.read_text(encoding="utf-8").splitlines() == ["fired a"]  # item [0]'s child fired
 
     result = _runner().invoke(cli, ["resume", exec_id])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Resuming re-runs step 'host' (a workflow step)" in result.stdout + result.stderr
     assert out.read_text(encoding="utf-8").splitlines() == ["fired a"]  # nothing re-fired
 
@@ -708,7 +724,7 @@ def test_run_killed_inside_a_batched_host_resumes_at_the_host(home, tmp_path):
     source = load_resume_source(execution_id=exec_id, debug_dir=home / ".pflow" / "debug")
     assert (source.entry_node_id, source.last_completed_node_id) == ("host", None)
     refused = _runner().invoke(cli, ["resume", exec_id])
-    assert refused.exit_code == 1
+    assert refused.exit_code == 2
     assert "Resuming re-runs step 'host' (a workflow step)" in refused.stdout + refused.stderr
     assert out.read_text(encoding="utf-8").splitlines() == ["fired a", "fired b"]  # nothing re-fired
 
@@ -750,7 +766,7 @@ def test_stale_refusal_names_the_edited_restored_step(home, shell_wf):
     exec_id = _run_to_failure(shell_wf)
     shell_wf.write_text(shell_wf.read_text(encoding="utf-8").replace(*_STEP1_EDIT), encoding="utf-8")
     result = _runner().invoke(cli, ["resume", exec_id, "mode=ok"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     combined = result.stdout + result.stderr
     assert "'step1' was edited. Resume re-runs nothing before 'step2'" in combined
     # step2 (shell) started in the source run, and --force also waives its side-effect
@@ -763,7 +779,7 @@ def test_an_edit_after_the_resume_point_passes_the_identity_gate(home, shell_wf)
     exec_id = _run_to_failure(shell_wf)
     shell_wf.write_text(shell_wf.read_text(encoding="utf-8").replace('echo "done', 'echo "finished'), "utf-8")
     result = _runner().invoke(cli, ["resume", exec_id, "mode=ok"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Resuming re-runs step 'step2' (a shell step)" in result.stdout + result.stderr
     assert "Workflow changed" not in result.stdout + result.stderr
 
@@ -809,7 +825,7 @@ def test_stale_unverifiable_message_when_hash_absent(tmp_path):
 
 def test_mistyped_uuid_yields_combined_missing_error(home):
     result = _runner().invoke(cli, ["resume", "00000000-0000-0000-0000-000000000000"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     combined = result.stdout + result.stderr
     assert "No run with execution id" in combined
     assert "no workflow by that name" in combined
@@ -838,14 +854,14 @@ def test_nothing_to_resume_when_run_succeeded(home, shell_wf):
     ok = _runner().invoke(cli, [str(shell_wf), "mode=ok"])
     assert ok.exit_code == 0, ok.stderr
     result = _runner().invoke(cli, ["resume", str(shell_wf)])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already succeeded" in (result.stdout + result.stderr)
 
 
 def test_json_refusal_shape(home, shell_wf):
     exec_id = _run_to_failure(shell_wf)
     result = _runner().invoke(cli, ["resume", exec_id, "mode=ok", "--output-format", "json"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     import json
 
     doc = json.loads(result.stdout)
@@ -877,7 +893,7 @@ def test_failed_run_with_no_trace_is_a_clear_missing_error(home, shell_wf):
     failed = _runner().invoke(cli, ["--no-trace", str(shell_wf), "mode=bad"])
     assert failed.exit_code == 1
     result = _runner().invoke(cli, ["resume", str(shell_wf), "mode=ok"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     combined = result.stdout + result.stderr
     assert "No resumable run" in combined or "No run" in combined
     # It must NOT have silently executed the workflow.
@@ -1048,7 +1064,7 @@ def test_dry_run_still_refuses_stale_workflow(home, shell_wf):
     exec_id = _run_to_failure(shell_wf)
     shell_wf.write_text(shell_wf.read_text(encoding="utf-8").replace(*_STEP1_EDIT), encoding="utf-8")
     result = _runner().invoke(cli, ["resume", exec_id, "mode=ok", "--dry-run"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "'step1' was edited." in (result.stdout + result.stderr)
 
 
@@ -1401,7 +1417,7 @@ def test_stale_refusal_names_a_between_iterations_loop_step_as_the_resume_point(
     wf.write_text(wf.read_text(encoding="utf-8").replace('"e"]', '"e", "f"]'), "utf-8")
 
     refused = _runner().invoke(cli, ["resume", exec_id])
-    assert refused.exit_code == 1
+    assert refused.exit_code == 2
     combined = refused.stdout + refused.stderr
     assert "'seed' was edited. Resume re-runs nothing before 'rounds' (iteration 3)" in combined
     assert "Its iterations before 3 are restored too, so an edit to 'rounds' applies from iteration 3 on." in combined
@@ -1433,7 +1449,7 @@ def test_killed_between_loop_iterations_continues_with_the_engine_decision_e2e(h
     exec_id, rounds = _kill_looping_host_after_iteration_2(home, wf, log)
 
     refused = _runner().invoke(cli, ["resume", exec_id])
-    assert refused.exit_code == 1
+    assert refused.exit_code == 2
     combined = refused.stdout + refused.stderr
     assert "Resuming re-runs step 'rounds' (a workflow step)" in combined
     assert [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] == rounds[:2]

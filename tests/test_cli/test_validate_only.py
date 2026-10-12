@@ -235,7 +235,7 @@ class TestValidateOnlyChecksSuppliedValuesOnly:
         assert missing.exit_code == 0, f"Failed: {missing.output}\n{missing.stderr}"
         assert "requires input" not in (missing.output + missing.stderr).lower()
         # A supplied value is checked against its declaration, as the run would.
-        assert bad.exit_code == 1
+        assert bad.exit_code == 2
         assert "Input 'count' is declared `- type: integer` but received 'abc'" in bad.output + bad.stderr
         assert "requires input" not in (bad.output + bad.stderr).lower()
 

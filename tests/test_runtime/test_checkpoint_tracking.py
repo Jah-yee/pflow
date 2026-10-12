@@ -241,8 +241,8 @@ class TestCheckpointIntegration:
             },
         )
 
-        # Mock _compile_and_execute to return controlled result
-        with patch.object(WorkflowRunner, "_compile_and_execute", return_value=success_result) as mock_execute:
+        # Mock _execute (the engine run) to return a controlled result
+        with patch.object(WorkflowRunner, "_execute", return_value=success_result) as mock_execute:
             result = WorkflowRunner().run(workflow_ir, {}, RunnerConfig())
 
             # Verify execution happened

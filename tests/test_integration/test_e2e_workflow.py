@@ -109,7 +109,7 @@ def test_registry_load_error(tmp_path, monkeypatch):
         result = runner.invoke(main, ["./workflow.pflow.md"])
 
         # Verify error message
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         # Error message should indicate failure
         assert "error" in result.output.lower() or "failed" in result.output.lower()
         # The registry error message is shown in the detailed error output
@@ -135,7 +135,7 @@ def test_invalid_workflow_markdown(tmp_path):
         result = runner.invoke(main, ["./workflow.pflow.md"])
 
         # Should fail validation
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "steps" in result.output.lower() or "error" in result.output.lower()
 
 
@@ -156,7 +156,7 @@ def test_invalid_workflow_validation(tmp_path):
         result = runner.invoke(main, ["./workflow.pflow.md"])
 
         # Verify validation error
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         # The error message format may vary but should indicate validation failure
         assert (
             "validation" in result.output.lower()
@@ -179,7 +179,7 @@ def test_plain_text_file_handling(tmp_path):
         result = runner.invoke(main, ["./natural.txt"])
 
         # With new system, non-.pflow.md files are treated as workflow names or parsed as markdown
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         # Should show not found, error, or parse error
         assert (
             "not found" in result.output.lower() or "error" in result.output.lower() or "steps" in result.output.lower()

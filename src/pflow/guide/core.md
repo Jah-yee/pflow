@@ -381,6 +381,7 @@ pflow ./workflow.pflow.md param1=value1 param2=value2
 ```
 
 Errors include fix suggestions — read them carefully and apply the recommended fix.
+The exit code says which kind of failure it is: **2** means the call or the workflow was refused before anything ran (a missing or mistyped input, an unknown flag, a validation error), so fix the call and run again; **1** means the run started and failed (a step, an output that could not resolve, or `--only` with no earlier full run), so read the errors and fix the step or its data — and when the output prints a resume command, resuming skips the steps that already succeeded. 3 is a denied gate, 4 a paused one.
 
 Caching: only `llm` nodes cache by default (their output is purely a function of
 their declared inputs). Every other node type — shell, code, http, file ops, mcp,

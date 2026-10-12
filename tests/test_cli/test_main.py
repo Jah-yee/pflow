@@ -354,7 +354,7 @@ def test_context_storage_verification():
 
     # Test multi-word unquoted args - should error with quote suggestion
     result = runner.invoke(main, ["test", "workflow"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Invalid input" in result.output or "must be quoted" in result.output
 
     # Test stdin input - plain text is now treated as data, needs workflow
@@ -659,3 +659,12 @@ class TestWindowsStdioReconfigure:
         # And the repinned stream is what click actually wrote through
         out.flush()
         assert b"pflow version" in out_buf.getvalue()
+
+
+def test_a_removed_command_is_a_wrong_call():
+    """A removed command exits 2 (#815) — fix the call — and names its replacement."""
+    result = click.testing.CliRunner().invoke(main, ["trace", "anything"])
+
+    assert result.exit_code == 2
+    assert "'trace' command was removed" in result.output
+    assert "pflow report" in result.output

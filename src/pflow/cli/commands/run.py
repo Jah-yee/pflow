@@ -504,7 +504,9 @@ def _display_validation_result(
             _echo_diagnostic_group([d for d in vresult.diagnostics if d.severity is Severity.WARNING], blank_line=True)
             _echo_diagnostic_group([d for d in vresult.diagnostics if d.severity is Severity.INFO], blank_line=True)
 
-    ctx.exit(0 if vresult.valid else 1)
+    from pflow.execution.formatters.run_outcome import EXIT_REJECTED
+
+    ctx.exit(0 if vresult.valid else EXIT_REJECTED)
 
 
 def _display_plan_result(
@@ -518,9 +520,10 @@ def _display_plan_result(
 
     Exit code mirrors `_display_validation_result`'s severity-based convention:
     any ERROR-severity diagnostic (e.g. unresolvable strict-mode template)
-    exits 1. Plans that build with only WARNINGs exit 0.
+    exits ``EXIT_REJECTED`` — the run would be refused. Plans that build with only WARNINGs exit 0.
     """
     from pflow.execution.formatters.plan_formatter import format_plan_json, format_plan_text
+    from pflow.execution.formatters.run_outcome import EXIT_REJECTED
     from pflow.execution.result import RunnerConfig
     from pflow.execution.runner import WorkflowRunner
 
@@ -549,7 +552,7 @@ def _display_plan_result(
         click.echo(format_plan_text(plan, answered_gate_ids=answered_gate_ids))
 
     has_error = any(d.severity == Severity.ERROR for d in plan.diagnostics)
-    ctx.exit(1 if has_error else 0)
+    ctx.exit(EXIT_REJECTED if has_error else 0)
 
 
 def _initialize_context(
@@ -1163,10 +1166,13 @@ def run(
     except click.exceptions.Exit:
         raise
     except Exception as e:
+        # Every exception reaching here was raised before a run existed (a run's own ending,
+        # and anything escaping it, exits inside execute_json_workflow): a wrong call.
         from pflow.cli.error_output import output_error
+        from pflow.execution.formatters.run_outcome import EXIT_REJECTED
 
         of = ctx.obj.get("output_format", "text") if ctx.obj else output_format
         vb = ctx.obj.get("verbose", False) if ctx.obj else False
         wm = ctx.obj.get("workflow_metadata") if ctx.obj else None
         output_error(exception=e, output_format=of, verbose=vb, workflow_metadata=wm)
-        ctx.exit(1)
+        ctx.exit(EXIT_REJECTED)

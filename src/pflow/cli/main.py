@@ -44,8 +44,10 @@ class PflowCLI(click.Group):
             return cmd_name, cmd, args[1:]
 
         if cmd_name in self._removed_commands:
+            from pflow.execution.formatters.run_outcome import EXIT_REJECTED
+
             click.echo(f"Error: '{cmd_name}' command was removed.\n{self._removed_commands[cmd_name]}", err=True)
-            ctx.exit(1)
+            ctx.exit(EXIT_REJECTED)
 
         return "run", self.get_command(ctx, "run"), args
 

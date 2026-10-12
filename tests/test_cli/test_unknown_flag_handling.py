@@ -205,10 +205,10 @@ class TestUnknownFlagCLI:
     """End-to-end coverage through the real CLI surface (CliRunner)."""
 
     def test_stray_flag_no_longer_silently_dropped(self, workflow_file):
-        """The exact repro from #454: exit 1 (was 0) with an actionable error."""
+        """The exact repro from #454: exit 2, a wrong call (was 0), with an actionable error."""
         runner = CliRunner(mix_stderr=False)
         result = runner.invoke(main, [str(workflow_file), "--scenario", "fail-mid"])
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "Unknown option '--scenario'" in result.stderr
         assert "scenario=fail-mid" in result.stderr
 
@@ -226,7 +226,7 @@ class TestUnknownFlagCLI:
         tailored "must come BEFORE" message end-to-end."""
         runner = CliRunner(mix_stderr=False)
         result = runner.invoke(main, [str(workflow_file), "--verbose"])
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "CLI flags must come BEFORE the workflow" in result.stderr
         assert "--verbose" in result.stderr
 
@@ -238,10 +238,10 @@ class TestUnknownFlagCLI:
 
     def test_json_mode_error_is_parseable(self, workflow_file):
         """Agent surface: in JSON mode the rejection is a parseable error
-        object on stdout with exit 1 (not a silent success)."""
+        object on stdout with exit 2 (not a silent success)."""
         runner = CliRunner(mix_stderr=False)
         result = runner.invoke(main, ["--output-format", "json", str(workflow_file), "--scenario", "fail-mid"])
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         payload = json.loads(result.output)
         assert payload["success"] is False
         assert payload["error"] == "Unknown option '--scenario'"

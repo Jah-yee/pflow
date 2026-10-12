@@ -74,12 +74,16 @@ def _prompt_or_raise_side_effect(
     controller = OutputController(print_flag=print_flag)
     if can_prompt(controller):
         controller.prepare_for_prompt()
-        confirmed = click.confirm(
-            f"Resuming re-runs step '{refusal.node_id}' (a {refusal.node_type} step) "
-            "and its side effects may fire again. Continue?",
-            default=False,
-            err=True,
-        )
+        try:
+            confirmed = click.confirm(
+                f"Resuming re-runs step '{refusal.node_id}' (a {refusal.node_type} step) "
+                "and its side effects may fire again. Continue?",
+                default=False,
+                err=True,
+            )
+        except click.Abort:  # end of input (Ctrl-D) is a "no", not an error
+            click.echo("", err=True)
+            confirmed = False
         if not confirmed:
             click.echo("Resume cancelled.", err=True)
             ctx.exit(1)
@@ -366,10 +370,14 @@ def resume_run(
     except click.exceptions.UsageError:
         raise
     except Exception as exc:
+        # Raised before the resumed run existed (a preflight refusal, a bad answer, a --dry-run
+        # plan error): a wrong call. The resumed run's own ending exits inside execute_json_workflow.
+        from pflow.execution.formatters.run_outcome import EXIT_REJECTED
+
         of = ctx.obj.get("output_format", output_format) if ctx.obj else output_format
         vb = ctx.obj.get("verbose", False) if ctx.obj else False
         output_error(exception=exc, output_format=of, verbose=vb)
-        ctx.exit(1)
+        ctx.exit(EXIT_REJECTED)
 
 
 def _format_age(seconds: float) -> str:

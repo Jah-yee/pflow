@@ -14,7 +14,7 @@ Keep those responsibilities in the Runner so CLI and MCP share them.
 | Workflow-name versus invalid-command heuristic | `workflow_resolution.py:is_likely_workflow_name` |
 | `name=value` parameters (raw text; the declared type types them) | `param_parsing.py` |
 | File/saved-name resolution shared with MCP | `execution/workflow_resolver.py:resolve_workflow` |
-| A run's ending — JSON document, stderr summary, exit code (every status) | `commands/run.py:_display_execution_result` over `execution/formatters/run_outcome.py` (`build_run_outcome`, `render_cli_stderr`, `EXIT_CODES`) |
+| A run's ending — JSON document, stderr summary, exit code (every status) | `commands/run.py:_display_execution_result` over `execution/formatters/run_outcome.py` (`build_run_outcome`, `render_cli_stderr`, `EXIT_CODES`, `EXIT_REJECTED`) |
 | A successful run's stdout data and its header | `workflow_output.py:_handle_text_output`, `_show_output_header` |
 | A failure with no run (pre-execution or escaped exception) | `error_output.py:output_error` |
 | Subcommand-specific seams | `commands/CLAUDE.md` |
@@ -71,7 +71,13 @@ and exits with `outcome.exit_code` (`EXIT_CODES`: completed/degraded 0, failed 1
 durable pause 4); the builder turns a non-durable PAUSED into a failure, so no unusable
 resume token prints. It settles a failure's trace before building the outcome, so a run that
 failed before the engine opened its stream still carries `execution_id`/`trace_path`.
-Interrupts exit 130; Click owns usage exit 2.
+
+Exit 2 (`EXIT_REJECTED`, beside `EXIT_CODES`) means the run never started — decided by phase,
+never by error category: a FAILED outcome with `ExecutionResult.engine_started` False, and every
+boundary that catches an error before a run exists (run's and resume's outer `except`,
+`--validate-only`, `--dry-run` plan errors, a removed command). Click's own usage errors are 2 too.
+A new pre-run exit uses `EXIT_REJECTED`; anything raised once the engine started stays 1.
+Interrupts exit 130.
 
 Workflow progress streams to stderr for TTY and non-TTY callers; run.py's print-mode
 gate suppresses it.

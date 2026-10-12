@@ -134,7 +134,7 @@ class TestADefaultIsRefusedOnEveryValidatingPath:
         runner = CliRunner(mix_stderr=False)
         validated = runner.invoke(cli, ["--validate-only", "--output-format", "json", str(workflow)])
         ran = runner.invoke(cli, ["--output-format", "json", str(workflow)])
-        assert validated.exit_code == ran.exit_code == 1
+        assert validated.exit_code == ran.exit_code == 2
         shown = [(e["message"], e["context"]["path"]) for e in self._json_errors(validated)]
         assert shown == [("The default of input 'n' is 'abc' but its type is `- type: integer`.", "inputs.n.default")]
         assert [(e["message"], e["context"]["path"]) for e in self._json_errors(ran)] == shown
@@ -143,7 +143,7 @@ class TestADefaultIsRefusedOnEveryValidatingPath:
         workflow = tmp_path / "bad-default.pflow.md"
         workflow.write_text(BAD_DEFAULT_WF, encoding="utf-8")
         result = CliRunner(mix_stderr=False).invoke(cli, ["--validate-only", str(workflow), "n=3"])
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "The default of input 'n' is 'abc'" in result.output
 
     def test_save_refuses_it(self) -> None:

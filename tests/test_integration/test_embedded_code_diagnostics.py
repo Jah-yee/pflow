@@ -179,7 +179,7 @@ def test_a_cache_var_insert_is_the_error(tmp_path: Path, caplog: pytest.LogCaptu
     cache = "## Cache\n\n```cache\nContext: ${x|json}\n```\n"
     caplog.set_level(logging.ERROR, logger="pflow.runtime.template_validation.validator")
     result = _cli(tmp_path, _markdown(steps, inputs=("x",), extra=cache))
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Found 1 template error(s)" in caplog.messages  # no longer "malformed": it counts placement too
     assert f"${{x|json}} is accepted only in JavaScript passed to an MCP tool: {PLACES}." in result.stdout
     assert "At: cache.items[name=x|json].var" in result.stdout
@@ -400,7 +400,7 @@ def test_cli_renders_4a_and_4b(tmp_path: Path) -> None:
         "    () => { const sel = '${selector}'; return sel; }\n"
     )
     result = _cli(tmp_path, _markdown(steps, inputs=("selector",)))
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert result.stdout.endswith(
         "Error 1: Template Error\n\n"
         "Input 'selector' is never inserted: its only use, '${selector}' in 'function', is JavaScript text that "
@@ -435,7 +435,7 @@ def test_6_an_unknown_root_in_an_insert_renders_as_ruled(tmp_path: Path) -> None
         "### click\n\nEvaluate.\n\n- type: mcp-chrome-devtools-evaluate_script\n- function: () => ${nod.result|json}\n"
     )
     result = _cli(tmp_path, _markdown(steps))
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Node 'click' references non-existent node 'nod' in parameter 'function'." in result.stdout
     assert result.stdout.endswith(
         "Error 2: Template Error\n\n"

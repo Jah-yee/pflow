@@ -27,6 +27,11 @@ from pflow.execution.formatters.batch_errors import (
 from pflow.execution.gate_prompt import format_bulk_approve_hint, format_gate_lines, format_resume_answer_command
 from pflow.execution.result import ExecutionResult
 
+# The CLI's exit codes, all in one place (documented in docs/reference/cli/index.mdx → Exit codes).
+# A run that ended maps by its status. EXIT_REJECTED means the run never started — the call or the
+# workflow is wrong (fix it, then retry): a FAILED outcome whose engine never started, and every CLI
+# refusal raised before a run exists. It is Click's usage-error code, so one code means "wrong call"
+# whoever caught it. Interrupts exit 130.
 EXIT_CODES: Final[Mapping[WorkflowStatus, int]] = MappingProxyType({
     WorkflowStatus.SUCCESS: 0,
     WorkflowStatus.DEGRADED: 0,
@@ -34,6 +39,7 @@ EXIT_CODES: Final[Mapping[WorkflowStatus, int]] = MappingProxyType({
     WorkflowStatus.DENIED: 3,
     WorkflowStatus.PAUSED: 4,
 })
+EXIT_REJECTED: Final = 2
 
 _ADVISORIES_HEADING = "\N{INFORMATION SOURCE}\N{VARIATION SELECTOR-16} Advisories:"
 _NO_ERROR_DETAILS = "❌ Workflow execution failed — no error details were recorded"
@@ -56,9 +62,12 @@ class RunOutcome:
     errors: list[Diagnostic]
     warnings: list[Diagnostic]
     advisories: list[Diagnostic]
+    engine_started: bool
 
     @property
     def exit_code(self) -> int:
+        if self.status is WorkflowStatus.FAILED and not self.engine_started:
+            return EXIT_REJECTED
         return EXIT_CODES[self.status]
 
 
@@ -123,7 +132,14 @@ def build_run_outcome(
     if resume_command is not None:
         document["resume_command"] = resume_command
 
-    return RunOutcome(document=document, status=status, errors=errors, warnings=warnings, advisories=advisories)
+    return RunOutcome(
+        document=document,
+        status=status,
+        errors=errors,
+        warnings=warnings,
+        advisories=advisories,
+        engine_started=result.engine_started,
+    )
 
 
 def _outcome_status(result: ExecutionResult) -> WorkflowStatus:

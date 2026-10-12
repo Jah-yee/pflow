@@ -51,7 +51,7 @@ def test_workflow_arguments():
     runner = click.testing.CliRunner()
     result = runner.invoke(main, ["node1", "=>", "node2"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Invalid input" in result.output or "must be quoted" in result.output
 
 
@@ -181,7 +181,7 @@ def test_report_dir_preflight_refuses_before_workflow_execution(tmp_path: Path, 
     runner = click.testing.CliRunner()
     result = runner.invoke(main, [str(workflow), "--report-dir", str(report_dir)])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "without .pflow-report.json" in result.output
     assert not side_effect.exists()
 

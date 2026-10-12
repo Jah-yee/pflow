@@ -2,7 +2,7 @@
 
 Provides compile_and_run() — the standard pattern for tests that need to
 compile IR, seed the shared store, and execute via WorkflowEngine. This
-matches the production path in WorkflowRunner._compile_and_execute().
+matches the production path in WorkflowRunner._compile_for_run() + _execute().
 
 Usage:
     from tests.shared.engine_utils import compile_and_run

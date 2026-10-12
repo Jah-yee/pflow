@@ -266,7 +266,7 @@ def test_build_plan_circular_subworkflow_emits_error_diagnostic(tmp_path) -> Non
     signal "don't run this" via exit code.
 
     Mutation: revert `_sub_workflow_error_entry` to `Severity.WARNING` →
-    the severity assertion below fails and `test_dry_run_circular_subworkflow_exits_one`
+    the severity assertion below fails and `test_dry_run_circular_subworkflow_exits_two`
     starts seeing exit 0.
     """
     from pflow.core.diagnostic import Severity

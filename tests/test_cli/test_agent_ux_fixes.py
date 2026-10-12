@@ -371,7 +371,7 @@ def test_runner_exception_to_result_includes_category() -> None:
     runner = WorkflowRunner()
     exception = ValueError("Template ${step1.output} could not be resolved")
 
-    result = runner._exception_to_result(exception, 0.0, None, metrics_collector=None)
+    result = runner._exception_to_result(exception, 0.0, None, metrics_collector=None, engine_started=True)
 
     assert result.success is False
     assert (result.errors[0].context or {}).get("category") == "validation"  # ValueError → validation category

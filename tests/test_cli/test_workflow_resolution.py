@@ -240,7 +240,7 @@ class TestWorkflowResolutionCLI:
 
                 result = runner.invoke(main, ["text-analyz"])
 
-            assert result.exit_code == 1
+            assert result.exit_code == 2
             assert "Workflow 'text-analyz' not found" in result.output
             assert "Did you mean one of these?" in result.output
             assert "text-analyzer" in result.output
@@ -257,7 +257,7 @@ class TestWorkflowResolutionCLI:
 
                 result = runner.invoke(main, ["unknown-workflow"])
 
-            assert result.exit_code == 1
+            assert result.exit_code == 2
             # Unified titled format: "Error: Workflow Not Found"
             assert "Workflow Not Found" in result.output
             assert "Workflow 'unknown-workflow' not found" in result.output
@@ -320,7 +320,7 @@ class TestWorkflowResolutionCLI:
 
             result = runner.invoke(main, ["process-data"])
 
-            assert result.exit_code == 1
+            assert result.exit_code == 2
             # Input names must appear in the error (validation or compilation catches them)
             assert "file" in result.output
             assert "output" in result.output
@@ -437,7 +437,7 @@ class TestWorkflowResolutionCLI:
 
             result = runner.invoke(main, ["--output-format", "json", "test"])
 
-            assert result.exit_code in (0, 1)
+            assert result.exit_code == 2  # test_node is not a registered type: refused before the run
 
     def test_natural_language_fallback(self):
         """Test that natural language shows invalid input guidance when workflow not found."""
@@ -542,7 +542,7 @@ class TestEdgeCases:
 
         result = click.testing.CliRunner().invoke(main, [arg])
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "Workflow File Not Found" in result.output
         assert f"No file at: {(tmp_path / arg).resolve()}" in result.output
         assert f"resolved relative to cwd: {Path.cwd()}" in result.output
@@ -554,7 +554,7 @@ class TestEdgeCases:
 
         result = click.testing.CliRunner().invoke(main, ["--output-format", "json", "sub/x.pflow.md"])
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         error = json.loads(result.output)["errors"][0]
         assert error["title"] == "Workflow File Not Found"
         assert error["context"]["file_path"] == str((tmp_path / "sub/x.pflow.md").resolve())
@@ -567,7 +567,7 @@ class TestEdgeCases:
 
         result = click.testing.CliRunner().invoke(main, [str(missing)])
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert f"No file at: {missing.resolve()}" in result.output
         assert "resolved relative to cwd" not in result.output
         assert "pflow list" not in result.output
@@ -648,7 +648,7 @@ class TestEdgeCases:
         finally:
             locked.chmod(0o755)
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "Permission" in result.output
         assert "No file at" not in result.output
 

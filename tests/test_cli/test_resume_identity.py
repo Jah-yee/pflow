@@ -125,7 +125,7 @@ def _out(result: Result) -> str:
 
 def _refused(exec_id: str, *args: str) -> str:
     result = _invoke("resume", exec_id, *args)
-    assert result.exit_code == 1, _out(result)
+    assert result.exit_code == 2, _out(result)
     combined = _out(result)
     assert "Workflow changed since the original run" in combined
     return combined
@@ -508,7 +508,7 @@ def test_batched_host_on_an_older_trace_still_needs_confirmation(home, tmp_path)
     exec_id, ledger = _batched_host_run(home, tmp_path)
     _age_trace(home, exec_id, drop_lines=_is_host_start)
     result = _invoke("resume", exec_id)
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Resuming re-runs step 'host' (a workflow step)" in _out(result)
     assert ledger.read_text(encoding="utf-8").splitlines() == ["fired a"]  # nothing re-fired
 
@@ -598,7 +598,7 @@ def test_a_malformed_prompt_cache_after_the_resume_point_reports_a_validation_er
     exec_id = _fail(wf)
     _edit(wf, (_TYPO, _FIX), ("- type: write-file\n", "- type: write-file\n- prompt_cache: 42\n"))
     result = _invoke("resume", exec_id)
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "42 is not of type 'array'" in _out(result)
     assert "TypeError" not in _out(result) and "Workflow changed" not in _out(result)
 

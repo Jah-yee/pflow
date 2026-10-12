@@ -121,6 +121,6 @@ def test_side_effecting_resume_non_tty_refuses_without_hanging(tmp_path, uv_exe,
 
     _skip_if_uv_sandbox_panics(resume)
     # Exited (not hung) with the actionable refusal — never a prompt.
-    assert resume.returncode == 1, resume.stderr
+    assert resume.returncode == 2, resume.stderr
     assert "--force" in resume.stderr
     assert "boom" in resume.stderr
