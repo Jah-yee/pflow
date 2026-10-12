@@ -7,7 +7,7 @@ Shared parsing, diagnostics, configuration, and execution utilities.
 | Task | Start here |
 |---|---|
 | Change markdown parsing or source attribution | `markdown_parser.py`; author-content YAML in `yaml_utils.py` |
-| Change external content inlining or file provenance | `file_resolver.py::resolve_file_references` mutates IR in place and records `_source_files`; `FILE_RESOLVABLE_PARAMS` allowlists content params |
+| Change external content inlining or file provenance | `file_resolver.py::resolve_file_references` mutates IR in place and records `_source_files` (the authored reference, for diagnostics) and `_resolved_files` (the absolute path, same keys — a code step's `__file__`; source-location provenance, so `workflow_id` strips it from the content and step hashes); `FILE_RESOLVABLE_PARAMS` allowlists content params |
 | Change `${…}` template syntax, resolution, or the unresolved/issues channels | `templates.py` — see **Template language** below |
 | Change IR shape or declared types | `ir_schema.py::FLOW_IR_SCHEMA`, `validate_ir`; `types.py::TypeSpec` |
 | Add an error or change diagnostic rendering | `exceptions.py`, `diagnostic.py`, `diagnostic_render.py` — see below |

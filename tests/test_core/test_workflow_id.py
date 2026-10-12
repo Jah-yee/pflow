@@ -7,6 +7,7 @@ an ``ir-hash:`` prefix (one definition — a drift would silently make an inline
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -263,3 +264,23 @@ def test_step_identity_reads_both_edge_spellings_as_the_compiler_does() -> None:
     source_target = step_identity({"nodes": nodes, "edges": [{"source": "a", "target": "b", "action": "default"}]})
     assert from_to == source_target
     assert from_to["steps"]["a"]["next"] == [["default", "b"]]
+
+
+def test_file_loading_workflow_hashes_do_not_depend_on_where_the_checkout_sits(tmp_path: Path) -> None:
+    # Issue #813: file resolution records each loaded file's ABSOLUTE path on the node. That is
+    # source-location provenance, so the replay fingerprint and resume's step hashes must not see it —
+    # the same workflow in two directories (a moved checkout, a second worktree) hashes the same.
+    from pflow.execution.workflow_resolver import resolve_workflow
+
+    workflow = "# Load\n\n## Steps\n\n### run\n\nRun it.\n\n- type: code\n- code: ./lib/body.py\n"
+    resolved = []
+    for checkout in ("a", "b"):
+        (tmp_path / checkout / "lib").mkdir(parents=True)
+        (tmp_path / checkout / "lib" / "body.py").write_text("result: int = 1\n", encoding="utf-8")
+        (tmp_path / checkout / "wf.pflow.md").write_text(workflow, encoding="utf-8")
+        resolved.append(resolve_workflow(str(tmp_path / checkout / "wf.pflow.md")).ir)
+
+    first, second = resolved
+    assert first["nodes"][0]["params"]["code"] == "result: int = 1\n"  # the file was loaded
+    assert workflow_content_hash(first) == workflow_content_hash(second)
+    assert step_identity(first) == step_identity(second)

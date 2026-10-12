@@ -66,6 +66,7 @@ result: dict = {
 - Single output via `result` variable — use dict for structured output
 - `${node.stdout}`/`${node.stderr}` hold what the code itself prints (per batch item); prints from threads the code starts (`threading.Thread`, `ThreadPoolExecutor`, `run_in_executor`) are not captured and go to pflow's stderr — return thread output through `result`. Never use `contextlib.redirect_stdout` (process-wide; misroutes parallel batch output)
 - Downstream access: `${node.result}` or `${node.result.field}` for dict results
+- The body runs as a script: `__name__` is `"__main__"`. A body loaded with `- code: ./x.py` also gets `__file__` (that file's absolute path) — use `Path(__file__).parent` for files next to it; relative paths in the code itself resolve against the working directory
 
 ## Validate-Time Type Checking
 

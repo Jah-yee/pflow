@@ -635,6 +635,10 @@ class PythonCodeNode(Node):
     # Override auto-derived name so workflow type is "code" (not "python-code").
     name = "code"
 
+    # Absolute path of the file the code was loaded from (`code: ./x.py`), set by the compiler;
+    # None for an inline body. Becomes `__file__` in the exec namespace.
+    source_file: str | None = None
+
     def __init__(self) -> None:
         """Initialize with minimal retries — code execution is deterministic."""
         super().__init__(max_retries=1, wait=0)
@@ -698,6 +702,7 @@ class PythonCodeNode(Node):
             "requires": requires,
             "annotations": annotations,
             "code_source_line": self.params.get("_code_source_line", 0),
+            "source_file": self.source_file,
             "has_result": has_result,
         }
 
@@ -714,8 +719,13 @@ class PythonCodeNode(Node):
         inputs = prep_res["inputs"]
         timeout = prep_res["timeout"]
 
-        # Build namespace with unrestricted builtins + typing + input variables
-        namespace: dict[str, Any] = {"__builtins__": __builtins__}
+        # Build namespace with unrestricted builtins + typing + input variables. The body runs as a
+        # script does: `__name__` is "__main__" (a name in sys.modules — `@dataclass` under
+        # `from __future__ import annotations` looks the module up there), and a file-loaded body
+        # gets `__file__`, as `python x.py` would.
+        namespace: dict[str, Any] = {"__builtins__": __builtins__, "__name__": "__main__"}
+        if prep_res["source_file"]:
+            namespace["__file__"] = prep_res["source_file"]
         namespace["typing"] = _typing_module
         namespace["Optional"] = _typing_module.Optional
         namespace["Any"] = _typing_module.Any

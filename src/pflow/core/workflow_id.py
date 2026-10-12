@@ -44,15 +44,16 @@ def canonical_ir_digest(ir: dict[str, Any]) -> str:
     return hashlib.md5(canonical.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
-# Source-LOCATION provenance keys (editor-click metadata: where each node/output/file-ref was authored).
-# They never affect how the graph renders or executes, so they are stripped from the replay version
-# fingerprint — a comment/whitespace edit that only shifts line numbers must NOT read as "a different
-# version". `_routes_to_end` is deliberately NOT here: it is semantic (it shapes the graph), so it stays.
-_SOURCE_PROVENANCE_KEYS = frozenset({"_source_line", "_source_lines", "_source_files"})
+# Source-LOCATION provenance keys (where each node/output/file-ref was authored, and where a loaded file
+# sits on disk). They say where the workflow lives, not what it does, so they are stripped from the replay
+# version fingerprint — a comment/whitespace edit that only shifts line numbers, or a moved checkout, must
+# NOT read as "a different version". `_routes_to_end` is deliberately NOT here: it is semantic (it shapes
+# the graph), so it stays.
+_SOURCE_PROVENANCE_KEYS = frozenset({"_source_line", "_source_lines", "_source_files", "_resolved_files"})
 
 
 def _strip_source_provenance(obj: Any) -> Any:
-    """Return ``obj`` with every ``_source_*`` location key removed, recursively. Pure — rebuilds new
+    """Return ``obj`` with every source-location key removed, recursively. Pure — rebuilds new
     containers, never mutates the input (the runner reuses ``resolved.ir`` downstream)."""
     if isinstance(obj, dict):
         return {k: _strip_source_provenance(v) for k, v in obj.items() if k not in _SOURCE_PROVENANCE_KEYS}
