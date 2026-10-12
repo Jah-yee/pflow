@@ -14,6 +14,7 @@ import click
 from pflow.core.suggestion_utils import find_similar_items, format_did_you_mean
 from pflow.mcp import MCPRegistrar, MCPServerManager
 from pflow.mcp.registrar import ServerSyncResult, SyncBatchResult
+from pflow.mcp.schema import declared_output_paths
 
 logger = logging.getLogger(__name__)
 
@@ -774,143 +775,26 @@ def _format_tool_header(tool_info: dict) -> None:
     click.echo(f"Class: {tool_info['class_name']}")
 
 
-def _format_parameters(params: list[dict], node_type: str, title: str = "Parameters") -> None:
-    """Format and display parameters or inputs."""
+def _format_parameters(params: list[dict], node_type: str) -> None:
+    """Display each param — and an object's or array's fields, indented beneath it."""
     from pflow.registry.context_builder import param_note
 
-    if params:
-        click.echo(f"\n{title}:")
-        for param in params:
-            required = " (required)" if param.get("required", True) else ""
-            note = param_note(node_type, param["key"])
-            desc = f" - {param.get('description', '')}" if param.get("description") else ""
-            click.echo(f"  - {param['key']}: {param['type']}{required}{note}{desc}")
-    else:
-        click.echo(f"\n{title}: None")
+    if not params:
+        click.echo("\nParameters: None")
+        return
+    click.echo("\nParameters:")
+    for param in params:
+        _echo_param(param["key"], param, note=param_note(node_type, param["key"]), indent=2)
 
 
-_MAX_DECLARED_OUTPUT_DEPTH = 10
-_MAX_DECLARED_OUTPUT_PATHS = 100
+def _echo_param(key: str, param: dict, *, note: str = "", indent: int) -> None:
+    from pflow.registry.context_builder import value_constraints
 
-
-def _schema_type_label(schema: dict) -> str:
-    """Return a readable JSON Schema type label."""
-    schema_type = schema.get("type")
-    if schema_type is None:
-        if "properties" in schema:
-            schema_type = "object"
-        elif "items" in schema:
-            schema_type = "array"
-        else:
-            schema_type = "any"
-    if isinstance(schema_type, list):
-        return " | ".join(str(item) for item in schema_type)
-    if schema_type == "any":
-        for keyword in ("anyOf", "oneOf"):
-            alternatives = schema.get(keyword)
-            if isinstance(alternatives, list):
-                labels = [_schema_type_label(item) for item in alternatives if isinstance(item, dict)]
-                if labels:
-                    return " | ".join(dict.fromkeys(labels))
-    return str(schema_type)
-
-
-def _resolve_schema_pointer(root_schema: dict, ref: str) -> dict | None:
-    """Resolve one local JSON Pointer target."""
-    if ref == "#":
-        return root_schema
-    if not ref.startswith("#/"):
-        return None
-    target: object = root_schema
-    for raw_segment in ref[2:].split("/"):
-        segment = raw_segment.replace("~1", "/").replace("~0", "~")
-        if not isinstance(target, dict) or segment not in target:
-            return None
-        target = target[segment]
-    return target if isinstance(target, dict) else None
-
-
-def _resolve_local_schema_ref(root_schema: dict, field_schema: dict) -> dict:
-    """Resolve chained local JSON Pointer references with a cycle guard."""
-    current = field_schema
-    visited: set[str] = set()
-    while isinstance(ref := current.get("$ref"), str) and ref not in visited:
-        visited.add(ref)
-        target = _resolve_schema_pointer(root_schema, ref)
-        if target is None:
-            break
-        current = target
-    return current
-
-
-def _schema_array_items(schema: dict) -> dict | None:
-    """Return an array's item schema when its type declaration includes array."""
-    schema_type = schema.get("type")
-    is_array = schema_type == "array" or (isinstance(schema_type, list) and "array" in schema_type)
-    items = schema.get("items")
-    return items if is_array and isinstance(items, dict) else None
-
-
-def _schema_combinator_branches(schema: dict) -> list[dict]:
-    """Return object-like branches from JSON Schema union combinators."""
-    branches: list[dict] = []
-    for keyword in ("anyOf", "oneOf"):
-        alternatives = schema.get(keyword)
-        if isinstance(alternatives, list):
-            branches.extend(item for item in alternatives if isinstance(item, dict))
-    return branches
-
-
-def _schema_children(field_schema: dict, path: str) -> list[tuple[dict, str, bool]]:
-    """Return nested schemas with their display paths and path-emission flag."""
-    children: list[tuple[dict, str, bool]] = []
-    properties = field_schema.get("properties")
-    if isinstance(properties, dict):
-        children.extend(
-            (child_schema, f"{path}.{name}", True)
-            for name, child_schema in properties.items()
-            if isinstance(child_schema, dict)
-        )
-
-    items = _schema_array_items(field_schema)
-    if items is not None:
-        children.append((items, f"{path}[0]", True))
-
-    # Union branches describe the same parent path, so only emit their children.
-    children.extend((branch, path, False) for branch in _schema_combinator_branches(field_schema))
-    return children
-
-
-def _flatten_declared_output_paths(schema: dict, prefix: str = "result") -> tuple[list[tuple[str, str]], bool]:
-    """Flatten reliable JSON Schema properties into result-prefixed hints."""
-    paths: list[tuple[str, str]] = []
-    seen_paths: set[str] = set()
-    truncated = False
-
-    def walk(field_schema: dict, path: str, *, include_path: bool = True, depth: int = 0) -> None:
-        nonlocal truncated
-        # Bound recursive/branching schemas while keeping ordinary nested tool
-        # results useful and terminal output predictable.
-        if depth > _MAX_DECLARED_OUTPUT_DEPTH:
-            truncated = True
-            return
-        field_schema = _resolve_local_schema_ref(schema, field_schema)
-
-        if include_path and path not in seen_paths:
-            if len(paths) >= _MAX_DECLARED_OUTPUT_PATHS:
-                truncated = True
-                return
-            paths.append((path, _schema_type_label(field_schema)))
-            seen_paths.add(path)
-
-        # Optional structured values are commonly represented as an object
-        # branch plus a null branch. Traverse branches without repeating the
-        # parent path so their nested properties remain statically discoverable.
-        for child_schema, child_path, emit_path in _schema_children(field_schema, path):
-            walk(child_schema, child_path, include_path=emit_path, depth=depth + 1)
-
-    walk(schema, prefix, include_path=False)
-    return paths, truncated
+    required = " (required)" if param.get("required", True) else ""
+    desc = f" - {param['description']}" if param.get("description") else ""
+    click.echo(f"{' ' * indent}- {key}: {param['type']}{required}{value_constraints(param)}{note}{desc}")
+    for field, field_param in (param.get("structure") or {}).items():
+        _echo_param(field, field_param, indent=indent + 4)
 
 
 def _format_outputs(outputs: list[dict], output_schema: dict | None = None) -> None:
@@ -921,7 +805,7 @@ def _format_outputs(outputs: list[dict], output_schema: dict | None = None) -> N
             desc = f" - {output.get('description', '')}" if output.get("description") else ""
             click.echo(f"  - {output['key']}: {output['type']}{desc}")
 
-    declared_paths, truncated = _flatten_declared_output_paths(output_schema or {})
+    declared_paths, truncated = declared_output_paths(output_schema or {})
     if declared_paths:
         click.echo("\nDeclared output paths (from server schema):")
         for path, type_label in declared_paths:
@@ -976,18 +860,18 @@ def describe_tool(tool: str) -> None:
     """Show detailed information about an MCP tool.
 
     \b
-    Shows: parameters (name, type, required/optional), output type,
-    and .pflow.md usage snippet.
+    Shows: parameters (type, required, default, allowed values, and an
+    object's or array's fields indented beneath it), outputs, and a
+    .pflow.md snippet that sets the required parameters.
     \b
     Interpreting results:
-      Parameters with defaults   → usually optional
-      Parameters without defaults → always required
-      Output type "Any"          → probe to discover actual structure
+      (required)          → the step must set it; the rest are optional
+      Output type "any"   → probe to discover actual structure
     \b
     Example:
         pflow mcp describe mcp-slack-SEND_MESSAGE
     """
-    from pflow.registry.context_builder import snippet_placeholder
+    from pflow.registry.context_builder import usage_snippet
 
     registrar = MCPRegistrar()
     lookup_id = _resolve_tool_id(tool, registrar)
@@ -1004,22 +888,8 @@ def describe_tool(tool: str) -> None:
         _format_parameters(tool_info["params"], tool_info["node_name"])
         _format_outputs(tool_info["outputs"], tool_info.get("output_schema"))
 
-        # Add .pflow.md usage snippet
-        tool_name = tool_info["node_name"]
         click.echo("\nUsage in .pflow.md:\n")
-        click.echo("    ### step-name")
-        click.echo("")
-        click.echo("    Describe what this step does and why.")
-        click.echo("")
-        click.echo(f"    - type: {tool_name}")
-        params = tool_info.get("params", [])
-        shown = 0
-        for param in params[:3]:
-            key = param.get("key", "")
-            if key:
-                placeholder = snippet_placeholder(tool_name, key, param.get("type", "str").lower(), first=shown == 0)
-                click.echo(f"    - {key}: {placeholder}")
-                shown += 1
+        click.echo("\n".join(usage_snippet(tool_info["node_name"], tool_info["params"])))
 
     except Exception as e:
         click.echo(f"Error: Failed to get tool info: {e}", err=True)

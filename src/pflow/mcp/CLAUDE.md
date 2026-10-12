@@ -9,7 +9,8 @@ surface: it exposes pflow itself as an MCP server.
 |---|---|
 | Persisted server configuration | `manager.py:MCPServerManager` (`~/.pflow/mcp-servers.json`) |
 | Environment expansion and HTTP auth | `auth_utils.py:expand_env_vars_nested`, `build_auth_headers` |
-| Tool discovery/schema conversion | `discovery.py:MCPDiscovery` |
+| Tool discovery | `discovery.py:MCPDiscovery` |
+| Input schema → registry params; output schema → declared paths | `schema.py:pflow_params`, `declared_output_paths` |
 | Registry reconciliation | `registrar.py:MCPRegistrar.sync_servers` |
 | Stateful sessions and transport recovery | `pool.py:MCPConnectionPool` |
 | SDK exception/Diagnostic translation | `errors.py` |
@@ -31,6 +32,11 @@ naive split; its display limitation is separate from mutation and compiler parsi
 
 Discovery stores tool schemas verbatim and never substitutes a value for an SDK
 attribute it cannot read — why, in `discovery.py:_tool_definition` (#756).
+
+A registry param's `type` is not display-only: template validation and resolution
+read it (`runtime/engine/template_resolution.py:build_type_cache`), so a type that
+misreads the schema changes what reaches the server — a `$ref` object typed `str`
+sent a dict as JSON text (#811). Read types through `schema.py`, never `prop["type"]`.
 
 Discovery runs only where a server enters the config (`pflow mcp add`) or on an
 explicit `pflow mcp sync`; workflow start never contacts servers (#751 — a failing
