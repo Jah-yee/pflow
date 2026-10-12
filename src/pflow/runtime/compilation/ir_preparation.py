@@ -16,6 +16,7 @@ from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.core.exceptions import CompilationError, InputTypeError
 from pflow.core.llm_config import is_settings_injected
 from pflow.core.param_coercion import InputSource, coerce_declared_input
+from pflow.core.types import input_usage
 from pflow.core.validation_utils import (
     VALIDATION_PLACEHOLDER,
     get_parameter_validation_error,
@@ -49,14 +50,19 @@ class _Caller:
         """Where the value for input ``name`` is supplied."""
         return f"nodes[id={self.step}].params.inputs.{name}" if self.step else f"inputs.{name}"
 
-    @property
-    def required_fix(self) -> str:
-        """The remedy for a missing required input — at a sub-workflow boundary only the parent can pass it."""
-        if not self.step:
-            return ""
+    def required_fix(self, name: str, spec: dict[str, Any]) -> str:
+        """The remedy for a missing required input — at a sub-workflow boundary only the parent can
+        pass it; at the root, an argument (or the pipe) or the same name in the environment or settings."""
+        if self.step:
+            return (
+                f"Pass it under step '{self.step}' `inputs:` "
+                "(a required sub-workflow input is never read from the environment or settings)"
+            )
+        usage = input_usage(spec)
+        passed = f"Pipe it on stdin or pass {usage.argument(name)}" if usage.stdin else f"Pass {usage.argument(name)}"
         return (
-            f"Pass it under step '{self.step}' `inputs:` "
-            "(a required sub-workflow input is never read from the environment or settings)"
+            f"{passed} — or set the name '{name}' in the shell environment, "
+            f"or once with: pflow settings set-env {name} {usage.type.placeholder}"
         )
 
     def context(self) -> dict[str, str]:
@@ -86,19 +92,18 @@ def _fallback_value(
     """A value for an input nobody supplied: shell environment → settings.env → declared default.
 
     ``(None, None)`` when none has one (a ``default: null`` is no value). At a sub-workflow
-    boundary a required input with no default has none: it comes from the parent, never from
+    boundary a required input (``input_usage``: no default, or ``""``) has none: it comes from the parent, never from
     the environment or settings (as the validator rules statically, ``_check_required_inputs``).
     A container default is a fresh copy every time — the IR's own object is never handed to a run.
     """
-    has_default = input_spec.get("default") is not None
-    if caller.step and input_spec.get("required", True) and not has_default:
+    if caller.step and input_usage(input_spec).required:
         return None, None
     if input_name in os.environ:
         # CLI/MCP startup copies settings.env into the environment, never over an exported name.
         return os.environ[input_name], "settings" if is_settings_injected(input_name) else "env"
     if input_name in settings_env:
         return settings_env[input_name], "settings"
-    if has_default:
+    if input_spec.get("default") is not None:
         return copy.deepcopy(input_spec["default"]), "default"
     return None, None
 
@@ -122,7 +127,11 @@ def _resolve_input(
     if source is None:
         if is_required:
             message = f"{caller.subject} requires input '{input_name}': {description}"
-            return caller.error(message, caller.path(input_name), caller.required_fix), None, None
+            return (
+                caller.error(message, caller.path(input_name), caller.required_fix(input_name, input_spec)),
+                None,
+                None,
+            )
         return None, None, None
     if is_required and value == "":
         origin = "" if supplied is not None else f" (resolved from {source})"

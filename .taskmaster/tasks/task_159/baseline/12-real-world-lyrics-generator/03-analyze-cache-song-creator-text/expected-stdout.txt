@@ -12,7 +12,7 @@
   5 recommended actions
 
   Cost data unavailable: run the workflow once for cost figures.
-  Suggested:  pflow run .taskmaster/tasks/task_159/baseline/_shared/workflows/lyrics-generator/song-creator/song-creator.pflow.md concept=<value> concept_brief=<value>
+  Suggested:  pflow run .taskmaster/tasks/task_159/baseline/_shared/workflows/lyrics-generator/song-creator/song-creator.pflow.md concept='{...}' concept_brief=<string>
 
 ## Recommended actions (5, ordered by impact)
 

@@ -106,7 +106,7 @@
     "root_llm_node_count": 2,
     "sub_workflow_llm_node_count": 0,
     "sub_workflow_rollup": null,
-    "suggested_run_command": "pflow run <BASELINE_CASE_DIR>/workflow.pflow.md article=<value>"
+    "suggested_run_command": "pflow run <BASELINE_CASE_DIR>/workflow.pflow.md article=<string>"
   },
   "blocking_errors": [],
   "other_blocking_errors": [],

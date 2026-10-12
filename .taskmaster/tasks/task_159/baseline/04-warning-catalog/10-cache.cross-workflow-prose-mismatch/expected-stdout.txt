@@ -116,7 +116,7 @@
         }
       ]
     },
-    "suggested_run_command": "pflow run <BASELINE_CASE_DIR>/workflow.pflow.md shared=<value>"
+    "suggested_run_command": "pflow run <BASELINE_CASE_DIR>/workflow.pflow.md shared=<string>"
   },
   "blocking_errors": [],
   "other_blocking_errors": [],

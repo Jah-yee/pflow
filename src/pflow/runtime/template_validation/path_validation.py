@@ -21,6 +21,7 @@ from pflow.core.templates import (
     Segment,
     parse_path,
 )
+from pflow.core.types import input_usage
 from pflow.core.workflow.template_surfaces import iter_template_surfaces
 from pflow.registry import Registry
 from pflow.runtime.template_validation.utils import (
@@ -443,16 +444,15 @@ def _get_input_description(variable: str, workflow_ir: dict[str, Any]) -> str:
     if variable in inputs:
         input_def = inputs[variable]
         desc = input_def.get("description", "")
-        required = input_def.get("required", True)
-        default = input_def.get("default")
+        usage = input_usage(input_def)
 
         parts = []
         if desc:
             parts.append(desc)
-        if not required and default is not None:
-            parts.append(f"(optional, default: {default})")
-        elif required:
+        if usage.required:
             parts.append("(required)")
+        elif usage.default is not None:
+            parts.append(f"(optional, default: {usage.default})")
 
         return " - " + " ".join(parts) if parts else ""
     return ""

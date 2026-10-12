@@ -6,6 +6,8 @@ used by both CLI and MCP server to ensure output parity.
 
 from typing import Any
 
+from pflow.core.types import input_usage, usage_arguments
+
 from .history_formatter import format_execution_history
 
 
@@ -28,8 +30,8 @@ def format_workflow_interface(name: str, metadata: dict[str, Any]) -> str:
         ...     "description": "Analyzes GitHub PRs",
         ...     "ir": {
         ...         "inputs": {
-        ...             "repo": {"required": True, "description": "Repository name"},
-        ...             "verbose": {"required": False, "description": "Verbose output", "default": False}
+        ...             "repo": {"type": "string", "description": "Repository name"},
+        ...             "verbose": {"type": "boolean", "description": "Verbose output", "default": False}
         ...         },
         ...         "outputs": {
         ...             "analysis": {"description": "PR analysis results"}
@@ -41,15 +43,15 @@ def format_workflow_interface(name: str, metadata: dict[str, Any]) -> str:
         Description: Analyzes GitHub PRs
         <BLANKLINE>
         Inputs:
-          - repo (required): Repository name
-          - verbose (optional): Verbose output
-            Default: False
+          - repo (string, required): Repository name
+          - verbose (boolean, optional): Verbose output
+            Default: false
         <BLANKLINE>
         Outputs:
           - analysis: PR analysis results
         <BLANKLINE>
         Example Usage:
-          pflow pr-analyzer repo=<value>
+          pflow pr-analyzer repo=<string>
     """
     ir = metadata.get("ir", {})
     description = metadata.get("description", "No description")
@@ -114,15 +116,12 @@ def _format_inputs_section(ir: dict[str, Any]) -> str:
     lines = ["\nInputs:"]
 
     for input_name, config in ir["inputs"].items():
-        required = config.get("required", True)
-        req_text = "required" if required else "optional"
-        desc = config.get("description", "")
-        default = config.get("default")
-        stdin_marker = " [stdin]" if config.get("stdin") is True else ""
-
-        lines.append(f"  - {input_name}{stdin_marker} ({req_text}): {desc}")
-        if default is not None:
-            lines.append(f"    Default: {default}")
+        usage = input_usage(config)
+        stdin_marker = " [stdin]" if usage.stdin else ""
+        status = "required" if usage.required else "optional"
+        lines.append(f"  - {input_name}{stdin_marker} ({usage.type}, {status}): {config.get('description', '')}")
+        if usage.default is not None:
+            lines.append(f"    Default: {usage.default}")
 
     return "\n".join(lines)
 
@@ -152,7 +151,7 @@ def _format_outputs_section(ir: dict[str, Any]) -> str:
 def _format_example_usage_section(name: str, ir: dict[str, Any]) -> str:
     """Format the example usage section.
 
-    Shows command with required parameters as placeholders.
+    Shows the command with each required input as ``name=<placeholder>``.
 
     Args:
         name: Workflow name
@@ -163,18 +162,6 @@ def _format_example_usage_section(name: str, ir: dict[str, Any]) -> str:
     """
     lines = ["\nExample Usage:"]
 
-    # Collect required parameters
-    example_params = []
-    if "inputs" in ir:
-        for input_name, config in ir["inputs"].items():
-            if config.get("required", True):
-                example_params.append(f"{input_name}=<value>")
-
-    # Build the example command
-    command = f"  pflow {name}"
-    if example_params:
-        command += f" {' '.join(example_params)}"
-
-    lines.append(command)
+    lines.append("  " + " ".join([f"pflow {name}", *usage_arguments(ir.get("inputs") or {})]))
 
     return "\n".join(lines)

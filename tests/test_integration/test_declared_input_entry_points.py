@@ -431,6 +431,20 @@ class TestSeveralBadInputsAndNoResumeHint:
     so the hint's absence is not an artefact — the presence row proves the medium shows it)."""
 
     @pytest.mark.usefixtures("pflow_home")
+    def test_a_missing_input_says_how_to_supply_it_on_every_cli_medium(self, tmp_path: Path) -> None:
+        """#804: the remedy names the argument with the declared type's placeholder and the name the
+        environment and settings are read under."""
+        workflow = str(_write(tmp_path, "typed", TYPED_WF))
+        fix = (
+            "Pass topics='[...]' — or set the name 'topics' in the shell environment, "
+            "or once with: pflow settings set-env topics '[...]'"
+        )
+
+        [error] = _json_errors(_invoke("--output-format", "json", workflow))
+        assert (error["message"], error["suggestions"]) == ("Workflow requires input 'topics': Topics.", [fix])
+        assert f"→ {fix}" in _invoke(workflow).stderr
+
+    @pytest.mark.usefixtures("pflow_home")
     def test_two_bad_inputs_are_two_errors_each_with_its_own_path_and_fix(self, tmp_path: Path) -> None:
         workflow = str(_write(tmp_path, "typed", TYPED_WF))
         as_json = _invoke("--output-format", "json", workflow, 'topics=["a"]', "count=3.0", "flag=maybe")

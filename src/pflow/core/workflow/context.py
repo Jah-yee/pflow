@@ -7,6 +7,8 @@ in workflow discovery and component browsing.
 import logging
 from typing import Any
 
+from pflow.core.types import input_usage
+
 from .manager import WorkflowManager
 
 logger = logging.getLogger(__name__)
@@ -141,8 +143,8 @@ def _build_workflow_entry(idx: int, workflow: dict[str, Any]) -> str:
     ir = workflow.get("ir", {})
     inputs = ir.get("inputs", {}) if ir else {}
     if inputs:
-        required = [n for n, s in inputs.items() if s.get("required", True)]
-        optional = [n for n, s in inputs.items() if not s.get("required", True)]
+        required = [n for n, s in inputs.items() if input_usage(s).required]
+        optional = [n for n, s in inputs.items() if not input_usage(s).required]
         if required:
             entry_parts.append(f"   **Inputs:** {', '.join(required)}")
         if optional:
