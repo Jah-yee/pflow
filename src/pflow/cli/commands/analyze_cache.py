@@ -90,6 +90,8 @@ def analyze_cache(
 ) -> None:
     """Analyze a workflow's prompt cache plan; shows recommendations and discrepancies.
 
+    
+    \b
     Examples:
 
         pflow analyze-cache workflow.pflow.md

@@ -39,6 +39,8 @@ def mermaid_cmd(
     On validation failure, shows diagnostics and exits with code 1.
     On success, outputs Mermaid syntax to stdout (or to file with -o).
 
+    
+    \b
     Examples:
 
         pflow mermaid workflow.pflow.md

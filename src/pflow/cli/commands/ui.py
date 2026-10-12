@@ -578,12 +578,12 @@ def _await_narration_turn(port: int) -> None:
 def ui_cmd(ctx: click.Context) -> None:
     """Serve the Viewer, Point at targets, or Watch deliberate user activity.
 
-    Serve with ``pflow ui [WORKFLOW] [--port N] [--no-open]
-    [--no-auto-update]``. A first argument other than a command is treated as
+    Serve with `pflow ui [WORKFLOW] [--port N] [--no-open]
+    [--no-auto-update]`. A first argument other than a command is treated as
     the workflow to serve.
 
     Saved workflows named like a command remain reachable by path, for example
-    ``pflow ui ./focus.pflow.md``.
+    `pflow ui ./focus.pflow.md`.
     """
     # Click does not call resolve_command for an empty invoke_without_command
     # group. Preserve bare `pflow ui` by explicitly invoking the default here.

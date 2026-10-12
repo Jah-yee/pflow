@@ -155,6 +155,7 @@ def _apply_http_timeouts(
 def add(config_sources: tuple, timeout: int | None, sse_timeout: int | None) -> None:
     """Add MCP servers from config files or raw JSON.
 
+    \b
     Examples:
         # Add from config file:
         pflow mcp add ./github.mcp.json
@@ -168,6 +169,7 @@ def add(config_sources: tuple, timeout: int | None, sse_timeout: int | None) -> 
         # Add from raw JSON (full MCP format, compatible with Claude Desktop):
         pflow mcp add '{"mcpServers": {"github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]}}}'
 
+    \b
     Supported JSON formats:
         # Simple (recommended for CLI):
         {"server-name": {"command": "...", "args": [...]}}
@@ -698,6 +700,7 @@ def _display_registered_tools(server_name: str, registered_count: int, registrar
 def sync(name: str | None, all_servers: bool, verbose: bool) -> None:
     """Discover and register tools from MCP servers.
 
+    \b
     Examples:
         pflow mcp sync github        # Sync specific server
         pflow mcp sync --all         # Sync all servers
