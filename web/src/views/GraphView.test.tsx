@@ -17,7 +17,7 @@ import type { RFGraph, RFNode } from "../types";
 // error contract (not a fabricated shape) is what the banner test exercises.
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
-  return { ...actual, fetchGraph: vi.fn(), fetchCatalog: vi.fn(), fetchSource: vi.fn(), fetchRuns: vi.fn(), fetchRunNode: vi.fn(), runWorkflow: vi.fn(), fetchGate: vi.fn(), resumeRun: vi.fn() };
+  return { ...actual, fetchGraph: vi.fn(), fetchCatalog: vi.fn(), fetchSource: vi.fn(), fetchRuns: vi.fn(), fetchRunNode: vi.fn(), runWorkflow: vi.fn(), fetchGate: vi.fn(), resumeRun: vi.fn(), fetchVersion: vi.fn() };
 });
 const live = vi.hoisted(() => ({
   handlers: null as import("../api/events").PointHandlers | null,
@@ -74,7 +74,7 @@ vi.mock("@xyflow/react", async (importOriginal) => {
   };
 });
 
-import { ApiError, fetchGate, fetchGraph, fetchRunNode, fetchRuns, fetchSource, resumeRun, runWorkflow } from "../api/client";
+import { ApiError, fetchGate, fetchGraph, fetchRunNode, fetchRuns, fetchSource, fetchVersion, resumeRun, runWorkflow } from "../api/client";
 import { subscribe } from "../api/events";
 import type { RunHandlers } from "../api/events";
 import type { GateInfo } from "../types";
@@ -181,6 +181,7 @@ beforeEach(() => {
   });
   vi.mocked(layoutGraph).mockReset();
   vi.mocked(layoutGraph).mockImplementation(layoutStub);
+  vi.mocked(fetchVersion).mockReset().mockResolvedValue("v1"); // a steady source: no live reload
   fitViewSpy.mockClear();
   live.handlers = null;
   live.report.mockReset();
@@ -859,6 +860,163 @@ describe("GraphView mount", () => {
     );
     expect(container.querySelector(".read-panel")).toBeNull();
     expect(live.report).toHaveBeenCalledTimes(reportsAfterOpen);
+  });
+
+  // #823: a narrator's `frame` (the camera-only point) must show WHICH step it means even when the camera
+  // barely moves — it wears the hover ring until the next agent point, and a user's own hover never erases it.
+  describe("frame marks its target with the hover ring", () => {
+    const nodeOf = (container: HTMLElement, id: string): Element =>
+      container.querySelector(`.react-flow__node[data-id="${id}"] .node`)!;
+    const marked = (container: HTMLElement): string[] =>
+      Array.from(container.querySelectorAll(".react-flow__node"))
+        .filter((rfNode) => rfNode.querySelector(".hover-mark") !== null)
+        .map((rfNode) => rfNode.getAttribute("data-id")!);
+    const mount = async (): Promise<HTMLElement> => {
+      vi.mocked(fetchGraph).mockResolvedValue(GRAPH);
+      const { container } = render(<GraphView workflow="demo" onBack={() => {}} />);
+      await waitFor(() => expect(live.handlers).not.toBeNull());
+      await waitFor(() => expect(screen.getByText("say hi")).toBeTruthy());
+      return container;
+    };
+
+    it("rings the framed step, moves with the next frame, and drops on clear or focus", async () => {
+      const container = await mount();
+      expect(marked(container)).toEqual([]);
+
+      act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[1]!.ref }));
+      await waitFor(() => expect(marked(container)).toEqual(["n1"]));
+      // A frame stays camera-only: the ring is the hover mark, never focus or selection.
+      expect(nodeOf(container, "n1").classList.contains("focused")).toBe(false);
+      expect(container.querySelector(".read-panel")).toBeNull();
+
+      act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[0]!.ref }));
+      await waitFor(() => expect(marked(container)).toEqual(["n0"]));
+
+      act(() => live.handlers!.clear());
+      await waitFor(() => expect(marked(container)).toEqual([]));
+
+      // `focus` replaces the frame ring with its own focus ring — even on the step that was framed,
+      // where focus/selection do not change and so cannot be what clears it.
+      act(() => live.handlers!.focus({ kind: "node", ref: GRAPH.nodes[0]!.ref }));
+      await waitFor(() => expect(nodeOf(container, "n0").classList.contains("focused")).toBe(true));
+      act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[0]!.ref }));
+      await waitFor(() => expect(marked(container)).toEqual(["n0"]));
+      act(() => live.handlers!.focus({ kind: "node", ref: GRAPH.nodes[0]!.ref }));
+      await waitFor(() => expect(marked(container)).toEqual([]));
+    });
+
+    it("a connection frame rings both of its ends", async () => {
+      const container = await mount();
+      act(() =>
+        live.handlers!.frame({
+          kind: "edge",
+          source: GRAPH.nodes[0]!.ref,
+          source_field: "stdout",
+          source_path: [],
+          target: GRAPH.nodes[1]!.ref,
+          input_name: "stdin",
+        }),
+      );
+      await waitFor(() => expect(marked(container).sort()).toEqual(["n0", "n1"]));
+
+      // A connection that no longer resolves (an edit dropped the binding; both steps survive) marks
+      // nothing — never its two ends, which would claim a connection the canvas does not have.
+      act(() =>
+        live.handlers!.frame({
+          kind: "edge",
+          source: GRAPH.nodes[0]!.ref,
+          source_field: "stdout",
+          source_path: [],
+          target: GRAPH.nodes[1]!.ref,
+          input_name: "gone",
+        }),
+      );
+      await waitFor(() => expect(marked(container)).toEqual([]));
+    });
+
+    it("adds to the user's own hover without either erasing the other; a user click supersedes it", async () => {
+      window.history.replaceState({}, "", "/?density=advanced");
+      try {
+        const container = await mount();
+        act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[1]!.ref }));
+        await waitFor(() => expect(marked(container)).toEqual(["n1"]));
+
+        // Hovering n1's bound row marks its far end (n0) alongside the framed n1; leaving clears the
+        // HOVER set — which must not take the narration ring with it.
+        const row = nodeOf(container, "n1").querySelector(".param-row")!;
+        fireEvent.mouseEnter(row);
+        expect(marked(container).sort()).toEqual(["n0", "n1"]);
+        fireEvent.mouseLeave(row);
+        expect(marked(container)).toEqual(["n1"]);
+
+        fireEvent.click(screen.getByText("say hi"));
+        await waitFor(() => expect(nodeOf(container, "n0").classList.contains("focused")).toBe(true));
+        expect(marked(container)).toEqual([]);
+      } finally {
+        window.history.replaceState({}, "", "/");
+      }
+    });
+
+    it("closing the details panel keeps it — the narrow-canvas viewer closes the panel to see it", async () => {
+      const container = await mount();
+      act(() => live.handlers!.focus({ kind: "node", ref: GRAPH.nodes[0]!.ref }));
+      await waitFor(() => expect(container.querySelector(".read-panel")).toBeTruthy());
+      act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[1]!.ref }));
+      await waitFor(() => expect(marked(container)).toEqual(["n1"]));
+
+      fireEvent.click(container.querySelector(".read-panel-header .icon-button")!);
+      await waitFor(() => expect(container.querySelector(".read-panel")).toBeNull());
+      expect(marked(container)).toEqual(["n1"]);
+    });
+
+    it("survives a live reload that renumbers flat ids while something is focused", async () => {
+      const container = await mount();
+      act(() => live.handlers!.focus({ kind: "node", ref: GRAPH.nodes[0]!.ref }));
+      await waitFor(() => expect(nodeOf(container, "n0").classList.contains("focused")).toBe(true));
+      act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[1]!.ref }));
+      await waitFor(() => expect(marked(container)).toEqual(["n1"]));
+
+      // An edit inserts a step first: greet n0→n1, done n1→n2. The remap rewrites focus/selection,
+      // which is not the user pointing elsewhere — the ring follows `done` to its new id.
+      const inserted = { ...GRAPH.nodes[0]!, id: "n0", ref: { node_id: "first", ancestor_path: [], port: null }, purpose: "new first step", params: [] };
+      vi.mocked(fetchGraph).mockResolvedValue({
+        ...GRAPH,
+        nodes: [inserted, { ...GRAPH.nodes[0]!, id: "n1" }, { ...GRAPH.nodes[1]!, id: "n2" }],
+        edges: [{ ...GRAPH.edges[0]!, source: "n1", target: "n2" }],
+      });
+      vi.mocked(fetchVersion).mockResolvedValue("v2");
+      act(() => document.dispatchEvent(new Event("visibilitychange"))); // poll now instead of in 1.5s
+      await waitFor(() => expect(screen.getByText("new first step")).toBeTruthy());
+      await waitFor(() => expect(nodeOf(container, "n1").classList.contains("focused")).toBe(true));
+      expect(marked(container)).toEqual(["n2"]);
+    });
+
+    it("a click on empty canvas drops it even when nothing was focused", async () => {
+      const container = await mount();
+      act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[1]!.ref }));
+      await waitFor(() => expect(marked(container)).toEqual(["n1"]));
+      fireEvent.click(container.querySelector(".react-flow__pane")!);
+      await waitFor(() => expect(marked(container)).toEqual([]));
+    });
+
+    it("an input frame lights that port's row and rings its card", async () => {
+      vi.mocked(fetchGraph).mockResolvedValue(GRAPH_WITH_INPUT);
+      window.history.replaceState({}, "", "/?density=advanced");
+      try {
+        const { container } = render(<GraphView workflow="demo" onBack={() => {}} />);
+        await waitFor(() => expect(live.handlers).not.toBeNull());
+        await waitFor(() => expect(container.querySelectorAll(".io-row").length).toBe(3));
+
+        act(() => live.handlers!.frame({ kind: "node", ref: GRAPH_WITH_INPUT.nodes[1]!.ref }));
+        await waitFor(() => expect(marked(container)).toEqual(["g_in"]));
+        const litRows = Array.from(container.querySelectorAll(".io-row.hover-mark"));
+        expect(litRows).toHaveLength(1);
+        expect(litRows[0]!.textContent).toContain("name");
+        expect(container.querySelector(".read-panel")).toBeNull();
+      } finally {
+        window.history.replaceState({}, "", "/");
+      }
+    });
   });
 
   it("reports deliberate user clicks with structural and flat identity", async () => {

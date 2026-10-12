@@ -109,6 +109,27 @@ function sayAnchorIdFor(
   return node ? representativeFor(node) : null;
 }
 
+// What an agent `frame` marks (#823) — painted through the hover-mark channel (components/interaction.ts),
+// so a framed target wears the ring a hovered chip draws. Re-resolved from the CURRENT graph every render
+// (the say-box rule above); a ref that no longer resolves marks nothing. A port marks itself (its row
+// lights, its owner card rings); a step marks the say box's anchor; a connection marks its line + both ends
+// — or nothing once the connection itself is gone (its two steps may survive an edit that drops it).
+function frameMarksFor(
+  graph: RFGraph,
+  target: PointTarget,
+  representativeFor: (node: RFNode) => string,
+): ReadonlySet<string> {
+  const markFor = (ref: RFRef): string | null =>
+    ref.port !== null ? flatIdForRef(graph, ref) : sayAnchorIdFor(graph, ref, representativeFor);
+  let ids: (string | null)[];
+  if (target.kind === "node") ids = [markFor(target.ref)];
+  else {
+    const edgeId = edgeIdForTarget(graph, target);
+    ids = edgeId === null ? [] : [edgeId, markFor(target.source), markFor(target.target)];
+  }
+  return new Set(ids.filter((id): id is string => id !== null));
+}
+
 // The ⏸ bars before the gate callout's "Gate" title (Task 176) — the same glyph as the paused
 // node badge, so the panel visibly belongs to the ⏸ node it anchors at.
 const GATE_BARS = (
@@ -205,6 +226,13 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
   // fires and the marks would stick. Any focus/selection/structure change wipes
   // them; the next real mouseenter re-marks.
   useEffect(() => setHovered(NO_HOVER), [focus, selectedId, collapsed, density, direction]);
+  // The agent's `frame` target (#823), marked through the same channel (frameMarksFor) so a narrated step
+  // is findable even when the camera barely moves. Its own state, so a user's hover adds to it but never
+  // erases it. It lasts until the next agent point (frame replaces it; focus/clear drop it — see
+  // pointHandlers) or a deliberate user point (reportUserPoint). Deliberately NOT a reaction to
+  // focus/selection state: a live-reload remap rewrites those, and closing a panel clears selection —
+  // neither is the user pointing elsewhere, and the narrow-canvas viewer closes panels to see the ring.
+  const [framed, setFramed] = useState<PointTarget | null>(null);
 
   // The root IO cards' title line: the workflow's display name (basename, no
   // extension — the toolbar keeps the full path).
@@ -444,6 +472,15 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
     },
     [density, direction, focus, graph, workflow],
   );
+  // A deliberate user POINT (click, search, chip, port row, clear): reported like any interaction, and it
+  // supersedes the agent's frame ring. View changes (density/direction) are not points.
+  const reportUserPoint = useCallback(
+    (type: string, target: InteractionTarget | undefined, nextFocus: string | null): void => {
+      setFramed(null);
+      reportUser(type, target, nextFocus);
+    },
+    [reportUser],
+  );
 
   const changeDensity = useCallback(
     (next: Density) => {
@@ -498,8 +535,8 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
     // beautiful-mode rows still open via focus (expansion IS its focus state).
     setFocus(node.id);
     setSelectedId(node.id);
-    reportUser("node_click", interactionTargetForNode(node.id), node.id);
-  }, [interactionTargetForNode, reportUser]);
+    reportUserPoint("node_click", interactionTargetForNode(node.id), node.id);
+  }, [interactionTargetForNode, reportUserPoint]);
 
   const onNodeDoubleClick = useCallback(
     (_: unknown, node: Node) => {
@@ -516,8 +553,8 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
     const action = edgeClickAction(edge);
     setFocus(action.focus);
     setSelectedId(action.selectedId);
-    reportUser("edge_click", interactionTargetForEdge(edge.id), action.focus);
-  }, [interactionTargetForEdge, reportUser]);
+    reportUserPoint("edge_click", interactionTargetForEdge(edge.id), action.focus);
+  }, [interactionTargetForEdge, reportUserPoint]);
 
   // A selected EDGE id has no `from`/`to` escape hatch through rebuilds: a
   // single-group collapse can re-anchor + dedupe the focused edge's id out of the
@@ -540,12 +577,12 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
   const onPaneClick = useCallback(() => {
     setFocus(null);
     setSelectedId(null);
-    reportUser("focus_clear", undefined, null);
-  }, [reportUser]);
+    reportUserPoint("focus_clear", undefined, null);
+  }, [reportUserPoint]);
   const onClearFocus = useCallback(() => {
     setFocus(null);
-    reportUser("focus_clear", undefined, null);
-  }, [reportUser]);
+    reportUserPoint("focus_clear", undefined, null);
+  }, [reportUserPoint]);
 
   // Clicking a single IO ROW focuses just that port — its connections reveal, the
   // row highlights. On a ROOT IO card the row ALSO opens the interface panel with
@@ -574,9 +611,9 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
       }
       setFocus(portId);
       if (isRootWrapper) setSelectedId(owner!);
-      if (report) reportUser("port_click", interactionTargetForNode(portId), portId);
+      if (report) reportUserPoint("port_click", interactionTargetForNode(portId), portId);
     },
-    [interactionTargetForNode, ioOwnership, reportUser],
+    [interactionTargetForNode, ioOwnership, reportUserPoint],
   );
 
   const interaction = useMemo(
@@ -667,9 +704,9 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
   const onNavigate = useCallback(
     (focusId: string, selected?: string | null): void => {
       navigate(focusId, selected);
-      reportUser("focus_change", interactionTargetForNode(focusId), focusId);
+      reportUserPoint("focus_change", interactionTargetForNode(focusId), focusId);
     },
-    [interactionTargetForNode, navigate, reportUser],
+    [interactionTargetForNode, navigate, reportUserPoint],
   );
 
   // Collapse-all folds every collapsible container and clears focus (the focused
@@ -680,8 +717,8 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
     setCollapsed(new Set(collapsibleIds));
     setFocus(null);
     setSelectedId(null);
-    reportUser("focus_clear", undefined, null);
-  }, [collapsibleIds, reportUser]);
+    reportUserPoint("focus_clear", undefined, null);
+  }, [collapsibleIds, reportUserPoint]);
   const onExpandAll = useCallback(() => setCollapsed(new Set()), []);
 
   // The rail's search: the searchable subjects are the workflow's STEPS + container
@@ -703,6 +740,15 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
       return graph ? nodeRepresentativeId(graph, node) : node.id;
     },
     [graph, ioOwnership],
+  );
+
+  const frameMarks = useMemo(
+    () => (graph && framed ? frameMarksFor(graph, framed, representativeFor) : NO_HOVER),
+    [graph, framed, representativeFor],
+  );
+  const marks = useMemo(
+    () => (frameMarks.size === 0 ? hovered : hovered.size === 0 ? frameMarks : new Set([...hovered, ...frameMarks])),
+    [hovered, frameMarks],
   );
 
   // --- Gate panel (Task 176) --------------------------------------------------------------------
@@ -846,9 +892,9 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
       reveal([node.id]);
       const repId = representativeFor(node);
       navigate(repId, repId);
-      if (report) reportUser("node_click", interactionTargetForNode(repId), repId);
+      if (report) reportUserPoint("node_click", interactionTargetForNode(repId), repId);
     },
-    [graph, interactionTargetForNode, navigate, reportUser, representativeFor, reveal],
+    [graph, interactionTargetForNode, navigate, reportUserPoint, representativeFor, reveal],
   );
   const onSelectNode = useCallback((node: RFNode) => selectNode(node, true), [selectNode]);
 
@@ -905,9 +951,17 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
   // retry from observing a live Viewer before it can resolve/apply a command.
   const pointHandlers = useRef<PointHandlers | null>(null);
   pointHandlers.current = {
-    focus: (target) => applyPoint("focus", target),
-    frame: (target) => applyPoint("frame", target),
+    // Explicit, not left to the focus-change wipe: a focus on the already-focused target changes nothing.
+    focus: (target) => {
+      setFramed(null);
+      applyPoint("focus", target);
+    },
+    frame: (target) => {
+      setFramed(target);
+      applyPoint("frame", target);
+    },
     clear: () => {
+      setFramed(null);
       setFocus(null);
       setSelectedId(null);
       // Task 174 (locked): clearing the agent's point also clears its annotations — dismiss ALL
@@ -1101,7 +1155,7 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
 
   return (
     <InteractionProvider value={interaction}>
-      <HoverMarksProvider value={hovered}>
+      <HoverMarksProvider value={marks}>
       <div className="graph-view">
         {toolbar()}
         <div className="graph-body" style={{ "--panel-w": `${panelWidth}px`, "--source-w": `${sourceWidth}px` } as React.CSSProperties}>

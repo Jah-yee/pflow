@@ -53,6 +53,8 @@ and hand-mirrored in `src/types.ts`. Before changing the graph transform, read b
   a new say replaces that anchor's box; focus/frame/run selection keep captions, while
   `dismissAllSays` handles `clear`. Narration callouts use `frameOnMount={false}` because
   the preceding point owns the camera.
+- An agent `frame` rings its target through the hover-mark set: GraphView unions its own `framed`
+  state (structural, re-resolved each render) into `hovered`, so a user hover cannot erase it.
 - In `src/views/GraphView.tsx`, route first play/replay through `startClip` and interruption,
   owning-box close, clear, and unmount through `stopCurrentClip`. Detached audio must pause
   and send the `ended` beacon used to release current-clip server pacing. Preserve current-clip
