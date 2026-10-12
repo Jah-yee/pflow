@@ -1742,7 +1742,7 @@ curl -s "https://example.com/api" | head -20
 - `workflow:` accepts a file path (`./child.pflow.md`), a saved workflow name (`my-saved-workflow`), or a template that resolves to one at runtime (see Dynamic Child Selection below)
 - Nesting depth limited to 10 levels (configurable via `max_depth` param)
 - Parent→child boundary is strict — every key in `inputs:` must be declared on the child's `## Inputs`; typos are rejected at parse time
-- A required child input with no `default:` must come from the parent's `inputs:` — the environment and settings never supply it (they still fill an optional or defaulted child input, as at the top level)
+- A required child input with no `default:` (or `default: ""`) must come from the parent's `inputs:` — the environment and settings never supply it (they still fill an optional or defaulted child input, as at the top level)
 - Each value is typed by the child's declared `## Inputs` type, per call and per batch item — the parent does not parse it: an upstream's text reaches a child `string` input unchanged (JSON-looking or not), JSON text into a child `object`/`array` is parsed, and an `any` input receives the value as passed. A value the run produces that does not fit fails that step (or only that item, under `error_handling: continue`); a literal you wrote — in `inputs:` or in inline `batch.items` — that does not fit fails validation, before anything runs
 
 ### When to Use Sub-Workflows
