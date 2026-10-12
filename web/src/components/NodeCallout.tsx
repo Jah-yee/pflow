@@ -1,24 +1,24 @@
 // A floating callout anchored to a canvas node, in FLOW-space (it pans/zooms WITH the canvas, like a
 // node) via ViewportPortal — NOT a side panel and NOT a store node (so it never perturbs the
-// contract-driven ELK layout). Placed perpendicular to the spine: TD → left of the anchor, LR → above it
-// (mirrors the spine-avoiding Tines layout). On show it frames the camera over anchor ∪ callout.
+// contract-driven ELK layout). Placed beside the anchor on the first side with room in the visible canvas
+// (calloutPlacement.ts — off the spine first: TD → left, LR → above, mirroring the spine-avoiding Tines
+// layout). On show it frames the camera over anchor ∪ callout.
 //
 // THE REUSABLE PRIMITIVE (Task 175 + 174): the run-progress stream drops in as children now; Task 174's
 // agent "say" bubble reuses the same shell (anchor a styled box to any node) but passes
 // frameOnMount={false} — the point message that precedes a say already owns the camera. Content-
 // agnostic by design — it owns anchoring + chrome + (optional) framing, never what's inside.
 
-import { useEffect, useRef } from "react";
-import type { CSSProperties, ReactNode } from "react";
-import { useReactFlow, ViewportPortal } from "@xyflow/react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { useReactFlow, useStore, ViewportPortal } from "@xyflow/react";
 
 import type { Direction } from "../graph/flow";
+import { frameBox, placeCallout, type Size } from "./calloutPlacement";
 
-// Nominal callout size in FLOW units — used only to frame the camera generously (the box itself is
-// CSS-sized + scrolls); over-framing slightly is fine, clipping the callout is not.
-const NOMINAL_W = 320;
-const NOMINAL_H = 280;
-const GAP = 28;
+// Nominal callout size in FLOW units — frames the camera generously (over-framing slightly is fine,
+// clipping the callout is not) and stands in for the card's size until the box is measured.
+const NOMINAL: Size = { w: 320, h: 280 };
 
 export function NodeCallout({
   anchorId,
@@ -51,6 +51,10 @@ export function NodeCallout({
   children: ReactNode;
 }): JSX.Element | null {
   const { getInternalNode, setCenter } = useReactFlow();
+  // Placement reads the live viewport + pane size, so the card re-picks its side as the camera moves.
+  const [viewX, viewY, zoom] = useStore((s) => s.transform);
+  const paneW = useStore((s) => s.width);
+  const paneH = useStore((s) => s.height);
   const anchor = getInternalNode(anchorId);
   // Flow-space rect of the anchor. RF re-measures EVERY node on a beautiful-mode expansion re-layout (any
   // node click), during which the anchor's `measured` transiently goes undefined — dropping to null then
@@ -70,6 +74,24 @@ export function NodeCallout({
   const rect = liveRect ?? lastRectRef.current;
   const ready = rect != null;
 
+  // The card's real size (CSS px = flow units; offset sizes ignore the viewport's scale). Measured before
+  // paint and on every resize — a say box's caption or the run list changes its height.
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [cardSize, setCardSize] = useState<Size>(NOMINAL);
+  useLayoutEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const measure = (): void => {
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      if (w > 0 && h > 0) setCardSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ready]);
+
   // Frame anchor ∪ callout EXACTLY ONCE, on the first measured render after this callout opens — a strict
   // one-shot. It must NOT re-fire on later churn: selecting/deselecting a node (beautiful-mode expansion)
   // re-layouts the canvas, which re-measures every node and transiently flips `ready`; a reactive frame
@@ -79,28 +101,20 @@ export function NodeCallout({
   useEffect(() => {
     if (!frameOnMount || framedRef.current || !rect) return;
     framedRef.current = true;
-    const bounds =
-      direction === "TD"
-        ? { x: rect.x - NOMINAL_W - GAP, y: rect.y, width: rect.w + NOMINAL_W + GAP, height: Math.max(rect.h, NOMINAL_H) }
-        : { x: rect.x, y: rect.y - NOMINAL_H - GAP, width: Math.max(rect.w, NOMINAL_W), height: rect.h + NOMINAL_H + GAP };
+    const bounds = frameBox(rect, NOMINAL, direction);
     // Center the anchor ∪ callout region at a FIXED, modest zoom rather than fitBounds (which over-zooms a
     // small region, blowing the compact box up to fill the screen). A predictable zoom keeps the box small
     // and leaves the rest of the canvas in view. Synchronous one-shot (framedRef) — on a `?run=` deep-link
     // load the competing whole-graph mount-fit is suppressed (GraphView passes suppressInitialFit), so this
     // is uncontested; the interactive-pin / launch cases never had a competing fit.
-    void setCenter(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, { zoom: 1.1, duration: 400 });
+    void setCenter(bounds.x + bounds.w / 2, bounds.y + bounds.h / 2, { zoom: 1.1, duration: 400 });
     // One-shot: read rect/direction/setCenter at fire time; `ready` only re-arms the first-measure case.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
   if (!rect) return null;
 
-  // Position perpendicular to the spine, in flow coordinates: TD → left of the anchor; LR → above it
-  // (translateY(-100%) so the box's bottom sits a GAP above the anchor top).
-  const style: CSSProperties =
-    direction === "TD"
-      ? { left: rect.x - NOMINAL_W - GAP, top: rect.y }
-      : { left: rect.x, top: rect.y - GAP, transform: "translateY(-100%)" };
+  const { side, box } = placeCallout(rect, cardSize, direction, { x: viewX, y: viewY, zoom }, { w: paneW, h: paneH });
 
   return (
     <ViewportPortal>
@@ -108,8 +122,10 @@ export function NodeCallout({
           otherwise swallow the pointer (the ✕ and the step buttons wouldn't click). `nowheel` lets the
           body scroll without zooming the canvas. */}
       <div
+        ref={boxRef}
         className={`node-callout nopan nodrag nowheel${className ? ` ${className}` : ""}`}
-        style={{ position: "absolute", ...style }}
+        data-side={side}
+        style={{ position: "absolute", left: box.x, top: box.y }}
       >
         <div className="node-callout-head">
           {icon != null ? <span className="node-callout-lead">{icon}</span> : null}
