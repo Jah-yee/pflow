@@ -10,7 +10,8 @@ Keep those responsibilities in the Runner so CLI and MCP share them.
 | Concern | Owner |
 |---|---|
 | Command registration and default routing | `main.py:cli`, `PflowCLI.resolve_command` |
-| Run flags, context, stdin preparation | `commands/run.py:_initialize_context`, `_setup_workflow_execution` |
+| Run flags and context | `commands/run.py:_initialize_context`, `_setup_workflow_execution` |
+| Stdin → the `stdin: true` input (the only stdin read) | `commands/run.py:_route_stdin_to_params` |
 | Workflow-name versus invalid-command heuristic | `workflow_resolution.py:is_likely_workflow_name` |
 | `name=value` parameters (raw text; the declared type types them) | `param_parsing.py` |
 | File/saved-name resolution shared with MCP | `execution/workflow_resolver.py:resolve_workflow` |
@@ -31,9 +32,12 @@ rejects stray leading-dash tokens, with `--help` as the exception. Tokens contai
 `=` reach parameter/undeclared-input validation instead. Preserve both stages.
 
 `is_likely_workflow_name` is a later CLI heuristic, not the command router.
-Validation happens **after stdin routing**, so piped data can satisfy required
-inputs. FIFO and StdinData behavior belong to `core/shell_integration.py` and
-`core/CLAUDE.md`.
+Stdin is read only after the workflow resolves, and only for an input declared
+`stdin: true` that no argument supplied — a pipe the workflow never asked for
+stays unread, so it can neither hang nor fail the run. Validation happens
+**after stdin routing**, so piped data can satisfy required inputs. Which
+descriptors are readable (pipes, regular files) and StdinData behavior belong
+to `core/shell_integration.py` and `core/CLAUDE.md`.
 
 `--auto-approve` is repeatable per approval-gate ID, never blanket authorization or
 escalation approval. `commands/run.py:_prepare_gate_resolver` only scans top-level

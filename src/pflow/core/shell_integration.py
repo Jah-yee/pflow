@@ -4,18 +4,22 @@ This module provides core functions for detecting, reading, and categorizing
 stdin input, enabling dual-mode stdin handling in pflow workflows.
 
 The module supports:
-- Detection of piped stdin vs interactive terminal
-- FIFO-based pipe detection (only reads from real shell pipes)
+- Detection of piped or file-redirected stdin vs interactive terminal
+- Descriptor-type detection (reads only pipes and regular files)
 - Reading text data from stdin with UTF-8 encoding
 - Binary data detection and handling
 - Large file streaming to temporary storage
 - Determining if stdin contains workflow JSON or data
 
 Key Design Decision:
-    stdin_has_data() returns True ONLY for FIFO pipes (real shell pipes).
-    This avoids hanging in environments like Claude Code where stdin is a
-    character device that never sends EOF. See stdin_has_data() docstring
-    for detailed rationale.
+    stdin_has_data() returns True ONLY for pipes and regular files (shell
+    pipes and `< file` redirects). This avoids hanging in environments like
+    Claude Code where stdin is a character device that never sends EOF. See
+    stdin_has_data() docstring for detailed rationale.
+
+    Whether stdin is read at all is the caller's decision: `pflow <workflow>`
+    reads it only for an input declared `stdin: true`
+    (cli/commands/run.py:_route_stdin_to_params).
 """
 
 import contextlib
@@ -30,7 +34,8 @@ from dataclasses import dataclass
 DEFAULT_MEMORY_LIMIT = 10 * 1024 * 1024
 # Binary detection sample size: 8KB
 BINARY_SAMPLE_SIZE = 8 * 1024
-# Win32 GetFileType return value for pipes (winbase.h: 1=DISK, 2=CHAR, 3=PIPE)
+# Win32 GetFileType return values read as stdin (winbase.h: 1=DISK, 2=CHAR, 3=PIPE)
+_FILE_TYPE_DISK = 1
 _FILE_TYPE_PIPE = 3
 
 
@@ -74,12 +79,12 @@ def detect_stdin() -> bool:
 
 
 def stdin_has_data() -> bool:
-    """Check if stdin is a real pipe that should be read.
+    """Check if stdin is a pipe or a regular file that can be read to EOF.
 
-    Returns True ONLY for real shell pipes (from piping like `echo x | pflow`):
-    FIFO pipes on Unix, anonymous/named pipes on Windows.
-    Returns False for everything else: terminals, sockets, character devices,
-    StringIO, file redirects on Windows.
+    Returns True ONLY for real shell pipes (`echo x | pflow`) and regular-file
+    redirects (`pflow < file`): FIFOs and regular files on Unix, pipes and disk
+    files on Windows. Returns False for everything else: terminals, sockets,
+    character devices, StringIO.
 
     Design Decision - Why FIFO-only, not select():
     -----------------------------------------------
@@ -95,13 +100,14 @@ def stdin_has_data() -> bool:
     - Otherwise just read() - blocks until data or EOF
 
     But we can't "just read" because Claude Code's stdin never sends EOF.
-    Solution: Only read from FIFO pipes. Real shell pipes are FIFOs.
-    Character devices, sockets, StringIO are not - we skip them.
+    Solution: Only read from FIFO pipes and regular files. Real shell pipes
+    are FIFOs; a redirected file always reaches EOF. Character devices,
+    sockets, StringIO are neither - we skip them.
 
     Windows (Task 116): pipes are not POSIX FIFOs (`S_ISFIFO` is always False
-    there), so win32 asks the kernel directly: `GetFileType(handle) ==
-    FILE_TYPE_PIPE`. This mirrors the Unix semantics exactly — pipes are
-    detected, consoles and file redirects (`pflow < file`) are not.
+    there), so win32 asks the kernel directly: `GetFileType(handle)` is
+    FILE_TYPE_PIPE or FILE_TYPE_DISK. This mirrors the Unix semantics exactly —
+    pipes and file redirects are detected, consoles are not.
 
     Environment Behavior:
     --------------------
@@ -110,7 +116,8 @@ def stdin_has_data() -> bool:
     | `echo x \\| pflow` (Unix) | FIFO pipe       | S_ISFIFO=True    | Read (block)  |
     | `echo -n "" \\| pflow`    | FIFO pipe       | S_ISFIFO=True    | Read (empty)  |
     | `echo x \\| pflow` (win32)| anonymous pipe  | FILE_TYPE_PIPE   | Read (block)  |
-    | `pflow < file` (win32)   | disk file       | FILE_TYPE_DISK   | Skip          |
+    | `pflow < file` (Unix)    | regular file    | S_ISREG=True     | Read (EOF)    |
+    | `pflow < file` (win32)   | disk file       | FILE_TYPE_DISK   | Read (EOF)    |
     | Windows console          | char device     | FILE_TYPE_CHAR   | Skip (early)  |
     | Claude Code              | char device     | S_ISFIFO=False   | Skip (no hang)|
     | CliRunner (tests)        | StringIO        | no fd            | Skip (no fd)  |
@@ -120,7 +127,7 @@ def stdin_has_data() -> bool:
     .taskmaster/tasks/task_115/implementation/progress-log.md (Session 6)
 
     Returns:
-        True if stdin is a real pipe, False otherwise
+        True if stdin is a pipe or a regular file, False otherwise
     """
     # Check if stdin is closed first (before any other operations)
     try:
@@ -152,24 +159,24 @@ def stdin_has_data() -> bool:
 
     # Windows pipes are not POSIX FIFOs - ask the Win32 API instead
     if sys.platform == "win32":
-        return _stdin_is_pipe_windows(fd)
+        return _stdin_is_readable_windows(fd)
 
-    # Check if stdin is a FIFO (real pipe)
-    # Only FIFOs should be read - this is Unix standard behavior
+    # Only a FIFO (real pipe) or a regular file (`< file`) is read
     try:
         mode = os.fstat(fd).st_mode
-        return stat.S_ISFIFO(mode)
+        return stat.S_ISFIFO(mode) or stat.S_ISREG(mode)
     except OSError:
         return False
 
 
-def _stdin_is_pipe_windows(fd: int) -> bool:
-    """Check whether a Windows file descriptor is a pipe.
+def _stdin_is_readable_windows(fd: int) -> bool:
+    """Check whether a Windows file descriptor is a pipe or a disk file.
 
-    Win32 equivalent of the `S_ISFIFO` check: `GetFileType` on the underlying
-    OS handle returns FILE_TYPE_PIPE (3) for anonymous and named pipes,
-    FILE_TYPE_CHAR for consoles, FILE_TYPE_DISK for file redirects — so shell
-    pipes are detected and everything else is skipped, mirroring Unix.
+    Win32 equivalent of the `S_ISFIFO or S_ISREG` check: `GetFileType` on the
+    underlying OS handle returns FILE_TYPE_PIPE (3) for anonymous and named
+    pipes, FILE_TYPE_DISK (1) for file redirects, FILE_TYPE_CHAR for consoles —
+    so pipes and redirected files are detected and everything else is skipped,
+    mirroring Unix.
 
     Deliberately ctypes + msvcrt (stdlib only, no pywin32 dependency) and no
     PeekNamedPipe — an open-but-empty pipe blocks on read exactly like an
@@ -185,8 +192,9 @@ def _stdin_is_pipe_windows(fd: int) -> bool:
             rather than re-deriving stdin via GetStdHandle)
 
     Returns:
-        True if the fd is a pipe, False for anything else (including any
-        failure along the way — matching this module's defensive style)
+        True if the fd is a pipe or a disk file, False for anything else
+        (including any failure along the way — matching this module's
+        defensive style)
     """
     try:
         import ctypes
@@ -196,7 +204,7 @@ def _stdin_is_pipe_windows(fd: int) -> bool:
         # windll/get_osfhandle are typed win32-only in typeshed; ubuntu mypy needs
         # the attr-defined suppression, the Windows mypy run needs unused-ignore.
         file_type = ctypes.windll.kernel32.GetFileType(handle)  # type: ignore[attr-defined, unused-ignore]
-        return int(file_type) == _FILE_TYPE_PIPE
+        return int(file_type) in (_FILE_TYPE_PIPE, _FILE_TYPE_DISK)
     except Exception:
         return False
 
@@ -204,18 +212,17 @@ def _stdin_is_pipe_windows(fd: int) -> bool:
 def read_stdin() -> str | None:
     """Read all stdin content if available.
 
-    Only reads if stdin is a real pipe (see stdin_has_data). On Windows the
+    Only reads if stdin is a pipe or a regular file (see stdin_has_data). On Windows the
     byte stream is re-read as UTF-8 with universal newlines — identical text
     semantics to the Unix read, with only the encoding pinned (the default
     win32 text layer would decode cp1252 and silently mojibake UTF-8 input).
     Empty string is valid content and will be returned (not treated as None).
 
     Returns:
-        Content string if stdin is a pipe (including empty string),
-        None if no pipe, or if the content is not valid UTF-8 (binary input
+        Content string if stdin is a pipe or file (including empty string),
+        None if neither, or if the content is not valid UTF-8 (binary input
         is left to read_stdin_enhanced)
     """
-    # Only read if stdin is a real pipe
     if not stdin_has_data():
         return None
 

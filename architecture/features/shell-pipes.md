@@ -56,9 +56,9 @@ cat article.md | pflow summarize-text
 
 This will:
 
-1. Detect that input is piped via `stdin` (FIFO pipe detection).
-2. Find the workflow input marked with `"stdin": true`.
-3. Route the piped content to that input parameter.
+1. Find the workflow input marked with `stdin: true` — without one, stdin is never read.
+2. Read stdin if it is a pipe or a redirected file (`< article.md` works the same way).
+3. Route the content to that input parameter.
 4. Execute the workflow with the stdin content as the input value.
 
 **Key behaviors:**
@@ -82,19 +82,19 @@ The `-p` flag suppresses header and summary on stderr so only the data (still on
 
 ### Internal Implementation
 
-* **FIFO Detection:** `stdin_has_data()` uses `stat.S_ISFIFO()` to detect real shell pipes
-  - Returns True only for FIFO pipes (real `|` pipes)
-  - Returns False for char devices (Claude Code), sockets, StringIO
+* **Descriptor Detection:** `stdin_has_data()` reads only stdin that reaches EOF
+  - True for pipes and regular files (`S_ISFIFO`/`S_ISREG`; Windows `FILE_TYPE_PIPE`/`FILE_TYPE_DISK`)
+  - False for char devices (Claude Code), sockets, StringIO
   - Prevents hanging in non-pipe environments
 
 * **Routing Logic:** Stdin routes to workflow input with `"stdin": true`
   - `_find_stdin_input()` locates the target input
-  - `_route_stdin_to_params()` injects stdin into execution params
+  - `_route_stdin_to_params()` reads stdin (only then) and injects it into execution params
   - Routing happens BEFORE input validation (so required inputs are satisfied)
 
-* **CLI Override:** CLI parameters take precedence over piped stdin
+* **CLI Override:** CLI parameters take precedence over piped stdin, which is then left unread
 
-* **Error Handling:** Clear error if stdin is piped but no `stdin: true` input exists
+* **No `stdin: true` input:** stdin is never read, so piped data is ignored (like `echo x | ls`), never an error
 
 ### Advanced Unix Integration
 

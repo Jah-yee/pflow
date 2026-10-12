@@ -30,10 +30,10 @@ class TestDetectStdin:
 
 
 class TestStdinHasData:
-    """Test stdin_has_data() FIFO detection.
+    """Test stdin_has_data() descriptor-type detection.
 
-    stdin_has_data() returns True only for real FIFO pipes.
-    This is Unix standard behavior - only read from actual pipes.
+    stdin_has_data() returns True only for real pipes and regular files —
+    the stdin shapes that always reach EOF once the writer is done.
     """
 
     def test_tty_returns_false(self):

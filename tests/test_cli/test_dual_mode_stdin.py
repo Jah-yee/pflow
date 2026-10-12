@@ -17,7 +17,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 from unittest.mock import patch
 
 import pytest
@@ -164,38 +163,25 @@ class TestDualModeStdinBehavior:
         assert "not found" in result.output.lower()
 
     @patch("pflow.core.shell_integration.stdin_has_data", return_value=True)
-    def test_stdin_error_when_no_stdin_input_declared(self, mock_stdin_has_data, tmp_path):
-        """Test that piping to workflow without stdin: true shows helpful error.
+    def test_piped_data_is_ignored_when_no_stdin_input_declared(self, mock_stdin_has_data, tmp_path):
+        """A workflow with no `stdin: true` input never reads stdin, so piped data cannot fail it (#814).
 
-        This is the main error path users will hit when they try to pipe data
-        to a workflow that hasn't declared which input should receive stdin.
+        Like `echo x | ls`: the data is left unread, never an error.
         """
-        # Create a workflow WITHOUT stdin: true on any input
         workflow = {
             "ir_version": "0.1.0",
-            "inputs": {"path": {"type": "string", "required": True}},
-            "nodes": [
-                {
-                    "id": "echo1",
-                    "type": "shell",
-                    "params": {"command": 'echo "$PATH_VALUE"', "env": {"PATH_VALUE": "${path}"}},
-                }
-            ],
+            "nodes": [{"id": "echo1", "type": "shell", "params": {"command": "echo ran"}}],
             "edges": [],
             "start_node": "echo1",
         }
-
         workflow_file = tmp_path / "workflow.pflow.md"
         workflow_file.write_text(ir_to_markdown(workflow), encoding="utf-8")
 
         runner = CliRunner()
-        result = runner.invoke(main, [str(workflow_file)], input="piped data")
+        result = runner.invoke(main, ["-p", str(workflow_file)], input="piped data")
 
-        # Should fail with helpful error message
-        assert result.exit_code == 2
-        # The remedy names the `.pflow.md` bullet the author types, never JSON-key syntax (#700's class)
-        assert "add `- stdin: true` to one input declaration" in result.output
-        assert '"stdin": true' not in result.output
+        assert result.exit_code == 0, result.output
+        assert result.output.strip() == "ran"
 
     def test_stdin_error_when_multiple_stdin_inputs(self, tmp_path):
         """Test that workflow with multiple stdin: true inputs shows validation error.
@@ -261,18 +247,12 @@ class TestDualModeStdinBehavior:
         written_content = output_file.read_text(encoding="utf-8")
         assert written_content == "cli_value", f"Expected 'cli_value' but got '{written_content}'"
 
-    def test_empty_stdin_treated_as_no_input(self, tmp_path):
-        """Test that empty stdin is treated as no input (not routed).
+    def test_stdin_without_a_descriptor_is_no_input(self, tmp_path):
+        """A stdin that is neither a pipe nor a file (here CliRunner's StringIO, which has no
+        descriptor) is not read, so a required `stdin: true` input is reported missing.
 
-        Design decision: Empty stdin is treated as "no stdin" rather than
-        "stdin with empty content". This is because:
-        1. Distinguishing "user piped nothing" from "no pipe" is not reliably
-           possible (test frameworks like CliRunner always provide empty StringIO)
-        2. Most real use cases: empty stdin means "no input", not "input is empty"
-        3. If stdin input is required, user gets clear validation error
-
-        If a workflow needs to accept empty string as valid input, it should
-        use an optional input with a default, or accept via CLI parameter.
+        A real empty pipe is different — it routes the empty string, which a required input
+        rejects as empty (TestWorkflowChaining.test_empty_pipe_rejected_for_required_input).
         """
         # Create a workflow with required stdin input
         workflow = {
@@ -289,12 +269,10 @@ class TestDualModeStdinBehavior:
         workflow_file.write_text(ir_to_markdown(workflow), encoding="utf-8")
 
         runner = CliRunner()
-        # Pipe empty string - treated as no input
         result = runner.invoke(main, [str(workflow_file)], input="")
 
-        # Should fail with "requires input" error (empty stdin = no stdin)
         assert result.exit_code == 2
-        assert "data" in result.output.lower()  # Missing required input 'data'
+        assert "requires input 'data'" in result.output
 
 
 @pytest.mark.e2e
@@ -423,63 +401,6 @@ class TestBinaryAndLargeStdinBehavior:
     - Test actual CLI output and file creation, not internal StdinData objects
     - Focus on user-visible behavior when handling different stdin types
     """
-
-    @pytest.mark.e2e
-    def test_binary_stdin_shows_appropriate_warning(self, tmp_path, uv_exe, prepared_subprocess_env):
-        """Test that binary stdin produces appropriate user feedback."""
-        # Create a simple workflow using shell node
-        workflow = {
-            "ir_version": "0.1.0",
-            "nodes": [
-                {
-                    "id": "test_echo",
-                    "type": "shell",
-                    "params": {"command": "echo 'Test content'"},
-                }
-            ],
-            "edges": [],
-            "start_node": "test_echo",
-        }
-
-        workflow_file = tmp_path / "workflow.pflow.md"
-        workflow_file.write_text(ir_to_markdown(workflow), encoding="utf-8")
-
-        # Create a temporary binary file to simulate binary stdin
-        binary_data = b"Binary\x00Data\xff"
-
-        # Use a real binary file as input
-        with tempfile.NamedTemporaryFile(mode="wb", delete=False) as f:
-            f.write(binary_data)
-            binary_file = f.name
-
-        try:
-            # Test with actual binary file input
-            env = prepared_subprocess_env
-
-            with open(binary_file, "rb") as binary_stdin:
-                result = subprocess.run(  # noqa: S603
-                    [
-                        sys.executable,
-                        "-m",
-                        "pflow.cli",
-                        "--verbose",
-                        str(workflow_file),
-                    ],  # No --file flag, flags first
-                    stdin=binary_stdin,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    shell=False,
-                    env=env,
-                )
-
-            # Should handle binary data gracefully
-            assert result.returncode == 0
-            # Success indicated by exit code 0 - binary data should be handled without crashing
-        finally:
-            import os
-
-            os.unlink(binary_file)
 
     @patch("pflow.core.shell_integration.stdin_has_data", return_value=True)
     def test_very_large_stdin_handled_appropriately(self, mock_stdin_has_data, tmp_path):
@@ -766,58 +687,6 @@ class TestWorkflowChaining:
 
 class TestJSONOutputFormat:
     """Test JSON output format for stdin routing errors."""
-
-    @patch("pflow.core.shell_integration.stdin_has_data", return_value=True)
-    def test_stdin_error_json_output_when_no_stdin_input(self, mock_stdin, tmp_path):
-        """Test that stdin routing error outputs JSON when --output-format json."""
-        # Create workflow WITHOUT stdin: true
-        workflow = {
-            "ir_version": "0.1.0",
-            "inputs": {"path": {"type": "string", "required": True}},
-            "nodes": [{"id": "echo1", "type": "shell", "params": {"command": "echo test"}}],
-            "edges": [],
-            "start_node": "echo1",
-        }
-        workflow_file = tmp_path / "workflow.pflow.md"
-        workflow_file.write_text(ir_to_markdown(workflow), encoding="utf-8")
-
-        # mix_stderr=False: see note on test_multiple_stdin_error_json_output.
-        runner = CliRunner(mix_stderr=False)
-        result = runner.invoke(main, ["--output-format", "json", str(workflow_file)], input="piped data")
-
-        assert result.exit_code == 2
-        # Output should be valid JSON
-        output = json.loads(result.stdout)
-        assert output["success"] is False
-        assert "error" in output
-        assert "Piped input cannot be routed" in output["error"]
-        assert "errors" in output
-        assert isinstance(output["errors"], list)
-        assert len(output["errors"]) > 0
-        assert "stdin" in output["errors"][0].get("message", "").lower()
-
-    @patch("pflow.core.shell_integration.stdin_has_data", return_value=True)
-    def test_stdin_error_text_output_default(self, mock_stdin, tmp_path):
-        """Test that stdin routing error outputs text by default."""
-        workflow = {
-            "ir_version": "0.1.0",
-            "inputs": {"path": {"type": "string", "required": True}},
-            "nodes": [{"id": "echo1", "type": "shell", "params": {"command": "echo test"}}],
-            "edges": [],
-            "start_node": "echo1",
-        }
-        workflow_file = tmp_path / "workflow.pflow.md"
-        workflow_file.write_text(ir_to_markdown(workflow), encoding="utf-8")
-
-        runner = CliRunner()
-        result = runner.invoke(main, [str(workflow_file)], input="piped data")
-
-        assert result.exit_code == 2
-        # Output should be plain text error
-        assert "stdin" in result.output.lower()
-        # Should NOT be valid JSON
-        with pytest.raises(json.JSONDecodeError):
-            json.loads(result.stdout)
 
     @patch("pflow.core.shell_integration.stdin_has_data", return_value=True)
     def test_multiple_stdin_error_json_output(self, mock_stdin, tmp_path):

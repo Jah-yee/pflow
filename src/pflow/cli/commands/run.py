@@ -60,26 +60,26 @@ def _echo_trace(ctx: click.Context, message: str) -> None:
     click.echo(message, err=True)
 
 
-def _read_stdin_data() -> tuple[str | None, StdinData | None]:
-    """Read stdin data, trying text first then enhanced."""
+def _read_stdin_data() -> str | StdinData | None:
+    """Read stdin: text, or ``StdinData`` for binary/oversized input, or None when there is none.
+
+    Unix tries the text read first; win32 reads binary-aware first so binary bytes survive (Task 116).
+    """
     if sys.platform == "win32":
         enhanced_stdin = read_stdin_enhanced()
         if enhanced_stdin is None:
-            return read_stdin_content(), None
+            return read_stdin_content()
         if enhanced_stdin.is_text:
             text = enhanced_stdin.text_data or ""
             if text.endswith("\r"):
                 text = text[:-1]
-            return text.replace("\r\n", "\n").replace("\r", "\n"), None
-        return None, enhanced_stdin
+            return text.replace("\r\n", "\n").replace("\r", "\n")
+        return enhanced_stdin
 
     stdin_content = read_stdin_content()
-
-    enhanced_stdin = None
-    if stdin_content is None:
-        enhanced_stdin = read_stdin_enhanced()
-
-    return stdin_content, enhanced_stdin
+    if stdin_content is not None:
+        return stdin_content
+    return read_stdin_enhanced()
 
 
 def _cleanup_temp_files(stdin_data: str | StdinData | None, verbose: bool) -> None:
@@ -710,13 +710,20 @@ def _extract_stdin_text(stdin_data: str | StdinData | None) -> str | None:
 
 
 def _route_stdin_to_params(
-    ctx: click.Context,
-    stdin_data: str | StdinData | None,
     workflow_ir: dict[str, Any],
     params: dict[str, Any],
-) -> str | None:
-    """Route stdin content to the workflow input marked ``stdin: true``; return that input's
-    name when stdin supplied its value (an explicit argument for it wins)."""
+) -> tuple[str | None, str | StdinData | None]:
+    """Read stdin into the input marked ``stdin: true``: ``(routed input name, what was read)``.
+
+    The workflow's only stdin reader. Nothing is read unless an input is marked ``stdin: true``
+    and no argument already supplied it, so an open pipe or file a workflow never asked for is
+    left untouched — it can neither hang nor fail the run.
+    """
+    target_input = _find_stdin_input(workflow_ir)
+    if target_input is None or target_input in params:
+        return None, None
+
+    stdin_data = _read_stdin_data()
     stdin_text = _extract_stdin_text(stdin_data)
     if stdin_text is None:
         if isinstance(stdin_data, StdinData) and (stdin_data.binary_data or stdin_data.temp_path):
@@ -724,32 +731,9 @@ def _route_stdin_to_params(
             click.echo("   Binary/large data is not automatically routed to workflow inputs.", err=True)
             click.echo("   Consider using a file path parameter instead.", err=True)
             click.echo("", err=True)
-        return None
-
-    target_input = _find_stdin_input(workflow_ir)
-
-    if target_input is None:
-        from pflow.core.user_errors import UserFriendlyError
-
-        raise UserFriendlyError(
-            title="Piped input cannot be routed to workflow",
-            explanation=(
-                "This workflow has no input marked with `- stdin: true`.\n"
-                "To accept piped data, add `- stdin: true` to one input declaration.\n\n"
-                "Example (.pflow.md format):\n"
-                "  ### data\n\n"
-                "  Input data piped via stdin.\n\n"
-                "  - type: string\n"
-                "  - required: true\n"
-                "  - stdin: true"
-            ),
-            suggestions=["Add `- stdin: true` to the input that should receive piped data"],
-        )
-
-    if target_input in params:
-        return None
+        return None, stdin_data
     params[target_input] = stdin_text
-    return target_input
+    return target_input, stdin_data
 
 
 def _validate_dry_run_flag_combination(
@@ -804,13 +788,12 @@ def _validate_report_dir_before_execution(report_dir: str | None) -> None:
 
 
 def _validate_and_prepare_workflow_params(
-    ctx: click.Context,
     workflow_ir: dict[str, Any],
     remaining_args: tuple[str, ...],
-    stdin_data: str | StdinData | None = None,
-) -> tuple[dict[str, Any], dict[str, InputSource]]:
-    """Validate parameter names and route stdin: ``(params, input_sources)`` — every value is
-    text; the stdin-routed input is labelled ``stdin``, the rest are CLI arguments."""
+) -> tuple[dict[str, Any], dict[str, InputSource], str | StdinData | None]:
+    """Validate parameter names and route stdin: ``(params, input_sources, stdin_data)`` — every
+    value is text; the stdin-routed input is labelled ``stdin``, the rest are CLI arguments.
+    ``stdin_data`` is what was read from stdin (None when nothing was), kept for temp-file cleanup."""
     params: dict[str, Any] = dict(parse_workflow_params(remaining_args))
 
     invalid_keys = [k for k in params if not is_valid_parameter_name(k)]
@@ -831,8 +814,8 @@ def _validate_and_prepare_workflow_params(
             ],
         )
 
-    stdin_input = _route_stdin_to_params(ctx, stdin_data, workflow_ir, params)
-    return params, ({stdin_input: "stdin"} if stdin_input is not None else {})
+    stdin_input, stdin_data = _route_stdin_to_params(workflow_ir, params)
+    return params, ({stdin_input: "stdin"} if stdin_input is not None else {}), stdin_data
 
 
 def _show_workflow_help(
@@ -893,7 +876,6 @@ def _handle_named_workflow(
     ctx: click.Context,
     first_arg: str,
     remaining_args: tuple[str, ...],
-    stdin_data: str | StdinData | None,
     output_key: str | None,
     output_format: str,
     verbose: bool,
@@ -914,7 +896,7 @@ def _handle_named_workflow(
         _show_workflow_help(first_arg, workflow_ir, source)
         return True
 
-    params, input_sources = _validate_and_prepare_workflow_params(ctx, workflow_ir, remaining_args, stdin_data)
+    params, input_sources, stdin_data = _validate_and_prepare_workflow_params(workflow_ir, remaining_args)
 
     if verbose:
         if source == "library":
@@ -939,7 +921,6 @@ def _inject_settings_env_vars() -> None:
 def _try_execute_named_workflow(
     ctx: click.Context,
     workflow: tuple[str, ...],
-    stdin_data: StdinData | str | None,
     output_key: str | None,
     output_format: str,
     verbose: bool,
@@ -953,7 +934,7 @@ def _try_execute_named_workflow(
         return False
 
     resolved = resolve_workflow(first_arg)
-    if _handle_named_workflow(ctx, first_arg, workflow[1:], stdin_data, output_key, output_format, verbose, resolved):
+    if _handle_named_workflow(ctx, first_arg, workflow[1:], output_key, output_format, verbose, resolved):
         return True
     raise WorkflowNotFoundError(first_arg, similar_names=[])
 
@@ -1144,9 +1125,6 @@ def run(
         output_format = ctx.obj.get("output_format", "text")
         verbose = ctx.obj.get("verbose", False)
 
-        stdin_content, enhanced_stdin = _read_stdin_data()
-        stdin_data = enhanced_stdin if enhanced_stdin else stdin_content
-
         # Normalize the optional leading "run" token first so the flag guard
         # sees the real workflow name at workflow[0] (concrete suggestions).
         workflow = _preprocess_run_prefix(workflow)
@@ -1159,7 +1137,7 @@ def run(
         # the --validate-only flag before we try to resolve it as a workflow name.
         _redirect_validation_verb(workflow)
 
-        if _try_execute_named_workflow(ctx, workflow, stdin_data, output_key, output_format, verbose):
+        if _try_execute_named_workflow(ctx, workflow, output_key, output_format, verbose):
             return
 
         _handle_invalid_workflow_input(workflow)
