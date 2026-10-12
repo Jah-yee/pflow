@@ -843,6 +843,64 @@ x: dict
         assert shared["result"] == 42
 
 
+class TestBodyExit:
+    """A body that exits (sys.exit, a non-Exception BaseException) fails the step, never the run (#821)."""
+
+    @pytest.mark.parametrize(
+        ("statement", "shown"),
+        [
+            ("sys.exit(3)", "sys.exit(3)"),
+            ("sys.exit(0)", "sys.exit(0)"),
+            ("sys.exit()", "sys.exit()"),
+            ('raise SystemExit("bye")', "sys.exit('bye')"),
+        ],
+    )
+    def test_sys_exit_fails_the_step_keeping_its_output(self, statement, shown):
+        shared: dict = {}
+        action = run_code_node(
+            shared,
+            code=f'import sys\nprint("before exit")\nresult: int = 1\n{statement}',
+            inputs={},
+        )
+        assert action == "error"
+        assert shared["error"].startswith(
+            f"Code called {shown} — a code step ends by assigning its outputs, not by exiting"
+        )
+        assert "Location: line 4 in code block" in shared["error"]
+        assert f"Source: {statement}" in shared["error"]
+        assert shared["stdout"] == "before exit\n"
+        assert "result" not in shared
+
+    def test_argparse_exit_keeps_its_usage_message(self):
+        """A reused script's argparse exits with code 2 after printing why — that text survives."""
+        shared: dict = {}
+        action = run_code_node(
+            shared,
+            code='import argparse\nargparse.ArgumentParser().parse_args(["--nope"])\nresult: int = 1',
+            inputs={},
+        )
+        assert action == "error"
+        assert shared["error"].startswith("Code called sys.exit(2)")
+        assert 'Source: argparse.ArgumentParser().parse_args(["--nope"])' in shared["error"]
+        assert "unrecognized arguments: --nope" in shared["stderr"]
+
+    def test_other_base_exception_fails_the_step(self):
+        """asyncio.CancelledError is a BaseException too; it reads like any runtime error."""
+        shared: dict = {}
+        action = run_code_node(
+            shared,
+            code="import asyncio\nresult: int = 1\nraise asyncio.CancelledError()",
+            inputs={},
+        )
+        assert action == "error"
+        assert shared["error"].startswith("CancelledError: ")
+        assert "Source: raise asyncio.CancelledError()" in shared["error"]
+
+    def test_keyboard_interrupt_still_interrupts(self):
+        with pytest.raises(KeyboardInterrupt):
+            run_code_node({}, code="result: int = 1\nraise KeyboardInterrupt", inputs={})
+
+
 # ======================================================================
 # Next variable routing (dynamic action from code)
 # ======================================================================

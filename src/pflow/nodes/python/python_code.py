@@ -565,7 +565,7 @@ def extract_optional_input_keys(code: str, input_keys: set[str]) -> set[str]:
     return optional_keys
 
 
-def _extract_error_location(exc: Exception, code: str, code_source_line: int = 0) -> str:
+def _extract_error_location(exc: BaseException, code: str, code_source_line: int = 0) -> str:
     """Extract a human-readable error location from an exception's traceback.
 
     Filters traceback to frames from user code (filename='<code>') and
@@ -721,7 +721,7 @@ class PythonCodeNode(Node):
 
         # Build namespace with unrestricted builtins + typing + input variables. A file-loaded body
         # gets `__file__`, as `python x.py` would. `__name__` stays unset on purpose: "__main__" would
-        # run a reused script's `if __name__ == "__main__":` block, whose sys.exit/argparse ends the run.
+        # run a reused script's `if __name__ == "__main__":` block, whose sys.exit/argparse fails the step.
         namespace: dict[str, Any] = {"__builtins__": __builtins__}
         if prep_res["source_file"]:
             namespace["__file__"] = prep_res["source_file"]
@@ -737,7 +737,7 @@ class PythonCodeNode(Node):
         pool = ThreadPoolExecutor(max_workers=1)
         future = pool.submit(self._execute_code, code, namespace)
         try:
-            future.result(timeout=timeout)
+            body_exit = future.result(timeout=timeout)
         finally:
             # wait=False: don't block if the thread is still running. The
             # zombie keeps writing only to its own capture (see _execute_code).
@@ -749,10 +749,14 @@ class PythonCodeNode(Node):
 
         has_result = prep_res["has_result"]
         exec_result: dict[str, Any] = {
-            "result": namespace.get("result") if has_result else None,
+            "result": namespace.get("result") if has_result and body_exit is None else None,
             "stdout": stdout,
             "stderr": stderr,
         }
+        if body_exit is not None:
+            # As deterministic as a missing result, and routed the same way — keeping the output.
+            exec_result["error"] = self._format_exec_error(body_exit, prep_res, has_inputs="inputs" in self.params)
+            return exec_result
         if has_result and "result" not in namespace:
             # A deterministic code bug, not worth a retry: route it like exec_fallback's error dict.
             exec_result["error"] = "Code must set 'result' variable. Add: result = <your_value>"
@@ -852,11 +856,17 @@ class PythonCodeNode(Node):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _execute_code(code: str, namespace: dict[str, Any]) -> None:
+    def _execute_code(code: str, namespace: dict[str, Any]) -> BaseException | None:
         """Execute code string with stdout/stderr capture.
 
         Runs in a worker thread via ThreadPoolExecutor. Captured output is
         stored in the namespace under ``__stdout__`` and ``__stderr__`` keys.
+
+        Returns the body's exit — ``sys.exit`` or another BaseException that is
+        not an ``Exception`` (``asyncio.CancelledError``) — so it fails the step
+        instead of ending the run (#821). Signals land on the main thread, so
+        nothing pflow itself raises (SIGINT's ``SystemExit(130)``) reaches this
+        worker; a body's ``KeyboardInterrupt`` stays an interrupt.
 
         Uses compile() with filename='<code>' so traceback frames from user
         code are identifiable and line numbers can be extracted for error messages.
@@ -866,10 +876,17 @@ class PythonCodeNode(Node):
         keeps running after exec() has returned (#138, #618).
         """
         compiled = compile(code, "<code>", "exec")
+        body_exit: BaseException | None = None
         with capture_output() as (stdout_buf, stderr_buf):
-            exec(compiled, namespace)  # noqa: S102
+            try:
+                exec(compiled, namespace)  # noqa: S102
+            except (Exception, KeyboardInterrupt):
+                raise
+            except BaseException as exc:
+                body_exit = exc
         namespace["__stdout__"] = stdout_buf.getvalue()
         namespace["__stderr__"] = stderr_buf.getvalue()
+        return body_exit
 
     def _validate_code(self) -> str:
         """Extract and validate the code parameter."""
@@ -984,7 +1001,7 @@ class PythonCodeNode(Node):
                 )
 
     @staticmethod
-    def _format_exec_error(exc: Exception, prep_res: dict[str, Any], *, has_inputs: bool) -> str:
+    def _format_exec_error(exc: BaseException, prep_res: dict[str, Any], *, has_inputs: bool) -> str:
         """Format an execution exception into a user-friendly error string.
 
         Extracts line number from traceback when available, and provides
@@ -1003,6 +1020,17 @@ class PythonCodeNode(Node):
                 f"  - Check for infinite loops or blocking I/O in code\n"
                 f"  - Break long computation into multiple code nodes"
             )
+        if isinstance(exc, SystemExit):
+            call = "sys.exit()" if exc.code is None else f"sys.exit({exc.code!r})"
+            msg = f"Code called {call} — a code step ends by assigning its outputs, not by exiting"
+            if location:
+                msg += f"\n{location}"
+            msg += (
+                "\n\nSuggestions:\n"
+                "  - Assign the outcome instead: `result: int = main()` rather than `sys.exit(main())`\n"
+                '  - To fail the step on purpose, raise an exception: `raise RuntimeError("why")`'
+            )
+            return msg
         if isinstance(exc, NameError):
             var_name = getattr(exc, "name", str(exc))
             msg = f"Undefined variable '{var_name}'"
