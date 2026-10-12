@@ -29,6 +29,7 @@ import itertools
 import json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -102,6 +103,19 @@ _KEEPALIVE_S = 15.0
 _SHUTDOWN_SENTINEL: dict[str, object] = {"__shutdown__": True}
 
 _STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _checkout_web_dir(package_dir: Path) -> Path | None:
+    """The bundle's source, ``<repo>/web``, when ``package_dir`` is a checkout's ``<repo>/src/pflow/ui``.
+
+    ``None`` for an installed package — site-packages or a ``--target`` dir, whose surroundings
+    may hold some other project's ``web/``.
+    """
+    src = package_dir.parents[1]
+    return src.parent / "web" if src.name == "src" else None
+
+
+_WEB_DIR = _checkout_web_dir(Path(__file__).parent)
 
 
 @dataclass
@@ -1612,6 +1626,57 @@ def _frontend_not_built(request: Request) -> Response:
     )
 
 
+def _newest_bundle_input(web: Path) -> tuple[float, Path] | None:
+    """The most recently modified file under ``web`` that the Vite build reads, with its mtime.
+
+    Skips what changes without changing the bundle: installed deps, docs, and the colocated
+    tests and their fixtures (``*.test.*``, ``src/test/`` — the layout ``web/CLAUDE.md`` describes).
+    """
+    newest: tuple[float, Path] | None = None
+    for root, dirs, files in os.walk(web):
+        dirs[:] = [d for d in dirs if d != "node_modules" and Path(root, d) != web / "src" / "test"]
+        for name in files:
+            if name.endswith(".md") or ".test." in name:
+                continue
+            path = Path(root, name)
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:  # removed mid-walk
+                continue
+            if newest is None or mtime > newest[0]:
+                newest = (mtime, path)
+    return newest
+
+
+def bundle_warning() -> str | None:
+    """Warn when a source checkout's Viewer bundle is missing or older than its ``web/`` source.
+
+    ``create_app`` serves whatever bundle exists, so after a ``git pull`` without ``make ui-build``
+    the page silently lacks features the CLI and server already have. ``None`` for a fresh bundle
+    and for an installed package, which ships its bundle (see ``_checkout_web_dir``).
+    """
+    web = _WEB_DIR
+    if web is None or not (web / "src").is_dir():
+        return None
+    # Named by path: an editable install runs from any directory, often a workflow's or another worktree's.
+    build = f"make -C {shlex.quote(str(web.parent))} ui-build"
+    index = _STATIC_DIR / "index.html"
+    if not index.exists():
+        return (
+            "warning: the Viewer bundle is not built — the page will show a 'bundle not found' notice.\n"
+            f"→ run `{build}`, then stop this server (Ctrl+C) and start `pflow ui` again"
+        )
+    newest = _newest_bundle_input(web)
+    if newest is None or newest[0] <= index.stat().st_mtime:
+        return None
+    changed = newest[1].relative_to(web.parent).as_posix()
+    return (
+        f"warning: the Viewer bundle is older than web/ — {changed} changed after the last build,"
+        " so the page may lack recent features.\n"
+        f"→ run `{build}`, then reload the page"
+    )
+
+
 def create_app() -> Starlette:
     """Build the Starlette app: API routes, then the frontend bundle when built.
 
@@ -1685,4 +1750,4 @@ def create_app() -> Starlette:
     return app
 
 
-__all__ = ["create_app"]
+__all__ = ["bundle_warning", "create_app"]
