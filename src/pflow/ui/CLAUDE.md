@@ -15,7 +15,7 @@ and `context/adr/0005-web-ui-local-server-delivery.md`.
 - `run_tailer.py` — trace discovery/tailing, replay snapshots, writer liveness, and run event projection.
 - `run_node.py` — trace-backed node details, run-input prefill, and IO value projection.
 - `targets.py` — pure Point address resolution to structural `RFRef` descriptors.
-- `static/` — generated frontend bundle, built by `make ui-build`; absent in a source checkout.
+- `static/` — generated frontend bundle, built by `make ui-build`; absent in a source checkout until built.
 
 The command lives in `cli/commands/ui.py`. The renderer and frozen wire dataclasses live in
 `core/workflow/graph/renderers/react_flow.py`; `web/src/types.ts` mirrors them. Shared graph
@@ -127,8 +127,10 @@ The detailed row, handle, layout, focus, and component rules live in the `web/` 
 ## Build and release wiring
 
 `make ui-build` runs `npm ci && npm run build` and emits into `src/pflow/ui/static/`; `make build`
-depends on it. The release workflow must build the frontend before `uv build` and verify that the
-wheel contains `pflow/ui/static/index.html`.
+depends on it. Nothing rebuilds it on `git pull`, so in a source checkout a fresh `pflow ui` start
+warns when the bundle is missing or older than `web/` (`server.py:bundle_warning`). The release
+workflow must build the frontend before `uv build` and verify that the wheel contains
+`pflow/ui/static/index.html`.
 
 `static/` is gitignored and hatchling honors `.gitignore`. The artifact include for
 `src/pflow/ui/static/**/*` must remain on both the sdist and wheel targets: local/release wheels
