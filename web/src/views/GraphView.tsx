@@ -109,6 +109,24 @@ function sayAnchorIdFor(
   return node ? representativeFor(node) : null;
 }
 
+// What an agent `frame` marks (#823) — painted through the hover-mark channel (components/interaction.ts),
+// so a framed target wears the ring a hovered chip draws. Re-resolved from the CURRENT graph every render
+// (the say-box rule above); a ref that no longer resolves marks nothing. A port marks itself (its row
+// lights, its owner card rings); a step marks the say box's anchor; a connection marks its line + both ends.
+function frameMarksFor(
+  graph: RFGraph,
+  target: PointTarget,
+  representativeFor: (node: RFNode) => string,
+): ReadonlySet<string> {
+  const markFor = (ref: RFRef): string | null =>
+    ref.port !== null ? flatIdForRef(graph, ref) : sayAnchorIdFor(graph, ref, representativeFor);
+  const ids =
+    target.kind === "node"
+      ? [markFor(target.ref)]
+      : [edgeIdForTarget(graph, target), markFor(target.source), markFor(target.target)];
+  return new Set(ids.filter((id): id is string => id !== null));
+}
+
 // The ⏸ bars before the gate callout's "Gate" title (Task 176) — the same glyph as the paused
 // node badge, so the panel visibly belongs to the ⏸ node it anchors at.
 const GATE_BARS = (
@@ -205,6 +223,13 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
   // fires and the marks would stick. Any focus/selection/structure change wipes
   // them; the next real mouseenter re-marks.
   useEffect(() => setHovered(NO_HOVER), [focus, selectedId, collapsed, density, direction]);
+  // The agent's `frame` target (#823), marked through the same channel (frameMarksFor) so a narrated step
+  // is findable even when the camera barely moves. Its own state, so a user's hover adds to it but never
+  // erases it. It lasts until the next agent point (frame replaces it; focus/clear drop it — see
+  // pointHandlers) or a focus/selection change, which supersedes it as it does hover. NOT keyed on
+  // collapse: a frame's own reveal expands the target's ancestors.
+  const [framed, setFramed] = useState<PointTarget | null>(null);
+  useEffect(() => setFramed(null), [focus, selectedId]);
 
   // The root IO cards' title line: the workflow's display name (basename, no
   // extension — the toolbar keeps the full path).
@@ -705,6 +730,15 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
     [graph, ioOwnership],
   );
 
+  const frameMarks = useMemo(
+    () => (graph && framed ? frameMarksFor(graph, framed, representativeFor) : NO_HOVER),
+    [graph, framed, representativeFor],
+  );
+  const marks = useMemo(
+    () => (frameMarks.size === 0 ? hovered : hovered.size === 0 ? frameMarks : new Set([...hovered, ...frameMarks])),
+    [hovered, frameMarks],
+  );
+
   // --- Gate panel (Task 176) --------------------------------------------------------------------
   // The run the gate belongs to: the pinned id, else the paused banner's own execution_id (a
   // follow-newest viewer sees an unpinned run pause). null → no id to answer against → no panel.
@@ -905,9 +939,17 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
   // retry from observing a live Viewer before it can resolve/apply a command.
   const pointHandlers = useRef<PointHandlers | null>(null);
   pointHandlers.current = {
-    focus: (target) => applyPoint("focus", target),
-    frame: (target) => applyPoint("frame", target),
+    // Explicit, not left to the focus-change wipe: a focus on the already-focused target changes nothing.
+    focus: (target) => {
+      setFramed(null);
+      applyPoint("focus", target);
+    },
+    frame: (target) => {
+      setFramed(target);
+      applyPoint("frame", target);
+    },
     clear: () => {
+      setFramed(null);
       setFocus(null);
       setSelectedId(null);
       // Task 174 (locked): clearing the agent's point also clears its annotations — dismiss ALL
@@ -1101,7 +1143,7 @@ function GraphCanvas({ workflow, onBack }: GraphViewProps): JSX.Element {
 
   return (
     <InteractionProvider value={interaction}>
-      <HoverMarksProvider value={hovered}>
+      <HoverMarksProvider value={marks}>
       <div className="graph-view">
         {toolbar()}
         <div className="graph-body" style={{ "--panel-w": `${panelWidth}px`, "--source-w": `${sourceWidth}px` } as React.CSSProperties}>

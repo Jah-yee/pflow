@@ -861,6 +861,87 @@ describe("GraphView mount", () => {
     expect(live.report).toHaveBeenCalledTimes(reportsAfterOpen);
   });
 
+  // #823: a narrator's `frame` (the camera-only point) must show WHICH step it means even when the camera
+  // barely moves — it wears the hover ring until the next agent point, and a user's own hover never erases it.
+  describe("frame marks its target with the hover ring", () => {
+    const nodeOf = (container: HTMLElement, id: string): Element =>
+      container.querySelector(`.react-flow__node[data-id="${id}"] .node`)!;
+    const marked = (container: HTMLElement): string[] =>
+      Array.from(container.querySelectorAll(".react-flow__node"))
+        .filter((rfNode) => rfNode.querySelector(".hover-mark") !== null)
+        .map((rfNode) => rfNode.getAttribute("data-id")!);
+    const mount = async (): Promise<HTMLElement> => {
+      vi.mocked(fetchGraph).mockResolvedValue(GRAPH);
+      const { container } = render(<GraphView workflow="demo" onBack={() => {}} />);
+      await waitFor(() => expect(live.handlers).not.toBeNull());
+      await waitFor(() => expect(screen.getByText("say hi")).toBeTruthy());
+      return container;
+    };
+
+    it("rings the framed step, moves with the next frame, and drops on clear or focus", async () => {
+      const container = await mount();
+      expect(marked(container)).toEqual([]);
+
+      act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[1]!.ref }));
+      await waitFor(() => expect(marked(container)).toEqual(["n1"]));
+      // A frame stays camera-only: the ring is the hover mark, never focus or selection.
+      expect(nodeOf(container, "n1").classList.contains("focused")).toBe(false);
+      expect(container.querySelector(".read-panel")).toBeNull();
+
+      act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[0]!.ref }));
+      await waitFor(() => expect(marked(container)).toEqual(["n0"]));
+
+      act(() => live.handlers!.clear());
+      await waitFor(() => expect(marked(container)).toEqual([]));
+
+      // `focus` replaces the frame ring with its own focus ring — even on the step that was framed,
+      // where focus/selection do not change and so cannot be what clears it.
+      act(() => live.handlers!.focus({ kind: "node", ref: GRAPH.nodes[0]!.ref }));
+      await waitFor(() => expect(nodeOf(container, "n0").classList.contains("focused")).toBe(true));
+      act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[0]!.ref }));
+      await waitFor(() => expect(marked(container)).toEqual(["n0"]));
+      act(() => live.handlers!.focus({ kind: "node", ref: GRAPH.nodes[0]!.ref }));
+      await waitFor(() => expect(marked(container)).toEqual([]));
+    });
+
+    it("a connection frame rings both of its ends", async () => {
+      const container = await mount();
+      act(() =>
+        live.handlers!.frame({
+          kind: "edge",
+          source: GRAPH.nodes[0]!.ref,
+          source_field: "stdout",
+          source_path: [],
+          target: GRAPH.nodes[1]!.ref,
+          input_name: "stdin",
+        }),
+      );
+      await waitFor(() => expect(marked(container).sort()).toEqual(["n0", "n1"]));
+    });
+
+    it("survives the user's own hover, and a user click supersedes it", async () => {
+      window.history.replaceState({}, "", "/?density=advanced");
+      try {
+        const container = await mount();
+        act(() => live.handlers!.frame({ kind: "node", ref: GRAPH.nodes[0]!.ref }));
+        await waitFor(() => expect(marked(container)).toEqual(["n0"]));
+
+        // Hovering n1's bound row marks the row's far end (n0) too; leaving clears the HOVER set —
+        // which must not take the narration ring with it.
+        const row = nodeOf(container, "n1").querySelector(".param-row")!;
+        fireEvent.mouseEnter(row);
+        fireEvent.mouseLeave(row);
+        expect(marked(container)).toEqual(["n0"]);
+
+        fireEvent.click(screen.getByText("done"));
+        await waitFor(() => expect(nodeOf(container, "n1").classList.contains("focused")).toBe(true));
+        expect(marked(container)).toEqual([]);
+      } finally {
+        window.history.replaceState({}, "", "/");
+      }
+    });
+  });
+
   it("reports deliberate user clicks with structural and flat identity", async () => {
     vi.mocked(fetchGraph).mockResolvedValue(GRAPH);
     render(<GraphView workflow="demo" onBack={() => {}} />);
