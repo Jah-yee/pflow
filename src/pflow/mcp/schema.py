@@ -15,6 +15,19 @@ _MAX_PARAM_DEPTH = 3
 _MAX_DECLARED_OUTPUT_DEPTH = 10
 _MAX_DECLARED_OUTPUT_PATHS = 100
 
+# Keywords that describe a value without constraining it: a schema of only these accepts anything.
+_ANNOTATIONS = frozenset({
+    "title",
+    "description",
+    "default",
+    "examples",
+    "$comment",
+    "deprecated",
+    "readOnly",
+    "writeOnly",
+})
+_SHAPE_KEYWORDS = frozenset({"type", "properties", "items", "anyOf", "oneOf", "allOf"})
+
 _PYTHON_TYPE_NAMES = {
     "string": "str",
     "number": "float",
@@ -85,6 +98,8 @@ def pflow_params(input_schema: dict[str, Any]) -> list[dict[str, Any]]:
     if input_schema.get("type") != "object":
         return []
     required = input_schema.get("required", [])
+    if not isinstance(required, list):
+        raise PflowError(f"'required' must be a list, got {required!r}")
     return [
         {"key": name, **_param_shape(input_schema, prop, required=name in required, depth=0)}
         for name, prop in _properties(input_schema).items()
@@ -114,14 +129,16 @@ def _param_shape(root: dict, schema: dict, *, required: bool, depth: int) -> dic
             param[keyword] = schema[keyword]
         elif keyword in resolved:
             param[keyword] = resolved[keyword]
+    if not isinstance(param.get("enum", []), list):
+        del param["enum"]  # not JSON Schema; never shown as allowed values
     if depth < _MAX_PARAM_DEPTH and (structure := _structure(root, resolved, depth)):
         param["structure"] = structure
     return param
 
 
 def _concrete_schema(root: dict, schema: dict) -> dict:
-    """The schema a value must match: ``$ref`` followed, and an optional value's (or a lone
-    ``allOf``'s) single non-null branch taken — ``Optional[X]`` reads as ``X``."""
+    """The schema a value must match: ``$ref`` followed, and an optional value's single non-null
+    branch taken — ``Optional[X]`` reads as ``X`` — or an ``allOf``'s first branch with a shape."""
     seen: set[int] = set()
     schema = resolve_local_ref(root, schema)
     while "type" not in schema and id(schema) not in seen and len(branches := _non_null_branches(root, schema)) == 1:
@@ -131,12 +148,13 @@ def _concrete_schema(root: dict, schema: dict) -> dict:
 
 
 def _non_null_branches(root: dict, schema: dict) -> list[dict]:
-    alternatives = _combinator_branches(schema)
+    alternatives = [resolve_local_ref(root, branch) for branch in _combinator_branches(schema)]
     all_of = schema.get("allOf")
-    if not alternatives and isinstance(all_of, list) and len(all_of) == 1 and isinstance(all_of[0], dict):
-        alternatives = all_of
-    resolved = [resolve_local_ref(root, branch) for branch in alternatives]
-    return [branch for branch in resolved if branch.get("type") != "null"]
+    if not alternatives and isinstance(all_of, list):
+        # ``allOf`` intersects: the branch that says what the value is (the rest add constraints).
+        shaped = [resolve_local_ref(root, branch) for branch in all_of if isinstance(branch, dict)]
+        alternatives = [branch for branch in shaped if _SHAPE_KEYWORDS & branch.keys()][:1]
+    return [branch for branch in alternatives if branch.get("type") != "null"]
 
 
 def _param_type(root: dict, schema: dict, depth: int) -> str:
@@ -144,8 +162,8 @@ def _param_type(root: dict, schema: dict, depth: int) -> str:
 
     An ``anyOf`` / ``oneOf`` union names each distinct non-null member — ``str`` when one member is
     text, the member itself when there is one distinct member (two object branches). No declared
-    shape at all (``{}``) accepts anything: ``any``; a type name outside JSON Schema keeps the text
-    fallback ``str``.
+    shape and no constraint (``{}``) accepts anything: ``any``; any other schema without a shape (an
+    ``enum``, a ``pattern``), or a type name outside JSON Schema, keeps the text fallback ``str``.
     """
     declared = schema.get("type")
     if isinstance(declared, list):
@@ -164,7 +182,7 @@ def _param_type(root: dict, schema: dict, depth: int) -> str:
     elif "items" in schema:
         name = "list"
     else:
-        return "any"
+        return "any" if schema.keys() <= _ANNOTATIONS else "str"
     if name == "list" and depth < _MAX_PARAM_DEPTH and isinstance(items := schema.get("items"), dict):
         item_type = _param_type(root, _concrete_schema(root, items), depth + 1)
         # ``list[int|str]`` would read as a union to the runtime's bare-name type checks.
@@ -185,7 +203,9 @@ def _structure(root: dict, schema: dict, depth: int) -> dict[str, Any]:
     properties = schema.get("properties")
     if not isinstance(properties, dict):
         return {}
-    required = schema.get("required", [])
+    required = schema.get("required")
+    if not isinstance(required, list):
+        required = []
     # Display only, unlike a top-level param: a field that is not a schema is left out, never fails sync.
     return {
         name: _param_shape(root, prop if isinstance(prop, dict) else {}, required=name in required, depth=depth + 1)

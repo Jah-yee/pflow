@@ -84,6 +84,14 @@ ROWS: list[tuple[str, dict[str, Any], bool, str, str, bool]] = [
     ),
     ("optional_int", {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None}, False, "str", "int", False),
     ("allof_model", {"allOf": [{"$ref": "#/$defs/Field"}], "description": "wrapped"}, True, "str", "dict", True),
+    (
+        "allof_model_and_constraint",
+        {"allOf": [{"$ref": "#/$defs/Field"}, {"required": ["name"]}]},
+        True,
+        "str",
+        "dict",
+        True,
+    ),
     ("int_or_model", {"anyOf": [{"type": "integer"}, {"$ref": "#/$defs/Field"}]}, True, "str", "int|dict", True),
     ("object_or_list", {"anyOf": [{"type": "object"}, {"type": "array"}]}, True, "str", "dict|list", True),
     ("any", {"title": "P"}, True, "str", "any", True),
@@ -103,6 +111,9 @@ ROWS: list[tuple[str, dict[str, Any], bool, str, str, bool]] = [
     ("object_or_array", {"type": ["object", "array"]}, True, "dict", "dict", True),
     # A union text satisfies stays ``str``: the runtime turns an object into text for ``str`` only.
     ("int_or_str", {"anyOf": [{"type": "integer"}, {"type": "string"}]}, True, "str", "str", True),
+    # A schema with constraints but no shape keeps the text fallback; only ``{}`` is ``any``.
+    ("allof_text", {"allOf": [{"type": "string"}, {"minLength": 1}]}, True, "str", "str", True),
+    ("mixed_enum", {"enum": ["a", 1]}, True, "str", "str", True),
 ]
 
 PROBE_WORKFLOW = """# Probe
@@ -217,6 +228,19 @@ def test_a_property_that_is_not_a_schema_fails_conversion_naming_the_tool() -> N
     ]
 
 
+def test_a_malformed_nested_keyword_is_ignored_rather_than_failing_sync() -> None:
+    """Nested fields are display only: ``required: null`` or a non-list ``enum`` there must not stop the
+    server's sync, nor crash describe later."""
+    (param,) = pflow_params({
+        "type": "object",
+        "properties": {
+            "o": {"type": "object", "properties": {"a": {"type": "string", "enum": 5}}, "required": None},
+        },
+    })
+
+    assert param["structure"] == {"a": {"type": "str", "required": False}}
+
+
 def test_self_referencing_schema_stops_at_the_depth_cap() -> None:
     tree = {
         "properties": {"label": {"type": "string"}, "children": {"items": {"$ref": "#/$defs/Tree"}, "type": "array"}},
@@ -248,8 +272,8 @@ def test_self_referencing_schema_stops_at_the_depth_cap() -> None:
         ),
         # Not a JSON Schema type: the long-standing text fallback.
         pytest.param({"type": "quantum"}, "str", id="unknown-type"),
-        # A reference cycle through a combinator terminates.
-        pytest.param({"$ref": "#/$defs/Loop"}, "any", id="ref-cycle"),
+        # A reference cycle through a combinator terminates, on the text fallback.
+        pytest.param({"$ref": "#/$defs/Loop"}, "str", id="ref-cycle"),
     ],
 )
 def test_edge_shapes(prop: dict[str, Any], expected: str) -> None:
