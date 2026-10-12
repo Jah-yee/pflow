@@ -80,10 +80,14 @@ def test_nested_code_like_value_is_accepted() -> None:
     ("params", "expected_error"),
     [
         ({"bad name": "x"}, "Invalid parameter name"),
+        (
+            {"_pflow_workflow_file": "/elsewhere/x.pflow.md"},
+            "Invalid parameter name '_pflow_workflow_file' - names starting with '_pflow_' are reserved for pflow",
+        ),
         ({"blob": object()}, "Parameters not JSON serializable"),
         ({"blob": "x" * (1024 * 1024)}, "Parameters too large (max 1MB)"),
     ],
-    ids=["invalid-name", "not-serializable", "over-1mb"],
+    ids=["invalid-name", "reserved-pflow-prefix", "not-serializable", "over-1mb"],
 )
 def test_structural_checks_still_reject(params: dict[str, object], expected_error: str) -> None:
     is_valid, error = validate_execution_parameters(params)
@@ -91,3 +95,9 @@ def test_structural_checks_still_reject(params: dict[str, object], expected_erro
     assert is_valid is False
     assert error is not None
     assert expected_error in error
+
+
+def test_mcp_execute_refuses_a_reserved_param_name(echo_workflow: Path) -> None:
+    """The MCP tool cannot steer child resolution or the nesting guards with a `_pflow_*` key (#817)."""
+    with pytest.raises(ValueError, match="names starting with '_pflow_' are reserved for pflow"):
+        ExecutionService.execute_workflow(str(echo_workflow), parameters={"snippet": "x", "_pflow_depth": -1000})

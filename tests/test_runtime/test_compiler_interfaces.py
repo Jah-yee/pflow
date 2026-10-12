@@ -238,6 +238,24 @@ class TestCompilerInterfaces:
         assert "Invalid input name 'my$input'" in error.message
         assert "shell special characters" in error.message or "template syntax" in error.message
 
+    def test_reserved_pflow_prefix_in_input_name_raises_error(self, registry_with_nodes, mock_node_import):
+        """A dict-IR workflow cannot declare a `_pflow_*` input: its value would land on the root
+        store key pflow reads for child-workflow resolution (#817)."""
+        ir = {
+            "ir_version": "0.1.0",
+            "inputs": {"_pflow_workflow_file": {"description": "Collides with pflow's key", "type": "string"}},
+            "nodes": [{"id": "node1", "type": "transform", "params": {"value": "x"}}],
+            "edges": [],
+        }
+
+        with pytest.raises(WorkflowValidationError) as exc_info:
+            compile_workflow(ir, registry_with_nodes, {})
+
+        error = _only_error(exc_info.value)
+        assert error.message == (
+            "Invalid input name '_pflow_workflow_file' - names starting with '_pflow_' are reserved for pflow"
+        )
+
     def test_empty_initial_params_with_required_inputs(self, registry_with_nodes, mock_node_import):
         """Test that empty initial_params dict with required inputs raises error."""
         ir = {

@@ -58,70 +58,50 @@ def validate_with_placeholder_inputs(workflow_ir: dict[str, Any], *, workflow_fi
     )
 
 
-def is_valid_parameter_name(name: str) -> bool:
-    """Check if a parameter name is valid.
+RESERVED_NAME_PREFIX: Final[str] = "_pflow_"
+"""Prefix of pflow's own root shared-store keys (``_pflow_workflow_file``, ``_pflow_depth``,
+``_pflow_stack``, ...). A parameter or declared name using it would seed the state those keys
+carry — child-workflow resolution and the nesting guards — so the name rule reserves it."""
 
-    Allows most strings except:
-    - Empty strings
-    - Strings with shell special characters that could cause security issues
 
-    This is more permissive than Python's isidentifier(), allowing:
-    - Hyphens: api-key, user-name
-    - Dots: file.path, data.field
-    - Numbers at start: 123-start, 2fa-token
+# Shell special characters are dangerous in commands and template expansion; whitespace breaks
+# CLI parsing and the template regex. First match names the problem.
+_NAME_CHARACTER_RULES: Final[tuple[tuple[str, str], ...]] = (
+    (" ", "cannot contain spaces (use hyphens or underscores instead)"),
+    ("\t", "cannot contain tabs"),
+    ("$", "cannot contain '$' (conflicts with template syntax)"),
+    ("|><&;`", "cannot contain shell special characters"),
+    ("\n\r\0", "cannot contain control characters"),
+    ("\"'", "cannot contain quotes"),
+    ("\\", "cannot contain backslashes"),
+)
 
-    Args:
-        name: The parameter name to validate
 
-    Returns:
-        True if the name is valid, False otherwise
-    """
+def _parameter_name_problem(name: str) -> str | None:
+    """Why ``name`` cannot be a parameter name, or ``None`` when it can — the one rule behind
+    :func:`is_valid_parameter_name` and :func:`get_parameter_validation_error`."""
     if not name or not name.strip():
-        return False
-
-    # Reject reserved framework keys — __*__ bypasses NamespacedSharedStore
-    # and writes directly to root store, corrupting execution state
+        return "cannot be empty"
+    # `__*__` keys bypass NamespacedSharedStore and write to the root store, as `_pflow_*` keys do.
     if name.startswith("__") and name.endswith("__"):
-        return False
+        return "names wrapped in double underscores are reserved for internal use"
+    if name.startswith(RESERVED_NAME_PREFIX):
+        return f"names starting with '{RESERVED_NAME_PREFIX}' are reserved for pflow"
+    return next((reason for chars, reason in _NAME_CHARACTER_RULES if any(char in name for char in chars)), None)
 
-    # Disallow shell special characters and whitespace that could cause issues
-    # - Shell special chars: dangerous in commands or template expansion
-    # - Spaces/tabs: break CLI parsing, incompatible with template regex
-    dangerous_chars = ["$", "|", ">", "<", "&", ";", "`", "\n", "\r", "\0", '"', "'", "\\", " ", "\t"]
-    return not any(char in name for char in dangerous_chars)
+
+def is_valid_parameter_name(name: str) -> bool:
+    """Whether ``name`` may name a workflow parameter, input or output.
+
+    Permissive by design — hyphens (``api-key``), dots (``file.path``) and a leading digit
+    (``2fa-token``) are fine. Rejected: blank names, the reserved ``__*__`` and
+    ``_pflow_*`` (:data:`RESERVED_NAME_PREFIX`) forms, whitespace, and shell special characters.
+    """
+    return _parameter_name_problem(name) is None
 
 
 def get_parameter_validation_error(name: str, param_type: str = "parameter") -> str:
-    """Get a descriptive error message for invalid parameter names.
-
-    Args:
-        name: The invalid parameter name
-        param_type: Type of parameter (e.g., "input", "output", "parameter")
-
-    Returns:
-        Error message describing why the name is invalid
-    """
-    if not name or not name.strip():
-        return f"Invalid {param_type} name - cannot be empty"
-
-    if name.startswith("__") and name.endswith("__"):
-        return f"Invalid {param_type} name '{name}' - names wrapped in double underscores are reserved for internal use"
-
-    # Check for specific dangerous characters and provide helpful messages
-    if " " in name:
-        return f"Invalid {param_type} name '{name}' - cannot contain spaces (use hyphens or underscores instead)"
-    elif "\t" in name:
-        return f"Invalid {param_type} name '{name}' - cannot contain tabs"
-    elif "$" in name:
-        return f"Invalid {param_type} name '{name}' - cannot contain '$' (conflicts with template syntax)"
-    elif any(char in name for char in ["|", ">", "<", "&", ";", "`"]):
-        return f"Invalid {param_type} name '{name}' - cannot contain shell special characters"
-    elif any(char in name for char in ["\n", "\r", "\0"]):
-        return f"Invalid {param_type} name '{name}' - cannot contain control characters"
-    elif any(char in name for char in ['"', "'"]):
-        return f"Invalid {param_type} name '{name}' - cannot contain quotes"
-    elif "\\" in name:
-        return f"Invalid {param_type} name '{name}' - cannot contain backslashes"
-
-    # Generic fallback
-    return f"Invalid {param_type} name '{name}' - contains invalid characters"
+    """The error naming why ``name`` is invalid; ``param_type`` is the noun (``input``, ``output``, ``parameter``)."""
+    problem = _parameter_name_problem(name) or "contains invalid characters"
+    quoted = f" '{name}'" if name.strip() else ""
+    return f"Invalid {param_type} name{quoted} - {problem}"

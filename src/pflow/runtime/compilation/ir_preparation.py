@@ -3,6 +3,7 @@
 - validate_ir_structure: the basic shape of workflow IR (nodes, edges arrays)
 - prepare_inputs: the workflow input boundary — resolve, type, report
 - check_supplied_inputs: the same boundary over the supplied values only
+- check_parameter_names: the name rule over a caller's parameter names
 """
 
 import copy
@@ -18,6 +19,7 @@ from pflow.core.llm_config import is_settings_injected
 from pflow.core.param_coercion import InputSource, coerce_declared_input
 from pflow.core.types import input_usage
 from pflow.core.validation_utils import (
+    RESERVED_NAME_PREFIX,
     VALIDATION_PLACEHOLDER,
     get_parameter_validation_error,
     is_valid_parameter_name,
@@ -148,24 +150,17 @@ def _resolve_input(
 
 
 def _is_framework_param_key(key: str) -> bool:
-    """Whether ``key`` matches the documented framework-key conventions.
+    """Whether ``key`` is one pflow itself injects into ``initial_params`` before
+    ``prepare_inputs`` runs: the runner's ``_pflow_workflow_file`` or a compiler ``__*__`` key
+    (``__template_resolution_mode__``).
 
-    Two patterns are recognized, matching what the Runner / compiler actually
-    inject into ``initial_params`` before ``prepare_inputs`` runs:
-
-    - ``_pflow_*`` — single-underscore framework namespace
-      (e.g. ``_pflow_workflow_file``, ``_pflow_depth``, ``_pflow_stack``).
-    - ``__*__`` — dunder-wrapped metadata keys
-      (e.g. ``__template_resolution_mode__``, ``__registry__``).
-
-    Any other underscore-prefixed name (e.g. ``_foo``) is treated as
-    user-authored. Keeps user typos like ``_foo`` for declared ``foo``
-    visible as extras errors, and catches framework-key typos like
-    ``_pflow_workflo_file`` as unknown inputs instead of silently dropping
-    them. ``is_valid_parameter_name`` already rejects ``__*__`` user names
-    at schema validation, so a user cannot collide with the dunder form.
+    Any other underscore-prefixed name (e.g. ``_foo``) is user-authored and surfaces as an
+    extra, so a typo like ``_foo`` for declared ``foo`` is visible. A caller cannot supply
+    either framework form: the name rule rejects both where parameters enter
+    (:func:`check_parameter_names` in the runner, the CLI and MCP boundaries), and declared
+    input names are checked by it below.
     """
-    return key.startswith("_pflow_") or (key.startswith("__") and key.endswith("__"))
+    return key.startswith(RESERVED_NAME_PREFIX) or (key.startswith("__") and key.endswith("__"))
 
 
 def _check_undeclared_extras(
@@ -307,7 +302,7 @@ def prepare_inputs(
                 caller.error(
                     get_parameter_validation_error(input_name, "input"),
                     f"inputs.{input_name}",
-                    "Avoid shell special characters like $, |, >, <, &, ;",
+                    "Rename the input",
                 )
             )
             continue
@@ -352,3 +347,21 @@ def check_supplied_inputs(
     supplied_paths = {f"inputs.{name}" for name in supplied}
     problems = [error for error in errors if (error.context or {}).get("path") in supplied_paths]
     return problems, {name: updates.get(name, value) for name, value in supplied.items()}
+
+
+def check_parameter_names(provided_params: Mapping[str, Any]) -> list[Diagnostic]:
+    """One error per caller-supplied parameter whose name breaks the name rule
+    (``is_valid_parameter_name``) — e.g. a reserved ``_pflow_*`` or ``__*__`` key, which would
+    otherwise seed pflow's own shared-store state. Run on the caller's names only, before pflow
+    adds its own keys (``WorkflowRunner._prepare_workflow``).
+    """
+    caller = _Caller()
+    return [
+        caller.error(
+            get_parameter_validation_error(name, "parameter"),
+            caller.path(name),
+            "Remove it — no workflow input can have this name",
+        )
+        for name in provided_params
+        if not is_valid_parameter_name(name)
+    ]

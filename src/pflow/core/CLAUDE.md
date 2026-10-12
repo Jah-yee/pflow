@@ -224,7 +224,9 @@ it enters, and raises `InputTypeError` (never warns): text through
 `TypeSpec.accepts`, `any` text from a CLI argument by lossless inference. It needs
 the value's `InputSource` — the error names it. Do not interchange these pipeline stages.
 
-`is_valid_parameter_name()` checks names, including reserved `__*__` keys;
+`is_valid_parameter_name()` checks names, including the reserved `__*__` and `_pflow_*`
+(`RESERVED_NAME_PREFIX`) forms — pflow's own root store keys; the runner applies it to every
+caller's params (`check_parameter_names`) before adding its own;
 template-reference grammar lives in `core/templates.py`. Neither check
 escapes values or guarantees shell safety. External MCP schema names follow a
 separate discovery/argument path; incoming MCP execution-name validation does not

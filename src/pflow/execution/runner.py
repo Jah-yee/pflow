@@ -313,14 +313,19 @@ class WorkflowRunner:
         resolved = self._resolve(workflow)
         diagnostics.extend(resolved.diagnostics)
 
+        # Every caller's params converge here; the name rule runs before pflow adds its own keys.
+        from pflow.runtime.compilation.ir_preparation import check_parameter_names
+
+        name_errors = check_parameter_names(params)
+        if name_errors:
+            raise WorkflowValidationError(summary="Invalid parameter names", validation_errors=name_errors)
+
         # `_pflow_workflow_file` scopes memo-cache reads to the originating
         # workflow. File/library runs use the resolved absolute path; inline
         # runs (dict, content-string, MCP-inline) use a synthetic IR-content
         # hash so unrelated inline workflows with overlapping node IDs don't
-        # pollute each other's cost/duration history. `setdefault` preserves
-        # any value a caller pre-injected (back-compat with existing MCP/CLI
-        # pre-injection sites).
-        params.setdefault("_pflow_workflow_file", _workflow_path_id(resolved))
+        # pollute each other's cost/duration history.
+        params["_pflow_workflow_file"] = _workflow_path_id(resolved)
 
         # Fill declared input names so validation doesn't flag them as missing.
         # Only needs to know WHICH inputs will be available, not their final values.

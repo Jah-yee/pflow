@@ -113,12 +113,10 @@ class TestExtrasRejection:
         assert len(extras) == 1
 
     def test_framework_prefix_typo_surfaces_as_extra(self):
-        """Typo in a framework key (``_pflow_workflo_file``) is not silently
-        accepted. The tighter explicit-prefix filter matches ``_pflow_*``
-        specifically; mistyped framework keys surface as extras, signaling
-        a bug in the injection site rather than silently corrupting params."""
+        """A near-miss of the framework prefix (``_pflowworkflowfile``) is not
+        exempt: the filter matches ``_pflow_*`` exactly, so the key surfaces as
+        an extra instead of being silently accepted."""
         workflow_ir = {"inputs": {"a": {"type": "string", "description": "A", "required": True}}}
-        # Missing underscore after workflo: typo of `_pflow_workflow_file`.
         errors, _, _ = prepare_inputs(workflow_ir, {"a": "value", "_pflowworkflowfile": "/x"})
 
         extras = [e for e in errors if "Unknown input '_pflowworkflowfile'" in e.message]
