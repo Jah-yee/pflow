@@ -132,7 +132,7 @@ Output that works for 1 item may be unusable for 50 items. Check:
 pflow is agent-first. Agents consume structured data much more effectively than prose.
 
 Check:
-- Does `--output-format json` work for this code path? Error output is unified through `cli/error_output.py` (Task 149), but success paths still have parallel JSON/text logic — verify both branches.
+- Does `--output-format json` work for this code path? A run's ending is one document for every status (`execution/formatters/run_outcome.py::build_run_outcome`), rendered as CLI stderr and MCP text by `render_cli_stderr` / `render_mcp_text`; failures with no run go through `cli/error_output.py`. A new field belongs in the builder AND a section function both renderers show — verify the JSON and both texts.
 - If the output will be piped to another tool, is it parseable?
 - Are error details available in a machine-readable format (JSON fields), not just formatted text?
 - When adding new output, does it include both a human-readable AND a structured format?

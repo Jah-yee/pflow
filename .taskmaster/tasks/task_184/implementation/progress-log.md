@@ -801,3 +801,445 @@ resume_command: pflow resume <id> --approve yes|no
   checked by `git diff --name-only`; missing-input diagnostics now carry `suggestions`; #804 member (d) `_show_workflow_help` →
   P4 evaluates, one-line caller fix only).
 - Next: commit P1–P3; `git merge origin/main`; gates; P4 to I1b (window ~570k — P4 is docs it already holds; rotation if degraded).
+
+## [2026-10-12 01:38] implementer I1b (Opus) — P4 docs, instruction files, close-out evidence (merged tree `de1f80d4`)
+- Did: examples-capture `trace_path` mask + re-record; Task-159 full check; F20→A doc rewording; every §1 "Docs that describe the
+  documents" surface; stale CLAUDE.md / agent defs / comments; changelog entry; close-out gates + §8 real-surface run.
+- Changed: `.taskmaster/tasks/task_170/implementation/examples-baseline/{capture.py, README.md, 28 captures}`,
+  `tests/test_scripts/test_examples_capture.py`; `docs/reference/cli/index.mdx` (paused paragraph → `gate`/`resume_command`; JSON-mode
+  section rewritten from REAL AFTER output — success + failure documents, key-fields table gains `status`, `execution_id`/`trace_path`,
+  `error`, `execution.nodes_executed`, `execution.resumed_from`/`nodes_restored`, `gate`, `resume_command`, F20 `success` row; `-p`
+  paragraph = the tier rule; exit-code table gains 3 and 4), `docs/changelog.mdx`; `src/pflow/guide/features/{resume.md, approval.md}`;
+  `src/pflow/mcp_server/resources/instructions/mcp-agent-instructions.md`; `src/pflow/{cli,execution/formatters,mcp_server/services}/CLAUDE.md`;
+  `.claude/agents/{pflow-codebase-searcher, review-agent-ux, review-architecture-fit}.md` (+ `make sync-claude-assets`);
+  `src/pflow/runtime/engine/engine.py` (**comment-only**, :875 — the `__trace_collector__` readers list; no code line touched);
+  `src/pflow/execution/formatters/output_utils.py` (docstring only); `architecture/core-concepts/data-type-coercion.md:143`.
+- Verified: `make check` green; `make test-all-local` **11735 passed, 2 skipped** (0 failed). Examples capture: `capture.py` re-record,
+  then `--check` twice → `28 examples, 0 differing` both times (deterministic); `tests/test_scripts/test_examples_capture.py` 8 passed.
+  Task-159: FULL `verify.sh` on the merged tree **87/87, 0 drifted** — no case moved by this branch after the P2 re-records were merged
+  (main's #818 re-recorded 59 cases; ours stayed green on top). `12-real-world-lyrics-generator/04-guide-auto-detect` re-run AFTER the
+  guide edits: PASS (5/5 in its dir) — the auto-detect output includes neither `approval.md` nor `resume.md`, so it does not move from
+  this branch (per the course note, untouched). No baseline case records a run's `--output-format json` document (no `command.sh`
+  uses it; the only `trace_path` in expected output is analyze-cache's own `"trace_path": null`), so `normalize.py` needs no mask.
+  §8 real-surface on the merged tree (fresh isolated HOME `home4`, never the real one): the show-before set + resumed success, and MCP
+  `execute_workflow` on ok / fail-action / fail-exc / gate — condensed transcripts below; byte-identical (modulo ids/durations) to the
+  P2/P3 AFTER pass. | Assumed: CI `tests-windows` (no platform-sensitive code; not runnable here).
+- **Re-recorded examples (verbatim for the PR body — all 28 in the manifest):** bundling/command-ref, bundling/parent-with-sub,
+  bundling/simple, bundling/sub-echo, core/conditional-branching, core/error-handling, core/minimal, core/proxy-mappings,
+  core/simple-pipeline, core/stateful-loop-judge-round, core/stateful-loop-tournament, core/stdin-echo, core/stdout-result,
+  error-handling/coalesce-mixed-absent-failed, error-handling/failed-node-direct-reference, error-handling/loop-recovery,
+  error-handling/non-retriable-file-error, error-handling/retry-with-backoff, error-handling/source-line-heavy-offsets,
+  error-handling/source-line-multi-output, file-references/code-file-ref, file-references/command-file-ref,
+  file-references/no-file-refs, invalid/code-annotation-type-mismatch, invalid/code-missing-result-annotation,
+  nested/to-uppercase, simple-workflow, test-nested-index (`examples/<name>.pflow.md`). Cause, from the pre-re-record `--check` diff:
+  `+execution_id` (24) / `+trace_path` (26), `-nodes_executed` top-level (22) and `metrics.workflow.nodes_executed` (22), `+errors: []`
+  (20); failure documents gain `warnings`/`advisories`/`metrics`/`duration_ms`/`total_cost_usd` and drop `execution.duration_ms: null`
+  (4); a pre-engine validation failure (`invalid/*`) gains an `execution` block of `not_executed` steps (plan §3.1: `execution` iff
+  the IR has nodes). **Task-159 cases re-recorded by this branch:** in P2 (already committed in `aafe8b90`): `02-validator-errors/02`,
+  `/03`, `/05` (warnings before errors) and `15-run-flag-interactions/03` (`⤷` under the completion line); none in P4.
+- Deviations/surprises:
+  (1) **#804 (d) `_show_workflow_help` NOT folded:** it is two defects (its own `Workflow:` heading duplicates the shared renderer's,
+  and it reads `workflow_ir["description"]` — a `.pflow.md` IR has none, the text lives on `ResolvedWorkflow.description` — so the
+  caller must receive the resolved workflow), plus the `Source:` line needs a new home once the heading goes; more than a one-line
+  caller fix → left for #804's lane.
+  (2) Plan §8's `tests/fixtures/run_outcome/` copy skipped: no test consumes those files (the tests write their workflows inline); the
+  five fixtures live in my scratchpad only — no dead fixtures.
+  (3) **Changelog convention:** every existing `<Update>` is a released version; this entry is `description="Unreleased"` (the
+  release bump should rename/merge it) — flagging in case the release process wants it written differently.
+  (4) `docs/reference/cli/index.mdx`'s old JSON examples were already wrong (`metrics.workflow.nodes_cached`, `metrics.total
+  .total_tokens`/`llm_calls` never existed); the rewrite uses real output, trimmed.
+  (5) The `invalid/*` examples showing an `execution` block of all-`not_executed` steps for a run that never started is the plan's
+  rule applied faithfully; noting it as a judgement a reviewer may question (alternative: omit `execution` when nothing ran —
+  `execution` would then be absent on exactly the pre-collector failures, same boundary as `metrics`).
+- Self-checks: fully happy — doubt raised: deviation (5); left as the plan states, surfaced here. test-reflect (my judgment, run): the
+  one P4 test change (`stored["trace_path"] == "<TRACE_PATH>"`, `execution_id == "<UUID>"`) — real mutation removing the mask → 3
+  failed (the determinism tests + the new assertion), restored. No other test changed in P4.
+- Next: hand back (orchestrator merges main incl. #820's 12/04 re-record; completion gate §9).
+
+§8 real-surface — CLI (merged tree, isolated HOME):
+```text
+
+$ pflow FX/ok.pflow.md
+--- stdout:
+two-value
+--- stderr:
+Executing workflow (2 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+✓ Workflow completed in Xs
+
+Workflow trace saved: <trace>
+
+Workflow output (The second step's text.):
+
+--- exit 0
+
+$ pflow FX/ok.pflow.md --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, result, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution
+execution: {'nodes_executed': 2, 'nodes_total': 2}
+--- stderr:
+Executing workflow (2 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+✓ Workflow completed in Xs
+
+Workflow trace saved: <trace>
+--- exit 0
+
+$ pflow FX/ok.pflow.md -p
+--- stdout:
+two-value
+--- stderr:
+--- exit 0
+
+$ pflow FX/ok.pflow.md -p --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, result, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution
+execution: {'nodes_executed': 2, 'nodes_total': 2}
+--- stderr:
+--- exit 0
+
+$ pflow FX/fail-action.pflow.md
+--- stdout:
+--- stderr:
+Executing workflow (2 nodes):
+  one... ✓ 0.0s
+  two... ✗ Failed
+
+❌ Workflow failed after Xs
+
+Error: Execution Failed
+
+Command failed with exit code 1: boom
+
+  At: node 'two'
+
+  Shell details:
+    Command: echo boom >&2; exit 1
+    Stderr: boom
+
+To resume from the failed step: pflow resume <id>
+
+Workflow trace saved: <trace>
+--- exit 1
+
+$ pflow FX/fail-action.pflow.md --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, error, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution, resume_command
+execution: {'nodes_executed': 1, 'nodes_total': 2}
+error: Command failed with exit code 1: boom
+
+resume_command: pflow resume <id>
+--- stderr:
+Executing workflow (2 nodes):
+  one... ✓ 0.0s
+  two... ✗ Failed
+
+❌ Workflow failed after Xs
+
+Workflow trace saved: <trace>
+--- exit 1
+
+$ pflow FX/fail-exc.pflow.md
+--- stdout:
+--- stderr:
+Executing workflow (2 nodes):
+  one... ✓ 0.0s
+  slow-fetch... ✗ Failed
+
+❌ Workflow failed after Xs
+
+Error: Execution Failed
+
+Request to http://10.255.255.1:9/ timed out after 1 seconds. Increase the step's timeout (e.g. `- timeout: 60`) or check if the service is responding.
+  At: node 'slow-fetch'
+
+To resume from the failed step: pflow resume <id>
+
+Workflow trace saved: <trace>
+--- exit 1
+
+$ pflow FX/fail-exc.pflow.md --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, error, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution, resume_command
+execution: {'nodes_executed': 1, 'nodes_total': 2}
+error: Request to http://10.255.255.1:9/ timed out after 1 seconds. Increase the step's timeout (e.g. `- timeout: 60`) or check if the service is responding.
+resume_command: pflow resume <id>
+--- stderr:
+Executing workflow (2 nodes):
+  one... ✓ 0.0s
+  slow-fetch... ✗ Failed
+
+❌ Workflow failed after Xs
+
+Workflow trace saved: <trace>
+--- exit 1
+
+$ pflow FX/fail-exc.pflow.md -p
+--- stdout:
+--- stderr:
+Error: Execution Failed
+
+Request to http://10.255.255.1:9/ timed out after 1 seconds. Increase the step's timeout (e.g. `- timeout: 60`) or check if the service is responding.
+  At: node 'slow-fetch'
+
+To resume from the failed step: pflow resume <id>
+--- exit 1
+
+$ pflow FX/gate.pflow.md
+--- stdout:
+Paused at 'three'. Resume token: <id> (exit 4)
+--- stderr:
+Executing workflow (3 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+   command:  echo three-value
+
+To answer: pflow resume <id> --approve yes|no
+
+Workflow trace saved: <trace>
+--- exit 4
+
+$ pflow FX/gate.pflow.md --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution, gate, resume_command
+execution: {'nodes_executed': 2, 'nodes_total': 3}
+resume_command: pflow resume <id> --approve yes|no
+gate: {'node_id': 'three', 'node_type': 'ShellNode', 'kind': 'action_approval', 'preview': {'command': 'echo three-value'}, 'question': None, 'options': [], 'recommendation': None, 'iteration': None, 'max_iterations': None}
+--- stderr:
+Executing workflow (3 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+Workflow trace saved: <trace>
+--- exit 4
+
+$ pflow FX/gate.pflow.md -p
+--- stdout:
+Paused at 'three'. Resume token: <id> (exit 4)
+--- stderr:
+   command:  echo three-value
+
+To answer: pflow resume <id> --approve yes|no
+--- exit 4
+
+$ pflow resume <id> --approve no
+--- stdout:
+--- stderr:
+Executing workflow (3 nodes):
+
+✗ Denied at gate 'three'. Workflow stopped cleanly before the step ran. Steps completed: 0 of 3. (exit 3)
+  ⤷ Resumed from <id> at 'three' — 2 upstream steps restored
+
+Workflow trace saved: <trace>
+--- exit 3
+
+$ pflow FX/gate.pflow.md --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution, gate, resume_command
+execution: {'nodes_executed': 2, 'nodes_total': 3}
+resume_command: pflow resume <id> --approve yes|no
+gate: {'node_id': 'three', 'node_type': 'ShellNode', 'kind': 'action_approval', 'preview': {'command': 'echo three-value'}, 'question': None, 'options': [], 'recommendation': None, 'iteration': None, 'max_iterations': None}
+--- stderr:
+Executing workflow (3 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+Workflow trace saved: <trace>
+--- exit 4
+
+$ pflow resume <id> --approve no --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, error, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution, gate
+execution: {'nodes_executed': 0, 'nodes_total': 3, 'resumed_from': '<id>', 'nodes_restored': 2, 'resume_entry_node': 'three', 'resume_entry_iteration': 1}
+error: Denied at gate 'three'.
+gate: {'node_id': 'three', 'node_type': 'ShellNode', 'kind': 'action_approval', 'preview': {'command': 'echo three-value'}, 'question': None, 'options': [], 'recommendation': None, 'iteration': None, 'max_iterations': None}
+--- stderr:
+Executing workflow (3 nodes):
+
+  ⤷ Resumed from <id> at 'three' — 2 upstream steps restored
+
+Workflow trace saved: <trace>
+--- exit 3
+
+$ pflow resume <id> --approve no -p
+--- stdout:
+--- stderr:
+✗ Denied at gate 'three'. Workflow stopped cleanly before the step ran. Steps completed: 0 of 3. (exit 3)
+  ⤷ Resumed from <id> at 'three' — 2 upstream steps restored
+--- exit 3
+
+$ pflow FX/gate-fail.pflow.md
+--- stdout:
+Paused at 'three'. Resume token: <id> (exit 4)
+--- stderr:
+Executing workflow (3 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+   command:  exit 1
+
+To answer: pflow resume <id> --approve yes|no
+
+Workflow trace saved: <trace>
+--- exit 4
+
+$ pflow resume <id> --approve yes
+--- stdout:
+--- stderr:
+Executing workflow (3 nodes):
+✓ Gate 'three' approved via --approve yes
+  three... ✗ Failed
+
+❌ Workflow failed after Xs
+  ⤷ Resumed from <id> at 'three' — 2 upstream steps restored
+
+Error: Execution Failed
+
+Command failed with exit code 1
+  At: node 'three'
+
+  Shell details:
+    Command: exit 1
+
+To resume from the failed step: pflow resume <id>
+
+Workflow trace saved: <trace>
+--- exit 1
+
+$ pflow FX/gate-fail.pflow.md
+--- stdout:
+Paused at 'three'. Resume token: <id> (exit 4)
+--- stderr:
+Executing workflow (3 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+   command:  exit 1
+
+To answer: pflow resume <id> --approve yes|no
+
+Workflow trace saved: <trace>
+--- exit 4
+
+$ pflow resume <id> --approve yes --output-format json (JSON keys)
+keys: success, status, workflow, execution_id, trace_path, error, errors, warnings, advisories, diagnostics, duration_ms, total_cost_usd, metrics, execution, resume_command
+execution: {'nodes_executed': 0, 'nodes_total': 3, 'resumed_from': '<id>', 'nodes_restored': 2, 'resume_entry_node': 'three', 'resume_entry_iteration': 1}
+error: Command failed with exit code 1
+resume_command: pflow resume <id>
+--- stderr:
+Executing workflow (3 nodes):
+✓ Gate 'three' approved via --approve yes
+  three... ✗ Failed
+
+❌ Workflow failed after Xs
+  ⤷ Resumed from <id> at 'three' — 2 upstream steps restored
+
+Workflow trace saved: <trace>
+--- exit 1
+
+$ pflow FX/gate.pflow.md
+--- stdout:
+Paused at 'three'. Resume token: <id> (exit 4)
+--- stderr:
+Executing workflow (3 nodes):
+  one... ✓ 0.0s
+  two... ✓ 0.0s
+
+   command:  echo three-value
+
+To answer: pflow resume <id> --approve yes|no
+
+Workflow trace saved: <trace>
+--- exit 4
+
+$ pflow resume <id> --approve yes
+--- stdout:
+three-value
+--- stderr:
+Executing workflow (3 nodes):
+✓ Gate 'three' approved via --approve yes
+  three... ✓ 0.0s
+
+✓ Workflow completed in Xs
+  ⤷ Resumed from <id> at 'three' — 2 upstream steps restored
+
+Workflow trace saved: <trace>
+
+cli: No outputs declared — showing auto-detected key 'stdout'. Declare outputs for reliable results.
+
+Workflow output:
+
+--- exit 0
+```
+
+§8 real-surface — MCP `execute_workflow` (ok, fail-action, fail-exc, gate):
+```text
+### execute_workflow(ok.pflow.md)
+✓ Workflow completed in Xs
+
+Workflow output:
+
+two-value
+
+status: success
+execution_id: <id>
+trace_path: <trace>
+
+### execute_workflow(fail-action.pflow.md)
+[raised RuntimeError]
+❌ Workflow failed after Xs
+
+Error: Execution Failed
+
+Command failed with exit code 1: boom
+
+  At: node 'two'
+
+  Shell details:
+    Command: echo boom >&2; exit 1
+    Stderr: boom
+
+status: failed
+execution_id: <id>
+trace_path: <trace>
+resume_command: pflow resume <id>
+
+### execute_workflow(fail-exc.pflow.md)
+[raised RuntimeError]
+❌ Workflow failed after Xs
+
+Error: Execution Failed
+
+Request to http://10.255.255.1:9/ timed out after 1 seconds. Increase the step's timeout (e.g. `- timeout: 60`) or check if the service is responding.
+  At: node 'slow-fetch'
+
+status: failed
+execution_id: <id>
+trace_path: <trace>
+resume_command: pflow resume <id>
+
+### execute_workflow(gate.pflow.md)
+⏸ Workflow paused at 'three' — a human decision is required.
+
+Gate:
+  command:  echo three-value
+
+status: paused
+execution_id: <id>
+trace_path: <trace>
+resume_command: pflow resume <id> --approve yes|no
+
+```
+
+## [2026-10-12 01:50] task-orchestrator (Opus) — P4 accepted; committing; main merge #2
+- Did: read I1b's P4 entry; verified `engine.py` diff is comment-only (the `__trace_collector__` readers list) and the
+  `capture.py` change is one key-based mask (`trace_path` → `<TRACE_PATH>`, docstring + README). I1b: `make check` green,
+  `make test-all-local` 11735 passed / 2 skipped; examples `--check` 28/0 twice; Task-159 87/87.
+- Ruled (1/5): the hand-written `docs/changelog.mdx` "Unreleased" `<Update>` is REVERTED — the changelog is generated at release
+  by `examples/real-workflows/generate-changelog` (`.claude/skills/release/SKILL.md`; only release commits touch the file);
+  the draft text is reused in the PR body.
+- Accepted: #804 (d) not folded (two defects + the `Source:` line's home — not a one-line caller fix → task-review note);
+  plan §8 fixtures copy skipped (no consumer).
+- Open, routed to the completion gate (agent-ux + simplicity lenses): `execution` block of all-`not_executed` steps on a
+  pre-collector validation failure (`invalid/*` examples) — plan §3.1 "iff the IR has nodes" vs omitting it when nothing ran.
+  If a lens flags it, it comes up as a plan-shape question, not a silent flip.
+- Text delta: #820 (→ `92dddfc4`) re-recorded Task-159 `12/04`; this branch's guide edits don't move it (I1b re-ran it: PASS).
+- Next: commit P4; merge `origin/main`; gates; completion gate (fresh gate-runner — I1b's window ~620k after four phases).

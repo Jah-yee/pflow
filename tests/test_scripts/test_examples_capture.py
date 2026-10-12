@@ -93,6 +93,10 @@ def test_capture_runs_every_example_on_an_empty_stdin_and_check_matches(harness:
     stored = json.loads((harness / "one.json").read_text(encoding="utf-8"))
     assert stored["status"] == "success"
     assert "<CWD>" in stored["result"]["hello"]["written"]
+    # The run's identity is stored masked: the id by its UUID shape, the trace file (whose name
+    # carries a timestamp) by its key — otherwise every re-capture would differ.
+    assert stored["execution_id"] == "<UUID>"
+    assert stored["trace_path"] == "<TRACE_PATH>"
 
     checked = run(harness, "--check")
     assert checked.returncode == 0, checked.stdout + checked.stderr

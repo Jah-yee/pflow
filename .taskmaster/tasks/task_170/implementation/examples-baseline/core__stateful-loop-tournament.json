@@ -2,6 +2,7 @@
   "advisories": [],
   "diagnostics": [],
   "duration_ms": 0,
+  "errors": [],
   "execution": {
     "duration_ms": 0,
     "nodes_executed": 2,
@@ -21,6 +22,7 @@
       }
     ]
   },
+  "execution_id": "<UUID>",
   "metrics": {
     "total": {
       "cost_usd": 0.0,
@@ -37,19 +39,18 @@
         "announce": 0,
         "run-rounds": 0
       },
-      "nodes_executed": 2,
       "tokens_input": 0,
       "tokens_output": 0,
       "tokens_total": 0
     }
   },
-  "nodes_executed": 2,
   "result": {
     "stdout": "Winner: ada"
   },
   "status": "success",
   "success": true,
   "total_cost_usd": 0.0,
+  "trace_path": "<TRACE_PATH>",
   "warnings": [],
   "workflow": {
     "action": "unsaved",

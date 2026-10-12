@@ -13,6 +13,7 @@
     }
   ],
   "duration_ms": 0,
+  "errors": [],
   "execution": {
     "duration_ms": 0,
     "nodes_executed": 3,
@@ -44,6 +45,7 @@
       }
     ]
   },
+  "execution_id": "<UUID>",
   "metrics": {
     "total": {
       "cost_usd": 0.0,
@@ -62,19 +64,18 @@
         "prepare-directory": 0,
         "report-error": 0
       },
-      "nodes_executed": 4,
       "tokens_input": 0,
       "tokens_output": 0,
       "tokens_total": 0
     }
   },
-  "nodes_executed": 4,
   "result": {
     "stdout": "non-retriable example complete"
   },
   "status": "degraded",
   "success": true,
   "total_cost_usd": 0.0,
+  "trace_path": "<TRACE_PATH>",
   "warnings": [
     {
       "context": {

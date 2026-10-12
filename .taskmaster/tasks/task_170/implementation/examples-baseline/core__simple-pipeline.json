@@ -1,4 +1,5 @@
 {
+  "advisories": [],
   "diagnostics": [
     {
       "context": {
@@ -68,17 +69,17 @@
       "node_timings": {
         "reader": 0
       },
-      "nodes_executed": 1,
       "tokens_input": 0,
       "tokens_output": 0,
       "tokens_total": 0
     }
   },
-  "nodes_executed": 1,
   "resume_command": "pflow resume <UUID>",
   "status": "failed",
   "success": false,
   "total_cost_usd": 0.0,
+  "trace_path": "<TRACE_PATH>",
+  "warnings": [],
   "workflow": {
     "action": "unsaved",
     "name": "<REPO>/examples/core/simple-pipeline.pflow.md"
