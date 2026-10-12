@@ -6,11 +6,11 @@ import io
 import signal
 import sys
 from contextlib import suppress
-from importlib.metadata import version as pkg_version
 from typing import Any, ClassVar
 
 import click
 
+from pflow import get_display_version
 from pflow.cli.error_output import output_error
 from pflow.core.exceptions import PflowError
 from pflow.guide import render_entry_content
@@ -137,16 +137,24 @@ def _setup_signals() -> None:
         signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
 
-def _get_version() -> str:
-    """Return the installed package version with a local fallback."""
-    try:
-        return pkg_version("pflow-cli")
-    except Exception:
-        return "0.16.0"
+def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
+    # A callback, not click.version_option(version=...): that argument is
+    # computed at import, which would run git on every command.
+    if not value or ctx.resilient_parsing:
+        return
+    click.echo(f"pflow version {get_display_version()}")
+    ctx.exit()
 
 
 @click.group(cls=PflowCLI, invoke_without_command=True)
-@click.version_option(version=_get_version(), prog_name="pflow", message="pflow version %(version)s")
+@click.option(
+    "--version",
+    is_flag=True,
+    expose_value=False,
+    is_eager=True,
+    callback=_print_version,
+    help="Show the version and exit.",
+)
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed execution output")
 @click.pass_context
 def cli(ctx: click.Context, verbose: bool) -> None:

@@ -336,7 +336,6 @@ def _manual_sync_components(tmp_path: Path, configs: dict[str, dict]):
     registry = Registry(registry_path=tmp_path / "registry.json")
     registry._save_with_metadata({})
     discovery = MagicMock()
-    discovery.convert_to_pflow_params = MCPDiscovery(manager).convert_to_pflow_params
     registrar = MCPRegistrar(registry=registry, manager=manager, discovery=discovery)
     registrar._settings_manager = MagicMock()
     registrar._settings_manager.should_include_node.return_value = True

@@ -3,7 +3,7 @@
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from pflow.mcp import MCPDiscovery, MCPRegistrar, MCPServerManager
+from pflow.mcp import MCPRegistrar, MCPServerManager
 from pflow.registry import Registry
 
 
@@ -21,7 +21,6 @@ def _build(tmp_path: Path, configs: dict[str, dict]) -> tuple[MCPServerManager, 
     registry = Registry(registry_path=tmp_path / "registry.json")
     registry._save_with_metadata({})
     discovery = Mock()
-    discovery.convert_to_pflow_params = MCPDiscovery(manager).convert_to_pflow_params
     registrar = MCPRegistrar(registry=registry, manager=manager, discovery=discovery)
     registrar._settings_manager = Mock()
     registrar._settings_manager.should_include_node.return_value = True

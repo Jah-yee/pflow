@@ -16,6 +16,7 @@ import pytest
 
 from pflow.core.diagnostic import Diagnostic, Severity
 from pflow.mcp import MCPDiscovery, MCPRegistrar, MCPServerManager
+from pflow.mcp.schema import pflow_params
 from pflow.registry import Registry
 
 httpx = pytest.importorskip("httpx")
@@ -32,8 +33,6 @@ class TestMCPDiscoveryCritical:
         CRITICAL: If this conversion is wrong, ALL MCP tools will have wrong
         parameters, causing validation failures and incorrect execution.
         """
-        discovery = MCPDiscovery()
-
         # Test a realistic GitHub tool schema
         json_schema = {
             "type": "object",
@@ -51,7 +50,7 @@ class TestMCPDiscoveryCritical:
             "required": ["title", "body"],
         }
 
-        params = discovery.convert_to_pflow_params(json_schema)
+        params = pflow_params(json_schema)
 
         # Verify critical conversions
         assert len(params) == 5
@@ -69,7 +68,7 @@ class TestMCPDiscoveryCritical:
         assert param_dict["body"]["required"] is True  # It's in required array
 
         # Check array param
-        assert param_dict["labels"]["type"] == "list"
+        assert param_dict["labels"]["type"] == "list[str]"
         assert param_dict["labels"]["required"] is False
 
         # Check integer param
@@ -82,11 +81,10 @@ class TestMCPDiscoveryCritical:
         CRITICAL: Real MCP servers might return incomplete schemas.
         We must handle this without crashing.
         """
-        discovery = MCPDiscovery()
 
         # Schema missing properties
         bad_schema = {"type": "object"}
-        params = discovery.convert_to_pflow_params(bad_schema)
+        params = pflow_params(bad_schema)
         assert params == []  # Should return empty, not crash
 
         # Schema with unknown types
@@ -99,7 +97,7 @@ class TestMCPDiscoveryCritical:
                 }
             },
         }
-        params = discovery.convert_to_pflow_params(weird_schema)
+        params = pflow_params(weird_schema)
         # Should handle unknown type gracefully - fallback to str
         assert len(params) == 1
         assert params[0]["type"] == "str"  # Fallback to str (safe default)
