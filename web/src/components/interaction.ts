@@ -7,7 +7,8 @@
 // highlight (no focus change, no expansion, no camera move; user decision), with
 // two producers: a panel CHIP marks its one resolved node (hoverNode), a canvas
 // ROW marks every node its edges touch (hoverRow → GraphView derives the set via
-// flow.ts rowTouches). The marked VALUE rides its own context so only the node
+// flow.ts rowTouches). GraphView also unions in the agent's `frame` target (#823),
+// so a framed step wears the same ring. The marked VALUE rides its own context so only the node
 // components re-render on hover, not every Interaction consumer.
 
 import { createContext, useContext } from "react";

@@ -49,8 +49,9 @@ windows and Watch what they deliberately click:
 
 - `pflow ui focus <workflow> <target> [--open] [--say TEXT] [--no-wait]` — focus/reveal a target
   in every matching Viewer.
-- `pflow ui frame <workflow> <target> [--say TEXT] [--no-wait]` — move the camera without
-  changing focus.
+- `pflow ui frame <workflow> <target> [--say TEXT] [--no-wait]` — move the camera to a target
+  and ring it, without changing focus or opening a details panel. The ring stays until the next
+  `focus`, `frame`, or `clear-focus`, or until the user selects something or clicks empty canvas.
 - `pflow ui clear-focus <workflow>` — clear the current focus (also dismisses all `--say` captions).
 - `pflow ui user-activity [workflow]` — read recent clicks and view changes.
 
@@ -74,7 +75,8 @@ pflow ui focus review.pflow.md report --say "[cheerful] And the findings land in
 ```
 
 Any point target narrates — steps, inputs/outputs, or a connection (quote the `->` address);
-use `frame` when you want the camera moved without changing what's focused.
+use `frame` when you want the camera moved and the target ringed without changing what's focused
+(it opens no details panel to cover a narrow canvas).
 
 Run the walkthrough as ONE chained shell command like above, not one `--say` per turn — your
 own thinking time between separate commands is absorbed only up to the playing clip's length,
@@ -96,7 +98,9 @@ neither is an error you must catch:
 `--no-wait` skips all waiting: the point fires immediately and its clip interrupts whatever is
 playing. Captions **persist per target**: each narrated node keeps its caption box (with a
 Replay button once its clip finishes), a new `--say` to the same target replaces just that box,
-and the user closes boxes individually — `clear-focus` closes them all and stops the voice.
+and the user closes boxes individually — `clear-focus` closes them all and stops the voice. So
+run `clear-focus` at a break in the walkthrough, never between chained `--say` lines: each
+command returns as soon as its clip starts, so a `clear-focus` right after it cuts that line off.
 
 `focus`/`frame`/`clear-focus` reach every matching Viewer — including one whose tab is
 currently backgrounded; the highlight is applied when the user returns to it.
