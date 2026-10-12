@@ -23,11 +23,7 @@ import pytest
 from pflow.core.exceptions import InvalidRequestError
 from pflow.core.trace_io import load_trace_file
 from pflow.execution.formatters.plan_formatter import format_plan_text
-from pflow.execution.formatters.success_formatter import (
-    format_execution_success,
-    format_resume_indicator,
-    format_success_as_text,
-)
+from pflow.execution.formatters.run_outcome import build_run_outcome, format_resume_indicator, mode_lines
 from pflow.execution.result import RunnerConfig
 from pflow.execution.runner import WorkflowRunner
 from pflow.execution.workflow_resolver import resolve_workflow
@@ -494,8 +490,8 @@ def test_resumed_run_visibility_json_and_text(tmp_path, flaky_step2) -> None:
     assert result.success
     ir = resolve_workflow(str(wf)).ir
 
-    formatted = format_execution_success(result.shared_after, ir, result.metrics)
-    execution = formatted["execution"]
+    document = build_run_outcome(result, ir, workflow_metadata=None).document
+    execution = document["execution"]
     assert execution["resumed_from"] == run1.trace.execution_id
     assert execution["nodes_restored"] == 1
     assert execution["resume_entry_node"] == "step2"
@@ -503,16 +499,15 @@ def test_resumed_run_visibility_json_and_text(tmp_path, flaky_step2) -> None:
     statuses = {s["node_id"]: s["status"] for s in execution["steps"]}
     assert statuses == {"step1": "not_executed", "step2": "completed", "step3": "completed"}
 
-    text = format_success_as_text(formatted)
-    assert f"⤷ Resumed from {run1.trace.execution_id} at 'step2' — 1 upstream step restored" in text
+    assert mode_lines(document) == [f"  ⤷ Resumed from {run1.trace.execution_id} at 'step2' — 1 upstream step restored"]
 
     # A NON-resumed run carries neither the JSON fields nor the indicator.
     normal = WorkflowRunner().run(str(wf), {}, RunnerConfig())
     assert normal.success
-    formatted_normal = format_execution_success(normal.shared_after, ir, normal.metrics)
-    assert "resumed_from" not in formatted_normal["execution"]
-    assert "nodes_restored" not in formatted_normal["execution"]
-    assert "⤷ Resumed" not in format_success_as_text(formatted_normal)
+    normal_document = build_run_outcome(normal, ir, workflow_metadata=None).document
+    assert "resumed_from" not in normal_document["execution"]
+    assert "nodes_restored" not in normal_document["execution"]
+    assert mode_lines(normal_document) == []
 
 
 class TestFormatResumeIndicator:
@@ -839,10 +834,11 @@ def test_loop_k_resumes_at_the_failed_iteration(tmp_path) -> None:
 
     assert result.success, [str(d) for d in result.diagnostics]
     assert _iterations(iter_file) == ["1", "2", "3", "3", "4", "5"]
-    formatted = format_execution_success(result.shared_after, resolve_workflow(str(wf)).ir, result.metrics)
-    assert formatted["execution"]["resume_entry_iteration"] == 3
-    assert "⤷ Resumed from" in format_success_as_text(formatted)
-    assert "at 'k' (iteration 3) — 1 upstream step restored" in format_success_as_text(formatted)
+    document = build_run_outcome(result, resolve_workflow(str(wf)).ir, workflow_metadata=None).document
+    assert document["execution"]["resume_entry_iteration"] == 3
+    assert mode_lines(document) == [
+        f"  ⤷ Resumed from {run1.trace.execution_id} at 'k' (iteration 3) — 1 upstream step restored"
+    ]
     execution = result.shared_after["__execution__"]
     assert execution["restored_nodes"] == ["prep"]  # K is seeded with iteration 2 but RUNS — never "restored"
     assert execution["resume_entry_node"] == "k"

@@ -11,7 +11,6 @@ import json
 from click.testing import CliRunner
 
 from pflow.cli.main import main
-from pflow.execution.formatters.success_formatter import format_stderr_warnings
 from tests.shared.markdown_utils import write_workflow_file
 
 
@@ -346,68 +345,3 @@ class TestPipelineFailureScenario:
 
         # Warning indicators should be present
         assert "Shell stderr (exit code 0):" in combined_output
-
-
-class TestDisplayStderrWarnings:
-    """Unit tests for the ``format_stderr_warnings`` SSoT the CLI summary renders."""
-
-    def test_displays_stderr_for_steps_with_has_stderr(self):
-        """Should produce stderr lines for steps with has_stderr=True."""
-        steps = [
-            {
-                "node_id": "test-node",
-                "status": "completed",
-                "has_stderr": True,
-                "stderr": "Some error message",
-            }
-        ]
-
-        out = "\n".join(format_stderr_warnings(steps))
-        assert "Shell stderr (exit code 0):" in out
-        assert "test-node:" in out
-        assert "Some error message" in out
-
-    def test_no_output_when_no_stderr_steps(self):
-        """Should produce no lines when no steps have stderr."""
-        steps = [
-            {"node_id": "node1", "status": "completed"},
-            {"node_id": "node2", "status": "completed"},
-        ]
-
-        assert format_stderr_warnings(steps) == []
-
-    def test_truncates_long_stderr(self):
-        """Long stderr should be truncated to 300 chars."""
-        long_stderr = "X" * 400
-
-        steps = [
-            {
-                "node_id": "verbose-node",
-                "status": "completed",
-                "has_stderr": True,
-                "stderr": long_stderr,
-            }
-        ]
-
-        out = "\n".join(format_stderr_warnings(steps))
-        assert "..." in out
-        # Should have truncated to 300 + "..."
-        assert "X" * 301 not in out
-
-    def test_multiline_stderr_indented(self):
-        """Multiline stderr should be properly indented."""
-        multiline_stderr = "Line 1\nLine 2\nLine 3"
-
-        steps = [
-            {
-                "node_id": "multiline-node",
-                "status": "completed",
-                "has_stderr": True,
-                "stderr": multiline_stderr,
-            }
-        ]
-
-        out = "\n".join(format_stderr_warnings(steps))
-        # Check that newlines are replaced with indented newlines
-        assert "Line 1" in out
-        assert "Line 2" in out

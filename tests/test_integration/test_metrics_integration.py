@@ -176,8 +176,9 @@ class TestMetricsCollection:
             assert "total_cost_usd" in output
             assert output["total_cost_usd"] == 0  # No LLM calls
 
-            assert "nodes_executed" in output
-            assert output["nodes_executed"] == 1  # just write1
+            # One count, one name: completed steps live in execution (D2 — no top-level copy)
+            assert "nodes_executed" not in output
+            assert output["execution"]["nodes_executed"] == 1  # just write1
 
             # Check workflow metadata
             assert "workflow" in output
@@ -186,7 +187,7 @@ class TestMetricsCollection:
             # Check detailed metrics
             assert "metrics" in output
             assert "workflow" in output["metrics"]
-            assert output["metrics"]["workflow"]["nodes_executed"] == 1
+            assert set(output["metrics"]["workflow"]["node_timings"]) == {"write1"}
 
         finally:
             Path(workflow_file).unlink()
@@ -694,7 +695,7 @@ class TestCLIFlags:
             # Metrics should be present at top level
             assert "duration_ms" in output
             assert "total_cost_usd" in output
-            assert "nodes_executed" in output
+            assert output["execution"]["nodes_executed"] >= 1
             assert "metrics" in output
 
             # But no trace file created
@@ -729,7 +730,7 @@ class TestJSONOutputStructure:
             # Metrics at top level
             assert isinstance(output["duration_ms"], (int, float))
             assert isinstance(output["total_cost_usd"], (int, float))
-            assert isinstance(output["nodes_executed"], int)
+            assert isinstance(output["execution"]["nodes_executed"], int)
 
             # Detailed metrics structure
             assert "metrics" in output
@@ -739,7 +740,7 @@ class TestJSONOutputStructure:
             # Workflow metrics
             workflow_metrics = output["metrics"]["workflow"]
             assert "duration_ms" in workflow_metrics
-            assert "nodes_executed" in workflow_metrics
+            assert "nodes_executed" not in workflow_metrics  # node_timings carries the attempted steps
             assert "cost_usd" in workflow_metrics
             assert "node_timings" in workflow_metrics
 
@@ -875,8 +876,8 @@ class TestMetricsAccuracy:
                 output = json.loads(result.stdout)
 
                 assert output.get("success", False), f"Workflow failed for {expected_count}-node: {output}"
-                assert output["nodes_executed"] == expected_count
-                assert output["metrics"]["workflow"]["nodes_executed"] == expected_count
+                assert output["execution"]["nodes_executed"] == expected_count
+                assert len(output["metrics"]["workflow"]["node_timings"]) == expected_count
 
             finally:
                 Path(workflow_file).unlink()

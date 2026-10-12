@@ -1,4 +1,5 @@
 {
+  "advisories": [],
   "diagnostics": [
     {
       "context": {
@@ -93,6 +94,7 @@
       "source": "runtime"
     }
   ],
+  "duration_ms": 0,
   "error": "Unresolved variables in output 'content': ${primary.stdout}",
   "errors": [
     {
@@ -179,7 +181,7 @@
     }
   ],
   "execution": {
-    "duration_ms": null,
+    "duration_ms": 0,
     "nodes_executed": 1,
     "nodes_total": 2,
     "steps": [
@@ -197,9 +199,45 @@
       }
     ]
   },
+  "execution_id": "<UUID>",
+  "metrics": {
+    "total": {
+      "cost_usd": 0.0,
+      "tokens_input": 0,
+      "tokens_output": 0,
+      "tokens_total": 0,
+      "total_calls": 0
+    },
+    "workflow": {
+      "cost_usd": 0.0,
+      "duration_ms": 0,
+      "models_used": [],
+      "node_timings": {
+        "fallback": 0,
+        "primary": 0
+      },
+      "tokens_input": 0,
+      "tokens_output": 0,
+      "tokens_total": 0
+    }
+  },
   "result": {},
   "status": "failed",
   "success": false,
+  "total_cost_usd": 0.0,
+  "trace_path": "<TRACE_PATH>",
+  "warnings": [
+    {
+      "context": {
+        "category": "shell_failure",
+        "type": "on_error_recovery"
+      },
+      "message": "Node 'primary' failed \u2014 on-error \u2192 'fallback'",
+      "node_id": "primary",
+      "severity": "warning",
+      "source": "runtime"
+    }
+  ],
   "workflow": {
     "action": "unsaved",
     "name": "<REPO>/examples/error-handling/source-line-heavy-offsets.pflow.md"

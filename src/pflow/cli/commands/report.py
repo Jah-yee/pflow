@@ -81,7 +81,7 @@ def report_cmd(ctx: click.Context, trace_path: str | None, output_path: str | No
     try:
         report_dir = generate_report(trace_path, output_path or "auto")
     except ReportGenerationError as exc:
-        output_error(ctx, exception=exc)
+        output_error(exception=exc)
         ctx.exit(1)
     if report_dir:
         click.echo(str(report_dir))  # stdout — pipeable for scripting

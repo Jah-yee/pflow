@@ -946,8 +946,12 @@ def test_failed_run_json_document_carries_resume_fields(home, shell_wf):
     assert document["success"] is False
     exec_id = document["execution_id"]
     assert document["resume_command"] == f"pflow resume {exec_id}"
-    # The id is real: the stderr hint names the same run.
-    assert f"pflow resume {exec_id}" in result.stderr
+    # The id is real: the trace it names exists, and that file is this run's.
+    assert Path(document["trace_path"]).is_file()
+    assert exec_id in Path(document["trace_path"]).read_text(encoding="utf-8").splitlines()[0]
+    # JSON mode: the hint lives in the document, not as stderr prose (one place per channel).
+    assert "To resume from the failed step" not in result.stderr
+    assert "Workflow trace saved:" in result.stderr
 
 
 def test_failed_run_json_document_omits_resume_fields_under_no_trace(home, shell_wf):
@@ -1001,7 +1005,8 @@ def test_output_resolution_failure_json_omits_resume_fields(home, output_fail_wf
     document = json.loads(result.stdout)
     assert document["success"] is False
     assert document["error"].startswith("Unresolved variables in output 'result'")
-    assert "execution_id" not in document
+    # Identity on every status (D1) — the run streamed a trace; only the dead-end resume is withheld.
+    assert "execution_id" in document
     assert "resume_command" not in document
 
 

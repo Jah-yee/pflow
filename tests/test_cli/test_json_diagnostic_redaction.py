@@ -91,6 +91,7 @@ _REF_HANDLER = (
 
 
 class TestFailureDocument:
+    @pytest.mark.trace_files  # resume_command names a trace file, so the run must stream one
     def test_http_401_json_body_is_redacted_everywhere(self, tmp_path: Path, auth_server: str) -> None:
         exit_code, stdout, doc = _run_json(tmp_path, _fetch_step(f"{auth_server}/json"))
 
