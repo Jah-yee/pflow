@@ -4,8 +4,11 @@ Organized by what matters to users and downstream consumers, not by
 internal implementation structure (prep/exec/post).
 """
 
+import signal
 import sys
 import threading
+import time
+from concurrent.futures import Future
 
 import pytest
 
@@ -841,6 +844,105 @@ x: dict
         )
         assert action == "default"
         assert shared["result"] == 42
+
+
+class TestBodyExit:
+    """A body that exits (sys.exit, a non-Exception BaseException) fails the step, never the run (#821)."""
+
+    @pytest.mark.parametrize(
+        ("statement", "shown"),
+        [
+            ("sys.exit(3)", "sys.exit(3)"),
+            ("sys.exit(0)", "sys.exit(0)"),
+            ("sys.exit()", "sys.exit()"),
+            ('raise SystemExit("bye")', "sys.exit('bye')"),
+        ],
+    )
+    def test_sys_exit_fails_the_step(self, statement, shown):
+        shared: dict = {}
+        action = run_code_node(
+            shared,
+            code=f'import sys\nprint("before exit")\nresult: int = 1\n{statement}',
+            inputs={},
+        )
+        assert action == "error"
+        assert shared["error"].startswith(
+            f"Code called {shown} — a code step ends by assigning its outputs, not by exiting"
+        )
+        assert "Location: line 4 in code block" in shared["error"]
+        assert f"Source: {statement}" in shared["error"]
+        assert "Stderr:" not in shared["error"]
+        assert "result" not in shared
+
+    def test_argparse_exit_shows_its_usage_message(self):
+        """A reused script's argparse exits with code 2 after printing why — the error carries that reason."""
+        shared: dict = {}
+        action = run_code_node(
+            shared,
+            code='import argparse\nargparse.ArgumentParser().parse_args(["--nope"])\nresult: int = 1',
+            inputs={},
+        )
+        assert action == "error"
+        assert shared["error"].startswith("Code called sys.exit(2)")
+        assert 'Source: argparse.ArgumentParser().parse_args(["--nope"])' in shared["error"]
+        assert "\n  Stderr: usage: " in shared["error"]
+        assert "unrecognized arguments: --nope" in shared["error"]
+
+    def test_other_base_exception_fails_the_step(self):
+        """asyncio.CancelledError is a BaseException too; it reads like any runtime error."""
+        shared: dict = {}
+        action = run_code_node(
+            shared,
+            code="import asyncio\nresult: int = 1\nraise asyncio.CancelledError()",
+            inputs={},
+        )
+        assert action == "error"
+        assert shared["error"].startswith("CancelledError: ")
+        assert "Source: raise asyncio.CancelledError()" in shared["error"]
+
+    def test_keyboard_interrupt_still_interrupts(self):
+        with pytest.raises(KeyboardInterrupt):
+            run_code_node({}, code="result: int = 1\nraise KeyboardInterrupt", inputs={})
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="a POSIX signal interrupts the lock wait")
+    def test_ctrl_c_during_a_step_still_exits_the_run(self):
+        """pflow's SIGINT handler raises SystemExit(130) in the waiting thread — only the body's exit is contained."""
+
+        def handle_sigint(signum: int, frame: object) -> None:  # the shape of cli/main.py:_setup_signals
+            sys.exit(130)
+
+        started, release = threading.Event(), threading.Event()
+        waiting_thread = threading.get_ident()
+
+        def waiting_on_the_body() -> bool:
+            frame = sys._current_frames().get(waiting_thread)
+            while frame is not None and frame.f_code is not Future.result.__code__:
+                frame = frame.f_back
+            return frame is not None
+
+        def interrupt_once_started() -> None:
+            deadline = time.monotonic() + 5
+            while not (started.is_set() and waiting_on_the_body()):
+                if time.monotonic() > deadline:
+                    return
+                time.sleep(0.001)
+            signal.pthread_kill(waiting_thread, signal.SIGINT)  # what Ctrl-C delivers: the main thread
+
+        previous = signal.signal(signal.SIGINT, handle_sigint)
+        interrupter = threading.Thread(target=interrupt_once_started)
+        interrupter.start()
+        try:
+            with pytest.raises(SystemExit) as exc_info:
+                run_code_node(
+                    {},
+                    code="started: Any\nrelease: Any\nstarted.set()\nrelease.wait(5)\nresult: int = 1",
+                    inputs={"started": started, "release": release},
+                )
+        finally:
+            release.set()
+            interrupter.join()
+            signal.signal(signal.SIGINT, previous)
+        assert exc_info.value.code == 130
 
 
 # ======================================================================
