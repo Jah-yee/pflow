@@ -161,7 +161,7 @@ def _group_nodes_by_category(nodes: dict[str, dict]) -> dict[str, list[str]]:
 
 def _format_structure_combined(
     structure: dict[str, Any], parent_path: str = ""
-) -> tuple[dict[str, Any], list[tuple[str, str, str]]]:
+) -> tuple[dict[str, Any], list[tuple[str, str, str, str]]]:
     """Transform nested structure into JSON representation and path list.
 
     This is the preferred method for displaying structures in discovery output.
@@ -178,10 +178,10 @@ def _format_structure_combined(
     Returns:
         Tuple of:
         - JSON dict with types only (for clean display)
-        - List of (path, type, description) tuples
+        - List of (path, type, constraints, description) tuples — constraints from ``field_constraints``
     """
     json_struct: dict[str, Any] = {}
-    paths: list[tuple[str, str, str]] = []
+    paths: list[tuple[str, str, str, str]] = []
 
     for field_name, field_info in structure.items():
         if isinstance(field_info, dict):
@@ -192,7 +192,7 @@ def _format_structure_combined(
             current_path = f"{parent_path}.{field_name}" if parent_path else field_name
 
             # Add to paths list
-            paths.append((current_path, field_type, field_desc))
+            paths.append((current_path, field_type, field_constraints(field_info), field_desc))
 
             # Handle nested structures
             if "structure" in field_info and isinstance(field_info["structure"], dict):
@@ -520,7 +520,7 @@ def _format_all_parameters_new(node_type: str, node_data: dict, lines: list[str]
             if isinstance(param, dict):
                 type_str = param.get("type", "any")
                 if type_str in ("dict", "list", "list[dict]") and "structure" in param:
-                    _add_enhanced_structure_display(lines, param["key"], param["structure"])
+                    _add_enhanced_structure_display(lines, param["key"], type_str, param["structure"])
     else:
         lines.append("**Parameters**: none")
 
@@ -550,7 +550,7 @@ def _format_outputs_with_access(node_data: dict, lines: list[str]) -> None:
 
                 # Add structure display for complex types
                 if type_str in ("dict", "list", "list[dict]") and "structure" in out:
-                    _add_enhanced_structure_display(lines, key, out["structure"])
+                    _add_enhanced_structure_display(lines, key, type_str, out["structure"])
             else:
                 # Simple string output
                 lines.append(f"- `{out}`")
@@ -563,6 +563,23 @@ def param_note(node_type: str, key: str) -> str:
     if param_mode(node_type, key) == "embedded":
         return " (JavaScript, sent as written; insert a pflow value as ${x|json})"
     return ""
+
+
+def value_constraints(param: dict[str, Any]) -> str:
+    """What a listing appends after a param's or field's type: its default and allowed values."""
+    default = f" (default: {_as_written(param['default'])})" if "default" in param else ""
+    choices = f" (one of: {', '.join(_as_written(v) for v in param['enum'])})" if param.get("enum") else ""
+    return default + choices
+
+
+def field_constraints(field: dict[str, Any]) -> str:
+    """``value_constraints`` led by ``(required)`` when a structure field says it is (MCP fields do)."""
+    return (" (required)" if field.get("required") else "") + value_constraints(field)
+
+
+def _as_written(value: Any) -> str:
+    """A value as an agent would write it: text as is, anything else as JSON."""
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
 def snippet_placeholder(node_type: str, key: str, ptype: str, *, first: bool) -> str:
@@ -658,51 +675,23 @@ _RICH_SNIPPETS: dict[str, list[str]] = {
 }
 
 
-def _format_usage_snippet(node_type: str, node_data: dict, lines: list[str]) -> None:
-    """Append a .pflow.md usage snippet for the node.
-
-    Uses hardcoded rich templates for 6 core node types. Falls back to a
-    generic snippet built from the first 3 interface params for everything
-    else (including MCP nodes).
-
-    Args:
-        node_type: The workflow type string (e.g. "shell", "mcp-slack-SEND")
-        node_data: Node metadata dict with params, inputs, registry_info
-        lines: List to append formatted lines to
-    """
-    lines.append("")
-    lines.append("**Usage in .pflow.md:**")
-    lines.append("")
-
+def usage_snippet(node_type: str, params: list[Any]) -> list[str]:
+    """A ``.pflow.md`` snippet for the node as indented lines: a core node's hand-written one,
+    else its ``type`` line and one line per required param — the rest have a default or need none."""
     if node_type in _RICH_SNIPPETS:
-        lines.extend(_RICH_SNIPPETS[node_type])
-    else:
-        # Generic snippet from interface params
-        snippet_lines = [
-            "    ### step-name",
-            "",
-            "    Describe what this step does and why.",
-            "",
-            f"    - type: {node_type}",
-        ]
+        return list(_RICH_SNIPPETS[node_type])
+    lines = ["    ### step-name", "", "    Describe what this step does and why.", "", f"    - type: {node_type}"]
+    required = [p for p in params if isinstance(p, dict) and p.get("key") and p.get("required", True)]
+    for index, param in enumerate(required):
+        placeholder = snippet_placeholder(node_type, param["key"], param.get("type", "str").lower(), first=index == 0)
+        lines.append(f"    - {param['key']}: {placeholder}")
+    return lines
 
-        # Collect first 3 params for the example
-        all_params = node_data.get("params", []) or []
-        inputs = node_data.get("inputs", []) or []
-        combined = list(inputs) + list(all_params)
-        shown = 0
-        for param in combined:
-            if shown >= 3:
-                break
-            if isinstance(param, dict):
-                key = param.get("key", "")
-                if not key:
-                    continue
-                placeholder = snippet_placeholder(node_type, key, param.get("type", "str").lower(), first=shown == 0)
-                snippet_lines.append(f"    - {key}: {placeholder}")
-                shown += 1
 
-        lines.extend(snippet_lines)
+def _format_usage_snippet(node_type: str, node_data: dict, lines: list[str]) -> None:
+    """Append the node's ``.pflow.md`` usage snippet (``usage_snippet``) under its heading."""
+    lines.extend(["", "**Usage in .pflow.md:**", ""])
+    lines.extend(usage_snippet(node_type, list(node_data.get("inputs") or []) + list(node_data.get("params") or [])))
 
 
 def _format_node_section_enhanced(node_type: str, node_data: dict) -> str:
@@ -742,7 +731,7 @@ def _format_node_section_enhanced(node_type: str, node_data: dict) -> str:
     return "\n".join(lines)
 
 
-def _add_enhanced_structure_display(lines: list[str], key: str, structure: dict[str, Any]) -> None:
+def _add_enhanced_structure_display(lines: list[str], key: str, type_str: str, structure: dict[str, Any]) -> None:
     """Add combined JSON + paths format for structure display.
 
     This method implements Decision 9 from task-15-context-builder-ambiguities.md,
@@ -752,17 +741,19 @@ def _add_enhanced_structure_display(lines: list[str], key: str, structure: dict[
     Args:
         lines: List to append formatted lines to
         key: The key name (e.g., "issue_data")
+        type_str: The key's type — a list's structure describes each item (``key[].field``)
         structure: The structure dict to format
     """
+    is_list = type_str != "dict"
     lines.append("")
     lines.append("Structure (JSON format):")
     lines.append("```json")
 
     # Generate JSON representation
-    json_struct, paths = _format_structure_combined(structure)
+    json_struct, paths = _format_structure_combined(structure, f"{key}[]" if is_list else key)
 
     # Create wrapper object with the key
-    wrapper = {key: json_struct}
+    wrapper = {key: [json_struct] if is_list else json_struct}
 
     # Pretty print the JSON
     json_str = json.dumps(wrapper, indent=2)
@@ -772,10 +763,8 @@ def _add_enhanced_structure_display(lines: list[str], key: str, structure: dict[
 
     # Add paths list
     lines.append("Available paths:")
-    for path, type_str, desc in paths:
-        # Prepend the key to each path
-        full_path = f"{key}.{path}" if path else key
-        line = f"- {full_path} ({type_str})"
+    for path, field_type, constraints, desc in paths:
+        line = f"- {path} ({field_type}){constraints}"
         if desc:
             line += f" - {desc}"
         lines.append(line)
