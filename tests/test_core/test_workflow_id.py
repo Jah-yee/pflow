@@ -284,3 +284,9 @@ def test_file_loading_workflow_hashes_do_not_depend_on_where_the_checkout_sits(t
     assert first["nodes"][0]["params"]["code"] == "result: int = 1\n"  # the file was loaded
     assert workflow_content_hash(first) == workflow_content_hash(second)
     assert step_identity(first) == step_identity(second)
+    # …and the key is invisible, not merely constant: hashes equal those of the IR without it (what
+    # traces recorded before #813), so existing replay/resume stamps still match.
+    without = {**first, "nodes": [{k: v for k, v in n.items() if k != "_resolved_files"} for n in first["nodes"]]}
+    assert "_resolved_files" in first["nodes"][0]
+    assert workflow_content_hash(first) == workflow_content_hash(without)
+    assert step_identity(first) == step_identity(without)
