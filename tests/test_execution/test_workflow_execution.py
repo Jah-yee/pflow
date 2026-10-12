@@ -80,6 +80,7 @@ class TestWorkflowExecution:
         with patch("pflow.execution.runner.WorkflowRunner._compile_and_execute") as mock_exec:
             mock_exec.return_value = ExecutionResult(
                 success=False,
+                status=WorkflowStatus.FAILED,
                 diagnostics=[Diagnostic(severity=Severity.ERROR, message="Error", source="runtime")],
             )
             result = WorkflowRunner().run(workflow_ir, {}, RunnerConfig())

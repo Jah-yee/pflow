@@ -261,7 +261,12 @@ class WorkflowRunner:
 
         except Exception as e:
             return self._exception_to_result(
-                e, start_time, trace_collector, validation_warnings, trace_enabled=config.trace_enabled
+                e,
+                start_time,
+                trace_collector,
+                validation_warnings,
+                trace_enabled=config.trace_enabled,
+                metrics_collector=metrics_collector,
             )
 
         finally:
@@ -873,6 +878,7 @@ class WorkflowRunner:
         validation_warnings: list[Diagnostic] | None = None,
         *,
         trace_enabled: bool = True,
+        metrics_collector: Any,
     ) -> ExecutionResult:
         """Convert any exception to ExecutionResult.
 
@@ -948,6 +954,7 @@ class WorkflowRunner:
             status=status,
             shared_after=shared_after,
             trace=trace_collector,
+            metrics=metrics_collector,
             diagnostics=diagnostics,
         )
 

@@ -704,7 +704,8 @@ def test_failed_batch_surfaces_error_details_in_execution_steps():
     assert not result.success
 
     # Run the CLI/MCP formatter entry point against the actual ExecutionResult
-    metrics_summary = result.metrics.get_summary() if result.metrics else None
+    assert result.metrics is not None and result.trace is not None
+    metrics_summary = result.metrics.get_summary(result.trace.collect_llm_calls())
     steps = build_execution_steps(ir, result.shared_after, metrics_summary)
 
     assert len(steps) == 1, "Expected one step row for the batch node"

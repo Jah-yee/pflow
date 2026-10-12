@@ -1,4 +1,5 @@
 {
+  "advisories": [],
   "diagnostics": [
     {
       "context": {
@@ -48,8 +49,27 @@
       "title": "Validation Error"
     }
   ],
+  "execution": {
+    "nodes_executed": 0,
+    "nodes_total": 2,
+    "steps": [
+      {
+        "cached": false,
+        "duration_ms": 0,
+        "node_id": "upstream",
+        "status": "not_executed"
+      },
+      {
+        "cached": false,
+        "duration_ms": 0,
+        "node_id": "downstream",
+        "status": "not_executed"
+      }
+    ]
+  },
   "status": "failed",
   "success": false,
+  "warnings": [],
   "workflow": {
     "action": "unsaved",
     "name": "<REPO>/examples/invalid/code-annotation-type-mismatch.pflow.md"

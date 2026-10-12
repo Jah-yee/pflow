@@ -17,7 +17,7 @@ class OutputMode(Enum):
 
     The single authority for output precedence. Both the CLI text path
     (``cli/workflow_output.py::_handle_text_output``) and the JSON/MCP path
-    (``success_formatter::_collect_outputs``) dispatch on this — they render
+    (``run_outcome::_collect_outputs``) dispatch on this — they render
     the selected output differently (text streams one value with advisories;
     JSON builds a dict of all declared outputs) but must agree on *which*
     branch applies. Encoding the precedence once keeps the two paths from

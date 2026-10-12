@@ -598,21 +598,23 @@ class TestWorkflowOutputHandling:
             ],
         }
 
-        _handle_text_output(
-            shared,
-            output_key=None,
-            workflow_ir=workflow_ir,
-            verbose=False,
-            print_flag=True,
-            metrics_collector=metrics,
-        )
+        from pflow.execution.formatters.run_outcome import build_run_outcome, render_cli_stderr
+        from pflow.execution.result import ExecutionResult
 
-        # Behavior under -p + --only: data line on stdout, --only mode
-        # indicator on stderr, routing note ("--only active...") suppressed.
+        outcome = build_run_outcome(
+            ExecutionResult(success=True, shared_after=shared, metrics=metrics), workflow_ir, workflow_metadata=None
+        )
+        stderr_lines = render_cli_stderr(outcome, text_mode=True, print_flag=True, verbose=False)
+        _handle_text_output(shared, output_key=None, workflow_ir=workflow_ir, verbose=False, print_flag=True)
+
+        # Behavior under -p + --only: data line on stdout, the --only mode line is the only
+        # stderr summary line (a mode signal), the routing note ("--only active...") suppressed.
         captured = capsys.readouterr()
         assert "UPSTREAM_TARGET_OUTPUT" in captured.out
         assert "--only active" not in captured.err
-        assert "⤷ Ran only 'upstream' (--only)" in captured.err
+        assert stderr_lines == ["  ⤷ Ran only 'upstream' (--only), 1 other node not executed"]
+        not_print = render_cli_stderr(outcome, text_mode=True, print_flag=False, verbose=False)
+        assert any(line.startswith("✓ Workflow completed") for line in not_print)
 
     def test_multi_output_warning_suppressed_under_print_flag(
         self, mock_registry_instance, mock_compile, mock_validate_ir
@@ -1986,7 +1988,7 @@ class TestCollectOutputsOnlyBatchUnchanged:
     """
 
     def test_json_mode_only_batch_returns_full_aggregate(self):
-        from pflow.execution.formatters.success_formatter import _collect_outputs
+        from pflow.execution.formatters.run_outcome import _collect_outputs
 
         shared = {
             "__execution__": {"only_node": "batch-llm"},

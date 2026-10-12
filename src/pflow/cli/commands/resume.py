@@ -368,7 +368,7 @@ def resume_run(
     except Exception as exc:
         of = ctx.obj.get("output_format", output_format) if ctx.obj else output_format
         vb = ctx.obj.get("verbose", False) if ctx.obj else False
-        output_error(ctx, exception=exc, output_format=of, verbose=vb)
+        output_error(exception=exc, output_format=of, verbose=vb)
         ctx.exit(1)
 
 

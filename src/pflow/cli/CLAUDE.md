@@ -14,9 +14,9 @@ Keep those responsibilities in the Runner so CLI and MCP share them.
 | Workflow-name versus invalid-command heuristic | `workflow_resolution.py:is_likely_workflow_name` |
 | `name=value` parameters (raw text; the declared type types them) | `param_parsing.py` |
 | File/saved-name resolution shared with MCP | `execution/workflow_resolver.py:resolve_workflow` |
-| Successful text output and headers | `workflow_output.py:_handle_text_output`, `_show_output_header` |
-| Ordinary failure rendering | `error_output.py:output_error` |
-| Status dispatch and exit codes | `commands/run.py:_display_execution_result` |
+| A run's ending — JSON document, stderr summary, exit code (every status) | `commands/run.py:_display_execution_result` over `execution/formatters/run_outcome.py` (`build_run_outcome`, `render_cli_stderr`, `EXIT_CODES`) |
+| A successful run's stdout data and its header | `workflow_output.py:_handle_text_output`, `_show_output_header` |
+| A failure with no run (pre-execution or escaped exception) | `error_output.py:output_error` |
 | Subcommand-specific seams | `commands/CLAUDE.md` |
 
 Add top-level commands through `main.py:cli.add_command`. Keep cycle-sensitive
@@ -66,10 +66,12 @@ explicit output key → `--only` target → declared workflow outputs → auto-d
 CLI text and JSON/MCP renderers must use this decision rather than reproduce it.
 Auto-detection details belong to `find_auto_output` in the same module.
 
-`commands/run.py:_display_execution_result` handles DENIED separately (exit 3)
-and **durable** PAUSED separately (exit 4); neither uses ordinary failure rendering.
-A non-durable PAUSED result becomes a failure, with no unusable resume token.
-Completed/degraded runs exit 0, failures 1, interrupts 130; Click owns usage exit 2.
+`commands/run.py:_display_execution_result` renders one Run outcome for every status
+and exits with `outcome.exit_code` (`EXIT_CODES`: completed/degraded 0, failed 1, denied 3,
+durable pause 4); the builder turns a non-durable PAUSED into a failure, so no unusable
+resume token prints. It settles a failure's trace before building the outcome, so a run that
+failed before the engine opened its stream still carries `execution_id`/`trace_path`.
+Interrupts exit 130; Click owns usage exit 2.
 
 Workflow progress streams to stderr for TTY and non-TTY callers; run.py's print-mode
 gate suppresses it.

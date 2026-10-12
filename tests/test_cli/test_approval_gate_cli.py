@@ -151,12 +151,28 @@ class TestNonInteractive:
         assert "will fail at approval gate" not in result.stderr
 
 
-def test_completion_status_denied_arm_never_renders_checkmark():
-    from pflow.cli.workflow_output import _format_workflow_completion_status
+def test_completion_line_denied_arm_never_renders_checkmark():
+    from pflow.core.diagnostic import Diagnostic, Severity
+    from pflow.core.metrics import MetricsCollector
+    from pflow.core.workflow.status import WorkflowStatus
+    from pflow.execution.formatters.run_outcome import build_run_outcome, completion_line
+    from pflow.execution.result import ExecutionResult
 
-    line = _format_workflow_completion_status(1.5, "denied", False)
-    assert line.startswith("✗") and "denied at gate" in line
-    assert "✓" not in line
+    gate = {"node_id": "deploy", "kind": "action_approval", "preview": {}}
+    denial = Diagnostic(
+        severity=Severity.ERROR,
+        message="Denied at gate 'deploy'.",
+        node_id="deploy",
+        source="runtime",
+        context={"category": "gate", "gate": gate},
+    )
+    result = ExecutionResult(
+        success=False, status=WorkflowStatus.DENIED, diagnostics=[denial], metrics=MetricsCollector()
+    )
+
+    line = completion_line(build_run_outcome(result, {}, workflow_metadata=None))
+
+    assert line == ["✗ Denied at gate 'deploy'. Workflow stopped cleanly before the step ran. (exit 3)"]
 
 
 class TestCtrlCAtGate:
